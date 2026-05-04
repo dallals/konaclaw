@@ -81,3 +81,12 @@ def test_audit_undo_link_idempotent(tmp_path):
     s.link_audit_undo(aid, "op-1")
     s.link_audit_undo(aid, "op-1")
     assert s.get_undo_op_for_audit(aid) == "op-1"
+
+
+def test_audit_undo_link_first_wins_on_conflict(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    aid = s.append_audit(agent="kc", tool="x", args_json="{}",
+                         decision="d", result="r", undoable=True)
+    s.link_audit_undo(aid, "op-original")
+    s.link_audit_undo(aid, "op-replacement")  # different op_id, same audit
+    assert s.get_undo_op_for_audit(aid) == "op-original"

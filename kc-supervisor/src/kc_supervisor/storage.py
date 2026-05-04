@@ -40,9 +40,8 @@ CREATE INDEX IF NOT EXISTS ix_audit_agent ON audit(agent);
 CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit(ts);
 
 CREATE TABLE IF NOT EXISTS audit_undo_link (
-    audit_id INTEGER NOT NULL,
+    audit_id INTEGER PRIMARY KEY,
     undo_op_id TEXT NOT NULL,
-    PRIMARY KEY (audit_id, undo_op_id),
     FOREIGN KEY(audit_id) REFERENCES audit(id)
 );
 CREATE INDEX IF NOT EXISTS ix_link_undo ON audit_undo_link(undo_op_id);
@@ -50,19 +49,27 @@ CREATE INDEX IF NOT EXISTS ix_link_undo ON audit_undo_link(undo_op_id);
 
 
 class Storage:
+    """SQLite storage for kc-supervisor.
+
+    Connections returned by `connect()` use ``isolation_level=None`` (autocommit
+    mode), so every statement commits immediately. WAL mode is enabled in
+    ``init()`` and persists in the file. Callers needing multi-statement atomicity
+    must issue explicit ``BEGIN``/``COMMIT`` themselves.
+    """
+
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
 
     def init(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as c:
+            c.execute("PRAGMA journal_mode=WAL")
             c.executescript(SCHEMA)
 
     @contextmanager
     def connect(self):
         conn = sqlite3.connect(self.db_path, isolation_level=None)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
         try:
             yield conn
         finally:
@@ -80,7 +87,7 @@ class Storage:
 
     def list_conversations(self, agent: Optional[str] = None, limit: int = 50) -> list[dict]:
         with self.connect() as c:
-            if agent:
+            if agent is not None:
                 rows = c.execute(
                     "SELECT * FROM conversations WHERE agent=? ORDER BY started_at DESC LIMIT ?",
                     (agent, limit),
@@ -134,7 +141,7 @@ class Storage:
 
     def list_audit(self, agent: Optional[str] = None, limit: int = 100) -> list[dict]:
         with self.connect() as c:
-            if agent:
+            if agent is not None:
                 rows = c.execute(
                     "SELECT * FROM audit WHERE agent=? ORDER BY ts DESC LIMIT ?",
                     (agent, limit),
@@ -148,7 +155,12 @@ class Storage:
     # ----- audit ↔ undo cross-reference -----
 
     def link_audit_undo(self, audit_id: int, undo_op_id: str) -> None:
-        """Record that audit row `audit_id` produced kc-sandbox undo op `undo_op_id`."""
+        """Record that audit row `audit_id` produced kc-sandbox undo op `undo_op_id`.
+
+        Uses ``INSERT OR IGNORE`` — first link wins. A second call with the same
+        ``audit_id`` but a different ``undo_op_id`` is silently dropped, preserving
+        the original mapping.
+        """
         with self.connect() as c:
             c.execute(
                 "INSERT OR IGNORE INTO audit_undo_link (audit_id, undo_op_id) VALUES (?,?)",
