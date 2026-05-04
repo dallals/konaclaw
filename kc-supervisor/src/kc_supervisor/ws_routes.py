@@ -69,3 +69,46 @@ def register_ws_routes(app: FastAPI) -> None:
                 })
         except WebSocketDisconnect:
             return
+
+    @app.websocket("/ws/approvals")
+    async def ws_approvals(ws: WebSocket):
+        await ws.accept()
+        deps = app.state.deps
+
+        async def _send(req):
+            try:
+                await ws.send_json({
+                    "type": "approval_request",
+                    "request_id": req.request_id,
+                    "agent": req.agent,
+                    "tool": req.tool,
+                    "arguments": req.arguments,
+                })
+            except Exception:
+                pass
+
+        import asyncio as _asyncio
+        loop = _asyncio.get_running_loop()
+        # Subscriber callback runs in whatever thread/loop calls request_approval;
+        # schedule the actual send on the WS handler's loop.
+        sub = deps.approvals.subscribe(
+            lambda req: loop.call_soon_threadsafe(_asyncio.create_task, _send(req))
+        )
+
+        try:
+            for req in deps.approvals.pending():
+                await _send(req)
+
+            while True:
+                msg = await ws.receive_json()
+                if msg.get("type") != "approval_response":
+                    continue
+                deps.approvals.resolve(
+                    request_id=msg["request_id"],
+                    allowed=bool(msg["allowed"]),
+                    reason=msg.get("reason"),
+                )
+        except WebSocketDisconnect:
+            return
+        finally:
+            sub.unsubscribe()

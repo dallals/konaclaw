@@ -72,3 +72,33 @@ async def test_unsubscribe_stops_notifications():
             await t
         except asyncio.CancelledError:
             pass
+
+
+@pytest.mark.asyncio
+async def test_resolve_from_another_thread_loop():
+    """resolve() must work when called from a different thread/loop than the awaiter."""
+    import threading
+
+    b = ApprovalBroker()
+    request_started = threading.Event()
+    seen = []
+    b.subscribe(lambda req: (seen.append(req), request_started.set()))
+
+    task = asyncio.create_task(
+        b.request_approval(agent="kc", tool="file.delete", arguments={})
+    )
+    await asyncio.sleep(0)  # let the task start and register the future
+    assert request_started.wait(timeout=1.0)
+    req_id = seen[0].request_id
+
+    def resolver():
+        # New thread, no asyncio loop here — call resolve directly
+        b.resolve(req_id, allowed=True, reason="from another thread")
+
+    t = threading.Thread(target=resolver)
+    t.start()
+    t.join(timeout=1.0)
+
+    allowed, reason = await asyncio.wait_for(task, timeout=2.0)
+    assert allowed is True
+    assert reason == "from another thread"

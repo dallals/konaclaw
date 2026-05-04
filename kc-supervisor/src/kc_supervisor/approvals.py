@@ -34,21 +34,25 @@ class _Subscription:
 class ApprovalBroker:
     """Async approval coordinator.
 
-    Each `request_approval()` allocates a future and notifies all subscribers
+    Each ``request_approval()`` allocates a future and notifies all subscribers
     synchronously (subscriber callbacks must be cheap — typically they enqueue
-    onto a WebSocket send queue and return immediately). Callers `await` the
-    future; some other code path calls `resolve()` to fulfill it.
+    onto a WebSocket send queue and return immediately). Callers ``await`` the
+    future; some other code path calls ``resolve()`` to fulfill it.
 
-    Subscriber exceptions are swallowed — a misbehaving subscriber must not
-    block an approval flow.
+    ``resolve()`` is safe to call from any thread or event loop: the broker
+    captures the awaiter's loop at ``request_approval()`` time and dispatches
+    the result via ``loop.call_soon_threadsafe``.
 
-    The broker assumes all callers run on the same asyncio event loop —
-    ``resolve()`` calls ``Future.set_result`` directly and is not thread-safe.
-    For v1 this holds (all callers are WebSocket handlers on the FastAPI loop).
+    Subscriber exceptions are logged via ``logger.exception`` and otherwise
+    swallowed — a misbehaving subscriber must not block an approval flow.
     """
 
     def __init__(self) -> None:
-        self._futures: dict[str, asyncio.Future[tuple[bool, Optional[str]]]] = {}
+        # Each entry stores (future, owning_loop) so resolve() can fulfill the
+        # future from any thread/loop via call_soon_threadsafe.
+        self._futures: dict[
+            str, tuple[asyncio.Future[tuple[bool, Optional[str]]], asyncio.AbstractEventLoop]
+        ] = {}
         self._requests: dict[str, ApprovalRequest] = {}
         self._subs: set[_Subscription] = set()
 
@@ -66,7 +70,7 @@ class ApprovalBroker:
         )
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
-        self._futures[request_id] = fut
+        self._futures[request_id] = (fut, loop)
         self._requests[request_id] = req
         for sub in list(self._subs):
             try:
@@ -82,12 +86,25 @@ class ApprovalBroker:
     def resolve(self, request_id: str, allowed: bool, reason: Optional[str]) -> None:
         """Fulfill an outstanding approval. Unknown request_ids are silently ignored.
 
-        Must be called from the same event loop that owns the future. Not thread-safe.
+        Safe to call from any thread or event loop — the result is dispatched
+        to the loop that owns the future via ``call_soon_threadsafe``.
         """
-        fut = self._futures.get(request_id)
-        if fut is None or fut.done():
+        entry = self._futures.get(request_id)
+        if entry is None:
             return
-        fut.set_result((allowed, reason))
+        fut, loop = entry
+        if fut.done():
+            return
+
+        def _set_result():
+            if not fut.done():
+                fut.set_result((allowed, reason))
+
+        try:
+            loop.call_soon_threadsafe(_set_result)
+        except RuntimeError:
+            # Owning loop is closed — drop silently. The awaiter is gone too.
+            return
 
     def pending(self) -> list[ApprovalRequest]:
         """Snapshot of currently-outstanding approval requests (for /ws/approvals reconnect)."""
