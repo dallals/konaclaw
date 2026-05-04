@@ -68,6 +68,20 @@ def test_unknown_tool_defaults_to_destructive():
     assert d.allowed is False  # destructive + AlwaysDeny
 
 
+def test_override_promote_records_combined_source():
+    """When an override raises tier to DESTRUCTIVE and the callback is consulted,
+    Decision.source must show both facts ('override+callback') so audit logs can
+    distinguish this from a plain default-DESTRUCTIVE → callback flow."""
+    eng = PermissionEngine(
+        tier_map={"file.read": Tier.SAFE},
+        agent_overrides={"kc": {"file.read": Tier.DESTRUCTIVE}},
+        approval_callback=AlwaysAllow(),
+    )
+    d = eng.check(agent="kc", tool="file.read", arguments={})
+    assert d.allowed is True
+    assert d.source == "override+callback"
+
+
 def test_other_agent_override_does_not_apply():
     eng = PermissionEngine(
         tier_map={"file.delete": Tier.DESTRUCTIVE},

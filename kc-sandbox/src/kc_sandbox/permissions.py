@@ -23,16 +23,16 @@ class ApprovalCallback(Protocol):
     def __call__(self, agent: str, tool: str, arguments: dict[str, Any]) -> tuple[bool, Optional[str]]: ...
 
 
-@dataclass
 class AlwaysAllow:
-    def __call__(self, agent, tool, arguments):
+    def __call__(self, agent: str, tool: str, arguments: dict[str, Any]) -> tuple[bool, Optional[str]]:
         return (True, None)
 
 
 @dataclass
 class AlwaysDeny:
     reason: Optional[str] = None
-    def __call__(self, agent, tool, arguments):
+
+    def __call__(self, agent: str, tool: str, arguments: dict[str, Any]) -> tuple[bool, Optional[str]]:
         return (False, self.reason)
 
 
@@ -61,13 +61,22 @@ class PermissionEngine:
         if tier in (Tier.SAFE, Tier.MUTATING):
             return Decision(allowed=True, tier=tier, source=source)
 
-        # DESTRUCTIVE — ask the callback
+        # DESTRUCTIVE — ask the callback. If we got here because of an
+        # override (not the default tier_map), record both facts in the
+        # source so audit logs can distinguish "default DESTRUCTIVE → callback"
+        # from "override raised tier → callback".
         allowed, reason = self.approval_callback(agent, tool, arguments)
-        return Decision(allowed=allowed, tier=tier, source="callback" if source != "override" else source, reason=reason)
+        callback_source = "override+callback" if source == "override" else "callback"
+        return Decision(allowed=allowed, tier=tier, source=callback_source, reason=reason)
 
     def to_agent_callback(self, agent: str):
-        """Returns a callable in the shape kc_core.Agent.permission_check expects."""
-        def _check(agent_name: str, tool: str, args: dict) -> tuple[bool, Optional[str]]:
-            d = self.check(agent=agent_name, tool=tool, arguments=args)
+        """Returns a callable in the shape kc_core.Agent.permission_check expects.
+
+        The closure binds to `agent` — the agent_name passed at runtime by
+        kc-core is ignored in favor of the bound name. This guarantees that
+        per-agent overrides for `agent` apply regardless of what kc-core sends.
+        """
+        def _check(agent_name: str, tool: str, args: dict[str, Any]) -> tuple[bool, Optional[str]]:
+            d = self.check(agent=agent, tool=tool, arguments=args)
             return (d.allowed, d.reason)
         return _check
