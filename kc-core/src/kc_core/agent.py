@@ -10,7 +10,7 @@ from kc_core.tools import ToolRegistry
 from kc_core.tool_call_parser import parse_text_tool_calls
 
 
-PermissionCheck = Callable[[str, str, dict], tuple[bool, Optional[str]]]
+PermissionCheck = Callable[[str, str, dict[str, Any]], tuple[bool, Optional[str]]]
 # (agent_name, tool_name, arguments) -> (allowed, optional_deny_reason)
 
 

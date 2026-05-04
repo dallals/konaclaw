@@ -162,7 +162,7 @@ async def test_agent_permission_check_can_deny_tool(fake_ollama):
     seen_calls = []
     def deny_all(agent_name: str, tool_name: str, arguments: dict) -> tuple[bool, str | None]:
         seen_calls.append((agent_name, tool_name, arguments))
-        return (False, "Denied: this is a test")
+        return (False, "this is a test")
 
     agent = Agent(
         name="kc", client=client, system_prompt="sys", tools=reg,
