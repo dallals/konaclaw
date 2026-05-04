@@ -58,36 +58,35 @@ class AuditingToolRegistry(ToolRegistry):
         tool_name = tool.name
 
         def audited_impl(*args, **kwargs):
-            # Reset eid contextvar — only count eids written during THIS call
+            # Reset eid contextvar — only count eids written during THIS call.
+            # If a tool ever calls UndoLog.record() more than once, only the
+            # last eid is linked (kc-sandbox's file tools each call record()
+            # exactly once, so this assumption holds today).
             _eid_contextvar.set(None)
             decision = _decision_contextvar.get()
             decision_source = decision.source if decision is not None else "unknown"
 
             args_json = json.dumps(kwargs if kwargs else list(args), default=str)
 
+            def _write_audit(result_str: str) -> None:
+                captured_eid = _eid_contextvar.get()
+                audit_id = storage.append_audit(
+                    agent=agent_name,
+                    tool=tool_name,
+                    args_json=args_json,
+                    decision=decision_source,
+                    result=result_str,
+                    undoable=captured_eid is not None,
+                )
+                if captured_eid is not None:
+                    storage.link_audit_undo(audit_id, captured_eid)
+
             try:
                 result = original_impl(*args, **kwargs)
-                result_str = str(result)
-                exc: Optional[BaseException] = None
             except Exception as e:
-                result_str = f"Error: {type(e).__name__}: {e}"
-                exc = e
-
-            captured_eid = _eid_contextvar.get()
-            undoable = captured_eid is not None
-            audit_id = storage.append_audit(
-                agent=agent_name,
-                tool=tool_name,
-                args_json=args_json,
-                decision=decision_source,
-                result=result_str,
-                undoable=undoable,
-            )
-            if captured_eid is not None:
-                storage.link_audit_undo(audit_id, captured_eid)
-
-            if exc is not None:
-                raise exc
+                _write_audit(f"Error: {type(e).__name__}: {e}")
+                raise
+            _write_audit(str(result))
             return result
 
         return Tool(
