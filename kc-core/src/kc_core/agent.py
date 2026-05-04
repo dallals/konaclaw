@@ -1,4 +1,5 @@
 from __future__ import annotations
+import inspect
 import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol
@@ -63,7 +64,10 @@ class Agent:
                 # On deny, push the deny message into `results` so it lands in
                 # the second loop alongside any allowed results.
                 if self.permission_check is not None:
-                    allowed, reason = self.permission_check(self.name, c["name"], c["arguments"])
+                    result = self.permission_check(self.name, c["name"], c["arguments"])
+                    if inspect.iscoroutine(result):
+                        result = await result
+                    allowed, reason = result
                     if not allowed:
                         results.append((c["id"], f"Denied: {reason or 'permission_check returned False'}"))
                         continue

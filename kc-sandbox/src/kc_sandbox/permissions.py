@@ -1,4 +1,5 @@
 from __future__ import annotations
+import inspect
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional, Protocol
@@ -78,5 +79,39 @@ class PermissionEngine:
         """
         def _check(agent_name: str, tool: str, args: dict[str, Any]) -> tuple[bool, Optional[str]]:
             d = self.check(agent=agent, tool=tool, arguments=args)
+            return (d.allowed, d.reason)
+        return _check
+
+    async def check_async(self, agent: str, tool: str, arguments: dict[str, Any]) -> Decision:
+        # Resolve effective tier — same logic as sync check()
+        override = self.agent_overrides.get(agent, {}).get(tool)
+        if override is not None:
+            tier = override
+            source = "override"
+        else:
+            # Spec rule: unknown tools default to DESTRUCTIVE
+            tier = self.tier_map.get(tool, Tier.DESTRUCTIVE)
+            source = "tier"
+
+        if tier in (Tier.SAFE, Tier.MUTATING):
+            return Decision(allowed=True, tier=tier, source=source)
+
+        # DESTRUCTIVE — call the callback. If callback returns a coroutine, await it.
+        result = self.approval_callback(agent, tool, arguments)
+        if inspect.iscoroutine(result):
+            result = await result
+        allowed, reason = result
+        # Match sync semantics: preserve "override+callback" attribution.
+        callback_source = "override+callback" if source == "override" else "callback"
+        return Decision(allowed=allowed, tier=tier, source=callback_source, reason=reason)
+
+    def to_async_agent_callback(self, agent: str):
+        """Returns an async callable in the shape kc_core.Agent.permission_check expects.
+
+        Like to_agent_callback, the closure binds to `agent` — the agent_name
+        passed at runtime by kc-core is ignored.
+        """
+        async def _check(agent_name: str, tool: str, args: dict[str, Any]) -> tuple[bool, Optional[str]]:
+            d = await self.check_async(agent=agent, tool=tool, arguments=args)
             return (d.allowed, d.reason)
         return _check

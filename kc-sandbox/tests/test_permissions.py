@@ -90,3 +90,65 @@ def test_other_agent_override_does_not_apply():
     )
     d = eng.check(agent="kc", tool="file.delete", arguments={})
     assert d.allowed is False  # kc still destructive, callback denies
+
+
+@pytest.mark.asyncio
+async def test_engine_supports_async_callback():
+    async def async_allow(agent, tool, arguments):
+        return (True, None)
+    eng = PermissionEngine(
+        tier_map={"file.delete": Tier.DESTRUCTIVE},
+        agent_overrides={},
+        approval_callback=async_allow,
+    )
+    d = await eng.check_async(agent="kc", tool="file.delete", arguments={})
+    assert d.allowed is True
+
+
+@pytest.mark.asyncio
+async def test_engine_check_async_deny_with_async_callback():
+    async def async_deny(agent, tool, arguments):
+        return (False, "user said no")
+    eng = PermissionEngine(
+        tier_map={"file.delete": Tier.DESTRUCTIVE},
+        agent_overrides={},
+        approval_callback=async_deny,
+    )
+    d = await eng.check_async(agent="kc", tool="file.delete", arguments={})
+    assert d.allowed is False
+    assert d.reason == "user said no"
+    assert d.source == "callback"
+
+
+@pytest.mark.asyncio
+async def test_engine_check_async_override_plus_callback_attribution():
+    """When override raises tier to DESTRUCTIVE and callback is consulted, source is 'override+callback'."""
+    async def async_allow(agent, tool, arguments):
+        return (True, None)
+    eng = PermissionEngine(
+        tier_map={"file.read": Tier.SAFE},  # default safe
+        agent_overrides={"kc": {"file.read": Tier.DESTRUCTIVE}},  # raised for kc
+        approval_callback=async_allow,
+    )
+    d = await eng.check_async(agent="kc", tool="file.read", arguments={})
+    assert d.allowed is True
+    assert d.source == "override+callback"
+
+
+@pytest.mark.asyncio
+async def test_to_async_agent_callback_returns_async_callable():
+    async def async_allow(agent, tool, arguments):
+        return (True, None)
+    eng = PermissionEngine(
+        tier_map={"file.delete": Tier.DESTRUCTIVE},
+        agent_overrides={},
+        approval_callback=async_allow,
+    )
+    cb = eng.to_async_agent_callback("kc")
+    # The closure binds to "kc" — runtime agent_name is ignored
+    result = cb("ignored-runtime-name", "file.delete", {})
+    import inspect as _inspect
+    assert _inspect.iscoroutine(result)
+    allowed, reason = await result
+    assert allowed is True
+    assert reason is None
