@@ -1512,12 +1512,10 @@ print(reply.content)
 ```python
 from kc_sandbox.undo import UndoLog, Undoer
 from kc_sandbox.journal import Journal
-from kc_sandbox.shares import Share, SharesRegistry
 
 log = UndoLog(tmp / "undo.db")
-shares = SharesRegistry([Share("research", research, "read-write")])
 journals = {"research": Journal(research)}
-Undoer(shares, journals, log).undo(entry_id=1)
+Undoer(journals=journals, log=log).undo(entry_id=1)
 ```
 
 - [ ] `<tmp>/research/hello.md` is gone.

@@ -24,6 +24,11 @@ def test_file_write_creates_file_and_journals(env):
     assert "wrote" in res
     assert (root / "x.md").read_text() == "hi\n"
     assert len(j.log()) == 2  # init + this write
+    # Undo entry must also be recorded so the write is reversible
+    e = log.get(1)
+    assert e.tool == "file.write"
+    assert e.reverse_kind == "git-revert"
+    assert e.reverse_payload["share"] == "research"
 
 
 def test_file_read_returns_content(env):

@@ -23,7 +23,10 @@ def build_file_tools(
     # ---- READ ----
     def file_read(share: str, relpath: str) -> str:
         p = shares.resolve(share, relpath)
-        return p.read_text()
+        try:
+            return p.read_text(encoding="utf-8")
+        except UnicodeDecodeError as e:
+            raise ShareError(f"{relpath}: not valid UTF-8 text in share {share!r}") from e
 
     # ---- LIST ----
     def file_list(share: str, relpath: str = ".") -> str:
@@ -61,8 +64,8 @@ def build_file_tools(
         if not shares.can_write(share):
             raise ShareError(f"share {share!r} is read-only")
         p = shares.resolve(share, relpath)
-        if not p.exists():
-            raise ShareError(f"{relpath}: not found in share {share!r}")
+        if not p.is_file():
+            raise ShareError(f"{relpath}: not a file in share {share!r}")
         p.unlink()
         sha = _journal_for(share).commit(
             message=f"file.delete {share}/{relpath}",
