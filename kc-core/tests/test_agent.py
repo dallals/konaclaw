@@ -108,3 +108,39 @@ async def test_agent_returns_tool_error_message_on_unknown_tool(fake_ollama):
     err_msg = next(m for m in second_msgs if m["role"] == "tool")
     assert "unknown_tool" in err_msg["content"]
     assert reply.content == "ok, that tool doesn't exist"
+
+
+@pytest.mark.asyncio
+async def test_agent_serializes_multiple_tool_calls_as_one_assistant_message(fake_ollama):
+    """When the model emits multiple tool calls in a single turn, the wire
+    format must be ONE assistant message with tool_calls=[a, b], followed
+    by SEPARATE tool result messages — not N interleaved pairs."""
+    client = fake_ollama(
+        ChatResponse(
+            text="",
+            tool_calls=[
+                {"id": "c1", "name": "echo", "arguments": {"text": "first"}},
+                {"id": "c2", "name": "echo", "arguments": {"text": "second"}},
+            ],
+            finish_reason="tool_calls",
+        ),
+        ChatResponse(text="done", finish_reason="stop"),
+    )
+    reg = ToolRegistry()
+    reg.register(Tool(name="echo", description="", parameters={}, impl=lambda text: text))
+    agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg)
+    await agent.send("call both")
+
+    # Inspect the second wire payload — must have ONE assistant tool-call message
+    # with TWO tool_calls, then TWO separate tool-result messages.
+    second = client.calls[1]["messages"]
+    # Filter to the call/result section (skip system + initial user)
+    relevant = [m for m in second if m["role"] in ("assistant", "tool")]
+    assert len(relevant) == 3, f"Expected 1 assistant + 2 tools, got {len(relevant)}: {relevant}"
+    assert relevant[0]["role"] == "assistant"
+    assert "tool_calls" in relevant[0]
+    assert len(relevant[0]["tool_calls"]) == 2
+    assert relevant[0]["tool_calls"][0]["id"] == "c1"
+    assert relevant[0]["tool_calls"][1]["id"] == "c2"
+    assert relevant[1] == {"role": "tool", "tool_call_id": "c1", "content": "first"}
+    assert relevant[2] == {"role": "tool", "tool_call_id": "c2", "content": "second"}

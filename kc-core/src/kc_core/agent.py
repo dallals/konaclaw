@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from kc_core.messages import (
@@ -42,7 +43,11 @@ class Agent:
                 self.history.append(reply)
                 return reply
 
-            # Record the assistant's tool-call turn(s) and then each tool result
+            # Record ALL tool calls from this turn first (so they're consecutive
+            # in history), then append results. This matches the OpenAI wire
+            # format: one assistant message with tool_calls=[a,b,...] followed
+            # by N separate tool result messages.
+            results: list[tuple[str, str]] = []
             for c in calls:
                 self.history.append(ToolCallMessage(
                     tool_call_id=c["id"],
@@ -52,12 +57,14 @@ class Agent:
                 try:
                     result = self.tools.invoke(c["name"], c["arguments"])
                     content = str(result)
-                except KeyError as e:
+                except KeyError:
                     content = f"Error: unknown_tool: {c['name']}"
                 except Exception as e:
                     content = f"Error: {type(e).__name__}: {e}"
+                results.append((c["id"], content))
+            for call_id, content in results:
                 self.history.append(ToolResultMessage(
-                    tool_call_id=c["id"],
+                    tool_call_id=call_id,
                     content=content,
                 ))
             # Loop continues — call the model again with the new tool results
@@ -65,6 +72,31 @@ class Agent:
 
     def _build_wire_messages(self) -> list[dict[str, Any]]:
         msgs: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
-        for m in self.history:
-            msgs.append(to_openai_dict(m))
+        i = 0
+        while i < len(self.history):
+            m = self.history[i]
+            if isinstance(m, ToolCallMessage):
+                # Collect all consecutive ToolCallMessages — they were emitted in
+                # the same model turn and must serialize as ONE assistant message.
+                batch: list[ToolCallMessage] = []
+                while i < len(self.history) and isinstance(self.history[i], ToolCallMessage):
+                    batch.append(self.history[i])
+                    i += 1
+                msgs.append({
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": tc.tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.tool_name,
+                                "arguments": json.dumps(tc.arguments),
+                            },
+                        }
+                        for tc in batch
+                    ],
+                })
+            else:
+                msgs.append(to_openai_dict(m))
+                i += 1
         return msgs
