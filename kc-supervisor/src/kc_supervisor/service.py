@@ -28,8 +28,6 @@ def create_app(deps: Deps) -> FastAPI:
     app = FastAPI(title="kc-supervisor")
     app.state.deps = deps
 
-    # Late import to avoid circular: http_routes imports from FastAPI types
-    # but doesn't need to know about Deps until app creation time.
     from kc_supervisor.http_routes import register_http_routes
     register_http_routes(app)
 
