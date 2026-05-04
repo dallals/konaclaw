@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from kc_core.agent import Agent
 from kc_core.config import load_agent_config
+from kc_core.messages import UserMessage, AssistantMessage
 from kc_core.ollama_client import OllamaClient
 from kc_core.tools import ToolRegistry
 
@@ -47,19 +48,28 @@ def main(
                 continue
 
             console.print(f"[bold magenta]{cfg.name}>[/] ", end="")
-            if stream:
-                from kc_core.messages import UserMessage, AssistantMessage
-                agent_obj.history.append(UserMessage(content=user))
-                buf = ""
-                wire = agent_obj._build_wire_messages()
-                async for delta in client.chat_stream(messages=wire, tools=[]):
-                    console.print(delta, end="")
-                    buf += delta
+            try:
+                if stream:
+                    agent_obj.history.append(UserMessage(content=user))
+                    buf = ""
+                    wire = agent_obj._build_wire_messages()
+                    async for delta in client.chat_stream(messages=wire, tools=[]):
+                        console.print(delta, end="")
+                        buf += delta
+                    console.print()
+                    agent_obj.history.append(AssistantMessage(content=buf))
+                else:
+                    reply = await agent_obj.send(user)
+                    console.print(Markdown(reply.content))
+            except Exception as e:
                 console.print()
-                agent_obj.history.append(AssistantMessage(content=buf))
-            else:
-                reply = await agent_obj.send(user)
-                console.print(Markdown(reply.content))
+                console.print(f"[bold red]error:[/] {type(e).__name__}: {e}")
+                console.print("[dim](type to retry, Ctrl-C to quit)[/]")
+                # Roll back the optimistic UserMessage append in the streaming branch
+                # so the next attempt doesn't double-stack the user turn.
+                if stream and agent_obj.history and isinstance(agent_obj.history[-1], UserMessage):
+                    agent_obj.history.pop()
+                continue
 
     asyncio.run(_run())
 
