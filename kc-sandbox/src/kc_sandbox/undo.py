@@ -1,0 +1,90 @@
+from __future__ import annotations
+import json
+import sqlite3
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Optional
+from kc_sandbox.journal import Journal
+from kc_sandbox.shares import SharesRegistry
+
+
+@dataclass
+class UndoEntry:
+    agent: str
+    tool: str
+    reverse_kind: str
+    reverse_payload: dict[str, Any]
+    id: Optional[int] = None
+    created_at: float = field(default_factory=time.time)
+    applied_at: Optional[float] = None
+
+
+class UndoLog:
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = Path(db_path)
+
+    def init(self) -> None:
+        with sqlite3.connect(self.db_path) as c:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS undo_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    reverse_kind TEXT NOT NULL,
+                    reverse_payload TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    applied_at REAL
+                )
+            """)
+
+    def record(self, e: UndoEntry) -> int:
+        with sqlite3.connect(self.db_path) as c:
+            cur = c.execute(
+                "INSERT INTO undo_log (agent, tool, reverse_kind, reverse_payload, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (e.agent, e.tool, e.reverse_kind, json.dumps(e.reverse_payload), e.created_at),
+            )
+            return int(cur.lastrowid)
+
+    def get(self, eid: int) -> UndoEntry:
+        with sqlite3.connect(self.db_path) as c:
+            row = c.execute(
+                "SELECT id, agent, tool, reverse_kind, reverse_payload, created_at, applied_at "
+                "FROM undo_log WHERE id = ?", (eid,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"undo entry {eid} not found")
+        return UndoEntry(
+            id=row[0], agent=row[1], tool=row[2], reverse_kind=row[3],
+            reverse_payload=json.loads(row[4]),
+            created_at=row[5], applied_at=row[6],
+        )
+
+    def mark_applied(self, eid: int) -> None:
+        with sqlite3.connect(self.db_path) as c:
+            c.execute("UPDATE undo_log SET applied_at = ? WHERE id = ?", (time.time(), eid))
+
+
+class Undoer:
+    def __init__(self, shares: SharesRegistry, journals: dict[str, Journal], log: UndoLog) -> None:
+        self.shares = shares
+        self.journals = journals
+        self.log = log
+
+    def undo(self, entry_id: int) -> None:
+        e = self.log.get(entry_id)
+        if e.applied_at is not None:
+            raise ValueError(f"undo {entry_id} already applied at {e.applied_at}")
+
+        if e.reverse_kind == "git-revert":
+            share = e.reverse_payload["share"]
+            sha = e.reverse_payload["sha"]
+            j = self.journals.get(share)
+            if j is None:
+                raise KeyError(f"no journal for share {share!r}")
+            j.revert(sha)
+            self.log.mark_applied(entry_id)
+            return
+
+        raise NotImplementedError(f"unknown reverse_kind: {e.reverse_kind!r}")
