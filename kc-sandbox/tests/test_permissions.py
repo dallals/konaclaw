@@ -90,3 +90,16 @@ def test_other_agent_override_does_not_apply():
     )
     d = eng.check(agent="kc", tool="file.delete", arguments={})
     assert d.allowed is False  # kc still destructive, callback denies
+
+
+@pytest.mark.asyncio
+async def test_engine_supports_async_callback():
+    async def async_allow(agent, tool, arguments):
+        return (True, None)
+    eng = PermissionEngine(
+        tier_map={"file.delete": Tier.DESTRUCTIVE},
+        agent_overrides={},
+        approval_callback=async_allow,
+    )
+    d = await eng.check_async(agent="kc", tool="file.delete", arguments={})
+    assert d.allowed is True
