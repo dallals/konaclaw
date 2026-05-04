@@ -90,3 +90,18 @@ def test_audit_undo_link_first_wins_on_conflict(tmp_path):
     s.link_audit_undo(aid, "op-original")
     s.link_audit_undo(aid, "op-replacement")  # different op_id, same audit
     assert s.get_undo_op_for_audit(aid) == "op-original"
+
+
+def test_get_conversation_returns_dict(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    cid = s.create_conversation(agent="kc", channel="dashboard")
+    conv = s.get_conversation(cid)
+    assert conv is not None
+    assert conv["id"] == cid
+    assert conv["agent"] == "kc"
+    assert conv["channel"] == "dashboard"
+
+
+def test_get_conversation_missing_returns_none(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    assert s.get_conversation(99999) is None

@@ -99,6 +99,15 @@ class Storage:
                 ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_conversation(self, conversation_id: int) -> Optional[dict]:
+        """Look up a single conversation by id. Returns None if not found."""
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT * FROM conversations WHERE id=?",
+                (conversation_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     # ----- messages -----
 
     def append_message(

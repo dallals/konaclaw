@@ -119,3 +119,31 @@ def test_ws_unexpected_inbound_type_emits_error_then_continues(app, deps, fake_c
                 if m["type"] == "assistant_complete":
                     break
             assert seen[-1]["content"] == "ok"
+
+
+def test_ws_user_message_with_empty_content_is_rejected(app, deps, fake_client_factory):
+    """An inbound user_message with empty/missing content should error, not run the agent."""
+    from kc_core.agent import Agent as CoreAgent
+    from kc_core.tools import ToolRegistry
+
+    fake = fake_client_factory(responses=[ChatResponse(text="should not be called", finish_reason="stop")])
+    rt = deps.registry.get("alice")
+    rt.core_agent = CoreAgent(
+        name="alice", client=fake, system_prompt=rt.system_prompt, tools=ToolRegistry(),
+    )
+
+    with TestClient(app) as client:
+        cid = client.post(
+            "/agents/alice/conversations", json={"channel": "dashboard"}
+        ).json()["conversation_id"]
+        with client.websocket_connect(f"/ws/chat/{cid}") as ws:
+            ws.send_json({"type": "user_message", "content": ""})
+            err = ws.receive_json()
+            assert err["type"] == "error"
+            assert "non-empty" in err["message"]
+
+    # The fake_client should not have been invoked
+    assert fake.calls == []
+    # No messages persisted
+    msgs = deps.conversations.list_messages(cid)
+    assert msgs == []

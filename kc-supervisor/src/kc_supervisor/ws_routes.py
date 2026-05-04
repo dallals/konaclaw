@@ -11,10 +11,7 @@ def register_ws_routes(app: FastAPI) -> None:
         await ws.accept()
         deps = app.state.deps
 
-        # Look up the conversation. (Storage doesn't expose a direct
-        # get_conversation(id) helper today — we scan recent ones.)
-        convs = deps.storage.list_conversations(limit=1000)
-        conv = next((c for c in convs if c["id"] == conversation_id), None)
+        conv = deps.storage.get_conversation(conversation_id)
         if conv is None:
             await ws.send_json({
                 "type": "error",
@@ -52,6 +49,12 @@ def register_ws_routes(app: FastAPI) -> None:
                     continue
 
                 content = inbound.get("content", "")
+                if not content:
+                    await ws.send_json({
+                        "type": "error",
+                        "message": "user_message must include non-empty content",
+                    })
+                    continue
                 deps.conversations.append(conversation_id, UserMessage(content=content))
                 rt.set_status(AgentStatus.THINKING)
                 await ws.send_json({"type": "agent_status", "status": "thinking"})
