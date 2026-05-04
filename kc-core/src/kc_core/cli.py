@@ -48,6 +48,19 @@ def main(
                 continue
 
             console.print(f"[bold magenta]{cfg.name}>[/] ", end="")
+            # NOTE: The streaming path below calls client.chat_stream directly,
+            # bypassing Agent.send() and therefore the tool ReAct loop. This is
+            # OK while kc-core has no tools wired (the registry is always empty
+            # at this point). When kc-sandbox or kc-mcp register real tools,
+            # this path needs to either:
+            #   (a) be replaced by a streaming-aware Agent.send_stream(), or
+            #   (b) fall back to non-streaming when the registry is non-empty.
+            # The assertion below makes the trap fail loudly until then.
+            if stream and agent_obj.tools.names():
+                raise NotImplementedError(
+                    "Streaming with tools not yet supported in kc-core. "
+                    "Pass --no-stream, or wait for kc-sandbox to wire this."
+                )
             try:
                 if stream:
                     agent_obj.history.append(UserMessage(content=user))
