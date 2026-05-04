@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio
+import inspect
 import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol
@@ -65,7 +65,7 @@ class Agent:
                 # the second loop alongside any allowed results.
                 if self.permission_check is not None:
                     result = self.permission_check(self.name, c["name"], c["arguments"])
-                    if asyncio.iscoroutine(result):
+                    if inspect.iscoroutine(result):
                         result = await result
                     allowed, reason = result
                     if not allowed:
