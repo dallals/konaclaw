@@ -48,6 +48,8 @@ def register_http_routes(app: FastAPI) -> None:
 
     @app.get("/conversations/{cid}/messages")
     def list_messages(cid: int):
+        if app.state.deps.storage.get_conversation(cid) is None:
+            raise HTTPException(404, detail=f"unknown conversation: {cid}")
         msgs = app.state.deps.conversations.list_messages(cid)
         return {"messages": [_message_to_dict(m) for m in msgs]}
 

@@ -97,3 +97,10 @@ def test_undo_returns_501(app, deps):
         r = client.post(f"/undo/{aid}")
     assert r.status_code == 501
     assert "not yet wired" in r.json()["detail"]
+
+
+def test_list_messages_unknown_cid_returns_404(app):
+    with TestClient(app) as client:
+        r = client.get("/conversations/99999/messages")
+    assert r.status_code == 404
+    assert "unknown conversation" in r.json()["detail"]

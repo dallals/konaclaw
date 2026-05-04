@@ -41,7 +41,7 @@ See `SMOKE.md` for the manual end-to-end checklist.
 ## Environment
 
 - `KC_HOME` — root for `agents/`, `data/`, `config/` (default `~/KonaClaw`)
-- `KC_OLLAMA_URL` — Ollama URL (default `http://localhost:11434`); consumed by kc-core when production wiring lands in v0.2
+- `KC_OLLAMA_URL` — Ollama URL (default `http://localhost:11434`); placeholder, unread in v1 and consumed by kc-core when production wiring lands in v0.2
 - `KC_DEFAULT_MODEL` — default model name (default `qwen2.5:7b`)
 - `KC_PORT` — bind port (default `8765`)
 
