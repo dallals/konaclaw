@@ -93,3 +93,22 @@ async def test_chat_omits_authorization_header_when_no_api_key():
     await client.chat(messages=[], tools=[])
     assert route.called
     assert "authorization" not in {k.lower() for k in route.calls.last.request.headers.keys()}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_yields_text_deltas():
+    sse = (
+        b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":"!"},"finish_reason":"stop"}]}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=Response(200, content=sse, headers={"content-type": "text/event-stream"})
+    )
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma3:4b")
+    chunks = []
+    async for c in client.chat_stream(messages=[], tools=[]):
+        chunks.append(c)
+    assert "".join(chunks) == "Hello!"

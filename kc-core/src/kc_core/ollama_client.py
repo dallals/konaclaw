@@ -80,3 +80,44 @@ class OllamaClient:
             finish_reason=data["choices"][0].get("finish_reason", ""),
             raw=data,
         )
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ):
+        """Async generator yielding text deltas. Tool calls are not surfaced
+        via the stream — for tool execution use chat() in the agent loop.
+        """
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+        }
+        if tools:
+            body["tools"] = tools
+
+        async with httpx.AsyncClient(timeout=self._timeout) as http:
+            async with http.stream(
+                "POST",
+                self._completions_url,
+                json=body,
+                headers=self._headers(),
+            ) as r:
+                if r.status_code != 200:
+                    body_bytes = await r.aread()
+                    raise RuntimeError(f"Ollama returned {r.status_code}: {body_bytes!r}")
+                async for line in r.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[len("data: "):]
+                    if payload.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    text = delta.get("content")
+                    if text:
+                        yield text
