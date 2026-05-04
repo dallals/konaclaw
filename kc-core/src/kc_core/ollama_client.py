@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 import httpx
+from kc_core.stream_frames import TextDelta, ToolCallsBlock, Done
 
 
 @dataclass
@@ -53,8 +54,6 @@ class OllamaClient:
         (function.arguments is split across deltas). We accumulate them per index
         and emit ONE ToolCallsBlock when finish_reason='tool_calls' is seen.
         """
-        from kc_core.stream_frames import TextDelta, ToolCallsBlock, Done
-
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
