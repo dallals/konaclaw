@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 from kc_sandbox.journal import Journal
-from kc_sandbox.shares import SharesRegistry
 
 
 @dataclass
@@ -39,11 +38,17 @@ class UndoLog:
             """)
 
     def record(self, e: UndoEntry) -> int:
+        try:
+            payload_json = json.dumps(e.reverse_payload)
+        except TypeError as exc:
+            raise ValueError(
+                f"reverse_payload for entry ({e.agent}/{e.tool}) is not JSON-serializable: {exc}"
+            ) from exc
         with sqlite3.connect(self.db_path) as c:
             cur = c.execute(
                 "INSERT INTO undo_log (agent, tool, reverse_kind, reverse_payload, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (e.agent, e.tool, e.reverse_kind, json.dumps(e.reverse_payload), e.created_at),
+                (e.agent, e.tool, e.reverse_kind, payload_json, e.created_at),
             )
             return int(cur.lastrowid)
 
@@ -63,12 +68,15 @@ class UndoLog:
 
     def mark_applied(self, eid: int) -> None:
         with sqlite3.connect(self.db_path) as c:
-            c.execute("UPDATE undo_log SET applied_at = ? WHERE id = ?", (time.time(), eid))
+            cur = c.execute(
+                "UPDATE undo_log SET applied_at = ? WHERE id = ?", (time.time(), eid)
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"undo entry {eid} not found")
 
 
 class Undoer:
-    def __init__(self, shares: SharesRegistry, journals: dict[str, Journal], log: UndoLog) -> None:
-        self.shares = shares
+    def __init__(self, journals: dict[str, Journal], log: UndoLog) -> None:
         self.journals = journals
         self.log = log
 
