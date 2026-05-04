@@ -1,0 +1,7 @@
+name: echo-agent
+model: gemma3:4b
+system_prompt: |
+  You are echo-agent. When asked, repeat the user's input back to them.
+shares: []          # not used in kc-core, ignored
+tools: []           # not used in kc-core, ignored
+spawn_policy: persistent
