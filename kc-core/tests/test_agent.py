@@ -144,3 +144,51 @@ async def test_agent_serializes_multiple_tool_calls_as_one_assistant_message(fak
     assert relevant[0]["tool_calls"][1]["id"] == "c2"
     assert relevant[1] == {"role": "tool", "tool_call_id": "c1", "content": "first"}
     assert relevant[2] == {"role": "tool", "tool_call_id": "c2", "content": "second"}
+
+
+@pytest.mark.asyncio
+async def test_agent_permission_check_can_deny_tool(fake_ollama):
+    client = fake_ollama(
+        ChatResponse(
+            text="",
+            tool_calls=[{"id": "c1", "name": "echo", "arguments": {"text": "hi"}}],
+            finish_reason="tool_calls",
+        ),
+        ChatResponse(text="couldn't run it", finish_reason="stop"),
+    )
+    reg = ToolRegistry()
+    reg.register(Tool(name="echo", description="", parameters={}, impl=lambda text: text))
+
+    seen_calls = []
+    def deny_all(agent_name: str, tool_name: str, arguments: dict) -> tuple[bool, str | None]:
+        seen_calls.append((agent_name, tool_name, arguments))
+        return (False, "this is a test")
+
+    agent = Agent(
+        name="kc", client=client, system_prompt="sys", tools=reg,
+        permission_check=deny_all,
+    )
+    reply = await agent.send("please echo hi")
+    assert reply.content == "couldn't run it"
+    # The denied tool result should have been surfaced back to the model
+    second = client.calls[1]["messages"]
+    err = next(m for m in second if m["role"] == "tool")
+    assert "Denied" in err["content"]
+    assert seen_calls == [("kc", "echo", {"text": "hi"})]
+
+
+@pytest.mark.asyncio
+async def test_agent_no_permission_check_allows_all(fake_ollama):
+    client = fake_ollama(
+        ChatResponse(
+            text="",
+            tool_calls=[{"id": "c1", "name": "echo", "arguments": {"text": "hi"}}],
+            finish_reason="tool_calls",
+        ),
+        ChatResponse(text="done", finish_reason="stop"),
+    )
+    reg = ToolRegistry()
+    reg.register(Tool(name="echo", description="", parameters={}, impl=lambda text: text))
+    agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg)
+    reply = await agent.send("echo")
+    assert reply.content == "done"

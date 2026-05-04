@@ -1,13 +1,17 @@
 from __future__ import annotations
 import json
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Optional, Protocol
 from kc_core.messages import (
     UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
     Message, to_openai_dict,
 )
 from kc_core.tools import ToolRegistry
 from kc_core.tool_call_parser import parse_text_tool_calls
+
+
+PermissionCheck = Callable[[str, str, dict[str, Any]], tuple[bool, Optional[str]]]
+# (agent_name, tool_name, arguments) -> (allowed, optional_deny_reason)
 
 
 class _ChatClient(Protocol):
@@ -23,6 +27,7 @@ class Agent:
     tools: ToolRegistry
     max_tool_iterations: int = 10
     history: list[Message] = field(default_factory=list)
+    permission_check: Optional[PermissionCheck] = None
 
     async def send(self, user_text: str) -> AssistantMessage:
         self.history.append(UserMessage(content=user_text))
@@ -54,6 +59,14 @@ class Agent:
                     tool_name=c["name"],
                     arguments=c["arguments"],
                 ))
+                # NEW: permission check — short-circuits before tool execution.
+                # On deny, push the deny message into `results` so it lands in
+                # the second loop alongside any allowed results.
+                if self.permission_check is not None:
+                    allowed, reason = self.permission_check(self.name, c["name"], c["arguments"])
+                    if not allowed:
+                        results.append((c["id"], f"Denied: {reason or 'permission_check returned False'}"))
+                        continue
                 try:
                     result = self.tools.invoke(c["name"], c["arguments"])
                     content = str(result)
