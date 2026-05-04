@@ -2,8 +2,9 @@ from __future__ import annotations
 from pathlib import Path
 from kc_core.tools import Tool
 from kc_sandbox.journal import Journal
+from kc_sandbox.permissions import Tier
 from kc_sandbox.shares import SharesRegistry, ShareError
-from kc_sandbox.undo import UndoLog, UndoEntry
+from kc_sandbox.undo import UndoEntry, UndoLog
 
 
 def build_file_tools(
@@ -23,6 +24,8 @@ def build_file_tools(
     # ---- READ ----
     def file_read(share: str, relpath: str) -> str:
         p = shares.resolve(share, relpath)
+        if not p.is_file():
+            raise ShareError(f"{relpath}: not a file in share {share!r}")
         try:
             return p.read_text(encoding="utf-8")
         except UnicodeDecodeError as e:
@@ -46,7 +49,7 @@ def build_file_tools(
             raise ShareError(f"share {share!r} is read-only")
         p = shares.resolve(share, relpath)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content)
+        p.write_text(content, encoding="utf-8")
         sha = _journal_for(share).commit(
             message=f"file.write {share}/{relpath}",
             author_agent=agent_name,
@@ -137,8 +140,6 @@ def build_file_tools(
 
 
 # Tier mapping for these tools — consumed by PermissionEngine
-from kc_sandbox.permissions import Tier
-
 DEFAULT_FILE_TOOL_TIERS: dict[str, Tier] = {
     "file.read":   Tier.SAFE,
     "file.list":   Tier.SAFE,

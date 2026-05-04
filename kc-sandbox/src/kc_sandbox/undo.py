@@ -24,6 +24,15 @@ class UndoLog:
         self.db_path = Path(db_path)
 
     def init(self) -> None:
+        """Create the undo_log table if it doesn't exist.
+
+        Schema note (deviation from umbrella spec): the spec calls for an
+        `audit_id` FK into a future `audit` table. kc-sandbox v1 has no
+        audit table yet, so this layer keeps the entries self-contained
+        with `agent`, `tool`, and `created_at` columns instead. When
+        kc-supervisor introduces the audit table, decide whether to add
+        an `audit_id` column here or link via a separate join table.
+        """
         with sqlite3.connect(self.db_path) as c:
             c.execute("""
                 CREATE TABLE IF NOT EXISTS undo_log (
