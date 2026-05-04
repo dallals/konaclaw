@@ -30,6 +30,8 @@ class Journal:
             raise JournalError(
                 f"git {' '.join(args)} failed (exit {e.returncode}): {e.stderr.strip()}"
             ) from e
+        except FileNotFoundError as e:
+            raise JournalError("git binary not found on PATH") from e
 
     def init(self) -> None:
         if self.git_dir.is_dir():
@@ -43,12 +45,21 @@ class Journal:
         self._git("commit", "--allow-empty", "--quiet", "-m", "init journal")
 
     def commit(self, message: str, author_agent: str, paths: Iterable[Path]) -> str:
-        rel = [Path(p).resolve().relative_to(self.root).as_posix() for p in paths]
+        paths = list(paths)
+        if not paths:
+            raise JournalError("commit() requires at least one path")
+        try:
+            rel = [Path(p).resolve().relative_to(self.root).as_posix() for p in paths]
+        except ValueError as e:
+            raise JournalError(f"path outside share root: {e}") from e
+        # Defensive: control chars in author_agent silently corrupt the
+        # author name in the commit object. Strip them.
+        safe_agent = author_agent.replace("\n", " ").replace("\r", " ").strip()
         # `git add --all -- <paths>` covers create, modify, AND delete.
         self._git("add", "--all", "--", *rel)
         # Per-call author override so the commit reflects which agent acted.
         self._git(
-            "-c", f"user.name=konaclaw {author_agent}",
+            "-c", f"user.name=konaclaw {safe_agent}",
             "commit", "--allow-empty", "--quiet", "-m", message,
         )
         return self._git("rev-parse", "HEAD").stdout.strip()

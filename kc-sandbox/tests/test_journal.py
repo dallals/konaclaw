@@ -49,7 +49,16 @@ def test_revert_restores_deleted_file(tmp_path):
     assert f.read_text() == "hello\n"
 
 
-def test_journal_dir_excluded_from_listing(tmp_path):
+def test_init_creates_no_dotgit_artifact(tmp_path):
+    """Privacy invariant: share root must NEVER contain a .git dir/file —
+    the journal is at .kc-journal/ specifically to keep the share looking like
+    a normal directory to the user."""
     j = Journal(share_root=tmp_path)
     j.init()
-    assert ".kc-journal" not in [p.name for p in tmp_path.iterdir() if p.name != ".kc-journal"]
+    assert not (tmp_path / ".git").exists()
+    assert (tmp_path / ".kc-journal").is_dir()
+    # Also after a commit
+    f = tmp_path / "x.md"
+    f.write_text("hi\n")
+    j.commit(message="x", author_agent="kc", paths=[f])
+    assert not (tmp_path / ".git").exists()
