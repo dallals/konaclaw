@@ -6,7 +6,7 @@
 
 **Architecture:** A separate Python package `kc_sandbox` that depends on `kc_core` via local install. Adds (1) a one-line hook in `kc_core.Agent` so a permission check can fire before any tool runs (the only kc-core change in this plan), (2) a `SharesRegistry` that resolves `share + relpath` safely, (3) a `PermissionEngine` that classifies every tool call by tier and consults per-agent overrides, (4) a set of sandboxed `file.*` tools that take a share + relpath, (5) a git-backed `Journal` that commits every mutating op, and (6) an `UndoLog` (SQLite) + `Undoer` that can reverse file ops.
 
-**Tech Stack:** Python 3.11+, depends on `kc-core` (sub-project 1). Adds [GitPython](https://gitpython.readthedocs.io/) for journal commits, stdlib `sqlite3` for the undo log, [pydantic](https://docs.pydantic.dev/) v2 for config models. Tests use pytest + `tmp_path` for filesystem isolation.
+**Tech Stack:** Python 3.11+, depends on `kc-core` (sub-project 1). Uses stdlib `subprocess` to drive system `git` for the per-share journal (no GitPython — keeps the dep tree minimal and avoids a fragile `.git`/`.kc-journal` rename pattern), stdlib `sqlite3` for the undo log, stdlib `dataclasses` for all config/model objects (matching kc-core's choice — pydantic is not used). Tests use pytest + `tmp_path` for filesystem isolation. Requires the `git` binary on `PATH`.
 
 **Repo bootstrap:** Build in `~/Desktop/claudeCode/SammyClaw/kc-sandbox/` alongside `kc-core/`. The two repos sit side-by-side; `kc-sandbox` installs `kc-core` in editable mode (`pip install -e ../kc-core`).
 
@@ -76,8 +76,6 @@ description = "KonaClaw sandbox: shares, permissions, undo"
 requires-python = ">=3.11"
 dependencies = [
     "kc-core",
-    "GitPython>=3.1",
-    "pydantic>=2.6",
     "pyyaml>=6.0",
 ]
 
@@ -139,7 +137,7 @@ Depends on `kc-core`. See umbrella spec for context.
 ## Install (dev)
 
     cd ~/Desktop/claudeCode/SammyClaw/kc-sandbox
-    python3.11 -m venv .venv
+    python3 -m venv .venv
     source .venv/bin/activate
     pip install -e ../kc-core
     pip install -e ".[dev]"
@@ -148,7 +146,7 @@ Depends on `kc-core`. See umbrella spec for context.
 - [ ] **Step 6: Create venv, install both packages, verify import**
 
 ```bash
-python3.11 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ../kc-core
 pip install -e ".[dev]"
@@ -254,36 +252,40 @@ class Agent:
     permission_check: Optional[PermissionCheck] = None   # <-- new
 ```
 
-Update the tool-execution branch in `_run_loop`:
+Update the tool-execution branch in `_run_loop`. The existing code records ALL `ToolCallMessage`s first, then ALL `ToolResultMessage`s — this is load-bearing because `_build_wire_messages()` collects consecutive `ToolCallMessage`s into a single OpenAI assistant message. The permission check must preserve that two-pass structure: insert it INSIDE the existing `for c in calls:` loop, before `self.tools.invoke(...)`, and on deny append the deny string to the local `results` list (do NOT append a `ToolResultMessage` directly to `self.history` and do NOT add a second results loop):
 
 ```python
+            results: list[tuple[str, str]] = []
             for c in calls:
                 self.history.append(ToolCallMessage(
                     tool_call_id=c["id"],
                     tool_name=c["name"],
                     arguments=c["arguments"],
                 ))
-                # NEW: permission check
+                # NEW: permission check — short-circuits before tool execution.
+                # On deny, push the deny message into `results` so it lands in
+                # the second loop alongside any allowed results.
                 if self.permission_check is not None:
                     allowed, reason = self.permission_check(self.name, c["name"], c["arguments"])
                     if not allowed:
-                        self.history.append(ToolResultMessage(
-                            tool_call_id=c["id"],
-                            content=f"Denied: {reason or 'permission_check returned False'}",
-                        ))
+                        results.append((c["id"], f"Denied: {reason or 'permission_check returned False'}"))
                         continue
                 try:
                     result = self.tools.invoke(c["name"], c["arguments"])
                     content = str(result)
-                except KeyError as e:
+                except KeyError:
                     content = f"Error: unknown_tool: {c['name']}"
                 except Exception as e:
                     content = f"Error: {type(e).__name__}: {e}"
+                results.append((c["id"], content))
+            for call_id, content in results:
                 self.history.append(ToolResultMessage(
-                    tool_call_id=c["id"],
+                    tool_call_id=call_id,
                     content=content,
                 ))
 ```
+
+Note: leave the second `for call_id, content in results:` loop unchanged from the existing implementation — only the `for c in calls:` loop changes (added permission check, replaced direct `self.history.append(ToolResultMessage(...))` with `results.append(...)`).
 
 - [ ] **Step 4: Run all kc-core tests to verify nothing regressed**
 
@@ -674,9 +676,9 @@ git commit -m "feat(kc-sandbox): add tiered permission engine with overrides"
 - Create: `src/kc_sandbox/journal.py`
 - Test: `tests/test_journal.py`
 
-**Why:** Every mutating file op becomes one commit in a hidden git repo inside the share root. This gives us free history and free `git revert`-based undo. The journal repo lives at `<share_root>/.kc-journal/` so it stays inside the share (not a separate location to lose).
+**Why:** Every mutating file op becomes one commit in a per-share git directory at `<share_root>/.kc-journal/`. This gives us free history and free `git revert`-based undo.
 
-Wait — actually that doesn't work, because we want the journaled files to BE the share contents. The journal needs to track the share root itself. Plan: the share root *is* a git working tree, with `.kc-journal/` as the `.git` directory (via `git --git-dir=.kc-journal --work-tree=.` style invocations, or just initialize a normal `.git` and rename it). For simplicity and least-surprise, we use a normal `.git/` named `.kc-journal/` via `GIT_DIR` env var so the share root looks normal to the user.
+**Approach:** the share root is the git work tree; `.kc-journal/` is the git directory. We drive plain `git` via `subprocess`, passing `--git-dir=<share>/.kc-journal --work-tree=<share>` on every call. There is **no** `.git` directory or file in the share root — the user sees a normal directory. This avoids both GitPython (one less dep) and any rename trick (no risk of leaving the share in an inconsistent state on crash). Requires `git` on `PATH`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -749,13 +751,22 @@ Expected: FAIL — module missing.
 ```python
 # src/kc_sandbox/journal.py
 from __future__ import annotations
+import subprocess
 from pathlib import Path
 from typing import Iterable
-import git  # GitPython
+
+
+class JournalError(Exception):
+    pass
 
 
 class Journal:
-    """A per-share git journal stored at <share_root>/.kc-journal/."""
+    """A per-share git journal stored at <share_root>/.kc-journal/.
+
+    No .git directory or file is created in the share root. All git
+    invocations pass --git-dir and --work-tree explicitly, so the share
+    root looks like a normal directory to the user.
+    """
 
     JOURNAL_DIR_NAME = ".kc-journal"
 
@@ -763,126 +774,57 @@ class Journal:
         self.root = Path(share_root).resolve()
         self.git_dir = self.root / self.JOURNAL_DIR_NAME
 
-    def init(self) -> None:
-        if self.git_dir.is_dir():
-            return  # already initialized
-        repo = git.Repo.init(self.root, bare=False)
-        # Move the auto-created .git dir to .kc-journal so the share root
-        # doesn't look like a normal git repo to the user.
-        default_git = self.root / ".git"
-        if default_git.exists() and default_git != self.git_dir:
-            default_git.rename(self.git_dir)
-        # Configure author (no GPG, no signing)
-        with self._repo() as repo:
-            with repo.config_writer() as cw:
-                cw.set_value("user", "name", "konaclaw")
-                cw.set_value("user", "email", "konaclaw@local")
-                cw.set_value("commit", "gpgsign", "false")
-            # Make an empty initial commit so revert always has a parent
-            repo.index.commit("init journal", author=git.Actor("konaclaw", "konaclaw@local"))
+    def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        cmd = ["git", f"--git-dir={self.git_dir}", f"--work-tree={self.root}", *args]
+        try:
+            return subprocess.run(cmd, check=check, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            raise JournalError(
+                f"git {' '.join(args)} failed (exit {e.returncode}): {e.stderr.strip()}"
+            ) from e
 
-    def _repo(self) -> git.Repo:
-        return git.Repo(self.root, search_parent_directories=False, odbt=git.GitCmdObjectDB)
-
-    def commit(self, message: str, author_agent: str, paths: Iterable[Path]) -> str:
-        repo = self._repo()
-        # Stage every path passed in (whether it exists, was modified, or deleted)
-        rel_paths = []
-        for p in paths:
-            rp = Path(p).resolve().relative_to(self.root).as_posix()
-            rel_paths.append(rp)
-        repo.git.add("--all", *rel_paths)
-        actor = git.Actor(f"konaclaw {author_agent}", "konaclaw@local")
-        c = repo.index.commit(message, author=actor, committer=actor)
-        return c.hexsha
-
-    def revert(self, sha: str) -> str:
-        """Revert the given commit. Returns the new commit's sha."""
-        repo = self._repo()
-        actor = git.Actor("konaclaw undo", "konaclaw@local")
-        # Use plumbing-ish flow: git revert --no-edit
-        repo.git.revert(sha, no_edit=True)
-        # Find the just-created revert commit
-        return repo.head.commit.hexsha
-
-    def log(self) -> list[dict]:
-        repo = self._repo()
-        out = []
-        for c in repo.iter_commits():
-            out.append({
-                "sha": c.hexsha,
-                "message": c.message.strip(),
-                "author": c.author.name,
-            })
-        return out
-```
-
-Override the `git_dir` semantics with a small helper — git on disk needs to know the `.git` location. The simplest portable trick is: rename `.git` ↔ `.kc-journal` around each operation. Update `_repo` and the relevant ops to use a context manager:
-
-```python
-from contextlib import contextmanager
-
-
-    @contextmanager
-    def _gitdir_active(self):
-        """Temporarily rename .kc-journal -> .git for the duration of the block."""
-        active = self.root / ".git"
-        if not active.exists() and self.git_dir.exists():
-            self.git_dir.rename(active)
-            try:
-                yield
-            finally:
-                if active.exists():
-                    active.rename(self.git_dir)
-        else:
-            yield  # already active or not initialized
-
-    def _repo(self) -> git.Repo:
-        return git.Repo(self.root, search_parent_directories=False)
-
-    # And wrap each public method:
-    def commit(self, message, author_agent, paths) -> str:
-        with self._gitdir_active():
-            repo = self._repo()
-            rel_paths = [Path(p).resolve().relative_to(self.root).as_posix() for p in paths]
-            repo.git.add("--all", *rel_paths)
-            actor = git.Actor(f"konaclaw {author_agent}", "konaclaw@local")
-            return repo.index.commit(message, author=actor, committer=actor).hexsha
-
-    def revert(self, sha) -> str:
-        with self._gitdir_active():
-            repo = self._repo()
-            repo.git.revert(sha, no_edit=True)
-            return repo.head.commit.hexsha
-
-    def log(self) -> list[dict]:
-        with self._gitdir_active():
-            repo = self._repo()
-            return [{"sha": c.hexsha, "message": c.message.strip(), "author": c.author.name}
-                    for c in repo.iter_commits()]
-```
-
-Replace the `init` body to leave `.kc-journal` as the resting state:
-
-```python
     def init(self) -> None:
         if self.git_dir.is_dir():
             return
-        # Initialize then rename .git -> .kc-journal
-        repo = git.Repo.init(self.root, bare=False)
-        with repo.config_writer() as cw:
-            cw.set_value("user", "name", "konaclaw")
-            cw.set_value("user", "email", "konaclaw@local")
-            cw.set_value("commit", "gpgsign", "false")
-        repo.index.commit("init journal", author=git.Actor("konaclaw", "konaclaw@local"))
-        default_git = self.root / ".git"
-        default_git.rename(self.git_dir)
+        self.git_dir.mkdir(parents=True)
+        self._git("init", "--quiet", "--initial-branch=main")
+        self._git("config", "user.name", "konaclaw")
+        self._git("config", "user.email", "konaclaw@local")
+        self._git("config", "commit.gpgsign", "false")
+        # Empty initial commit so revert always has a parent.
+        self._git("commit", "--allow-empty", "--quiet", "-m", "init journal")
+
+    def commit(self, message: str, author_agent: str, paths: Iterable[Path]) -> str:
+        rel = [Path(p).resolve().relative_to(self.root).as_posix() for p in paths]
+        # `git add --all -- <paths>` covers create, modify, AND delete.
+        self._git("add", "--all", "--", *rel)
+        # Per-call author override so the commit reflects which agent acted.
+        self._git(
+            "-c", f"user.name=konaclaw {author_agent}",
+            "commit", "--allow-empty", "--quiet", "-m", message,
+        )
+        return self._git("rev-parse", "HEAD").stdout.strip()
+
+    def revert(self, sha: str) -> str:
+        """Revert the given commit. Returns the new commit's SHA."""
+        self._git("revert", "--no-edit", sha)
+        return self._git("rev-parse", "HEAD").stdout.strip()
+
+    def log(self) -> list[dict]:
+        out = self._git("log", "--pretty=format:%H%x1f%an%x1f%s").stdout
+        entries: list[dict] = []
+        for line in out.splitlines():
+            if not line:
+                continue
+            sha, author, msg = line.split("\x1f", 2)
+            entries.append({"sha": sha, "message": msg, "author": author})
+        return entries
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 `pytest tests/test_journal.py -v`
-Expected: PASS — all 6 tests green. (If `revert` fails on a delete-restoration with the default conflict resolver, switch to `repo.git.revert(sha, no_edit=True, strategy_option="theirs")`.)
+Expected: PASS — all 6 tests green. (If `git revert` complains on a delete-restoration, the fix is to add `--strategy-option=theirs` to the `revert` call: `self._git("revert", "--no-edit", "--strategy-option=theirs", sha)`.)
 
 - [ ] **Step 5: Commit**
 
@@ -1344,7 +1286,7 @@ git commit -m "feat(kc-sandbox): add sandboxed file.* tools with journal + undo"
 ```yaml
 # tests/fixtures/agents/filebot.yaml
 name: filebot
-model: llama3.1
+model: gemma3:4b
 system_prompt: |
   You are filebot. You can read, list, write, and delete files inside the user's
   shares using file.read, file.list, file.write, file.delete. Always use a share
@@ -1464,7 +1406,7 @@ def build_sandboxed_agent(
     approval_callback: ApprovalCallback,
     default_model: str | None = None,
 ) -> Agent:
-    cfg = load_agent_config(agent_yaml, default_model=default_model or "llama3.1")
+    cfg = load_agent_config(agent_yaml, default_model=default_model or "gemma3:4b")
     shares = SharesRegistry.from_yaml(shares_yaml)
 
     # Init a journal for every share + a single undo log
@@ -1550,7 +1492,7 @@ agent = build_sandboxed_agent(
     agent_yaml=Path("tests/fixtures/agents/filebot.yaml"),
     shares_yaml=tmp / "shares.yaml",
     undo_db=tmp / "undo.db",
-    client=OllamaClient(model="llama3.1"),
+    client=OllamaClient(model="gemma3:4b"),
     approval_callback=AlwaysAllow(),
 )
 
@@ -1607,7 +1549,7 @@ Depends on `kc-core` (sub-project 1). See the umbrella spec at
 ## Install (dev)
 
     cd ~/Desktop/claudeCode/SammyClaw/kc-sandbox
-    python3.11 -m venv .venv
+    python3 -m venv .venv
     source .venv/bin/activate
     pip install -e ../kc-core
     pip install -e ".[dev]"
