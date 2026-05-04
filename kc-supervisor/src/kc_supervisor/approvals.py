@@ -1,8 +1,11 @@
 from __future__ import annotations
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -38,6 +41,10 @@ class ApprovalBroker:
 
     Subscriber exceptions are swallowed — a misbehaving subscriber must not
     block an approval flow.
+
+    The broker assumes all callers run on the same asyncio event loop —
+    ``resolve()`` calls ``Future.set_result`` directly and is not thread-safe.
+    For v1 this holds (all callers are WebSocket handlers on the FastAPI loop).
     """
 
     def __init__(self) -> None:
@@ -65,7 +72,7 @@ class ApprovalBroker:
             try:
                 sub.callback(req)
             except Exception:
-                pass
+                logger.exception("approval subscriber raised; ignoring")
         try:
             return await fut
         finally:
@@ -73,7 +80,10 @@ class ApprovalBroker:
             self._requests.pop(request_id, None)
 
     def resolve(self, request_id: str, allowed: bool, reason: Optional[str]) -> None:
-        """Fulfill an outstanding approval. Unknown request_ids are silently ignored."""
+        """Fulfill an outstanding approval. Unknown request_ids are silently ignored.
+
+        Must be called from the same event loop that owns the future. Not thread-safe.
+        """
         fut = self._futures.get(request_id)
         if fut is None or fut.done():
             return

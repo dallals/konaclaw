@@ -39,11 +39,21 @@ async def test_resolve_unknown_request_id_is_no_op():
 @pytest.mark.asyncio
 async def test_pending_lists_open_requests():
     b = ApprovalBroker()
-    asyncio.create_task(b.request_approval(agent="kc", tool="x", arguments={}))
-    asyncio.create_task(b.request_approval(agent="kc", tool="y", arguments={}))
-    await asyncio.sleep(0)
-    p = b.pending()
-    assert len(p) == 2
+    t1 = asyncio.create_task(b.request_approval(agent="kc", tool="x", arguments={}))
+    t2 = asyncio.create_task(b.request_approval(agent="kc", tool="y", arguments={}))
+    try:
+        await asyncio.sleep(0)
+        p = b.pending()
+        assert len(p) == 2
+    finally:
+        t1.cancel()
+        t2.cancel()
+        # swallow CancelledError when awaiting cancelled tasks
+        for t in (t1, t2):
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 
 @pytest.mark.asyncio
@@ -52,6 +62,13 @@ async def test_unsubscribe_stops_notifications():
     seen = []
     handle = b.subscribe(lambda req: seen.append(req))
     handle.unsubscribe()
-    asyncio.create_task(b.request_approval(agent="kc", tool="x", arguments={}))
-    await asyncio.sleep(0)
-    assert seen == []
+    t = asyncio.create_task(b.request_approval(agent="kc", tool="x", arguments={}))
+    try:
+        await asyncio.sleep(0)
+        assert seen == []
+    finally:
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
