@@ -2,13 +2,17 @@ from __future__ import annotations
 import inspect
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, AsyncIterator, Callable, Optional, Protocol
 from kc_core.messages import (
     UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
     Message, to_openai_dict,
 )
 from kc_core.tools import ToolRegistry
 from kc_core.tool_call_parser import parse_text_tool_calls
+from kc_core.stream_frames import (
+    ChatStreamFrame, TextDelta, ToolCallsBlock, Done,
+    StreamFrame, TokenDelta, ToolCallStart, ToolResult, Complete,
+)
 
 
 PermissionCheck = Callable[[str, str, dict[str, Any]], tuple[bool, Optional[str]]]
@@ -18,6 +22,9 @@ PermissionCheck = Callable[[str, str, dict[str, Any]], tuple[bool, Optional[str]
 class _ChatClient(Protocol):
     model: str
     async def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]): ...
+    def chat_stream(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> AsyncIterator[ChatStreamFrame]: ...
 
 
 @dataclass
@@ -33,6 +40,81 @@ class Agent:
     async def send(self, user_text: str) -> AssistantMessage:
         self.history.append(UserMessage(content=user_text))
         return await self._run_loop()
+
+    async def send_stream(self, user_text: str) -> AsyncIterator[StreamFrame]:
+        """Streaming variant of send(). Yields StreamFrame objects as the model produces them.
+
+        Same ReAct loop semantics as send: permission denial preserved (deny path appends
+        'Denied: ...' tool result and continues); multi-tool-call serialization invariant
+        preserved (all ToolCallMessages first, then all ToolResultMessages).
+        """
+        self.history.append(UserMessage(content=user_text))
+        for _ in range(self.max_tool_iterations + 1):
+            wire = self._build_wire_messages()
+            text_parts: list[str] = []
+            tool_calls_block: list[dict[str, Any]] | None = None
+
+            # Drain one model turn from chat_stream
+            async for cs_frame in self.client.chat_stream(messages=wire, tools=self.tools.to_openai_schema()):
+                if isinstance(cs_frame, TextDelta):
+                    text_parts.append(cs_frame.content)
+                    yield TokenDelta(content=cs_frame.content)
+                elif isinstance(cs_frame, ToolCallsBlock):
+                    tool_calls_block = cs_frame.calls
+                elif isinstance(cs_frame, Done):
+                    pass  # finish_reason consumed via the block end
+
+            # Decide next phase: native tool calls, JSON-in-text fallback, or terminate
+            calls: list[dict[str, Any]] = list(tool_calls_block) if tool_calls_block else []
+            full_text = "".join(text_parts)
+            if not calls and full_text:
+                calls = parse_text_tool_calls(full_text, known_tools=self.tools.names())
+
+            if not calls:
+                reply = AssistantMessage(content=full_text)
+                self.history.append(reply)
+                yield Complete(reply=reply)
+                return
+
+            # Record all tool calls in history first, then tool results.
+            # This matches send()'s ordering invariant.
+            results: list[tuple[str, str]] = []
+            for c in calls:
+                self.history.append(ToolCallMessage(
+                    tool_call_id=c["id"],
+                    tool_name=c["name"],
+                    arguments=c["arguments"],
+                ))
+                yield ToolCallStart(call=c)
+
+                if self.permission_check is not None:
+                    pc_result = self.permission_check(self.name, c["name"], c["arguments"])
+                    if inspect.iscoroutine(pc_result):
+                        pc_result = await pc_result
+                    allowed, reason = pc_result
+                    if not allowed:
+                        deny_msg = f"Denied: {reason or 'permission_check returned False'}"
+                        results.append((c["id"], deny_msg))
+                        yield ToolResult(call_id=c["id"], content=deny_msg)
+                        continue
+
+                try:
+                    result = self.tools.invoke(c["name"], c["arguments"])
+                    content = str(result)
+                except KeyError:
+                    content = f"Error: unknown_tool: {c['name']}"
+                except Exception as e:
+                    content = f"Error: {type(e).__name__}: {e}"
+                results.append((c["id"], content))
+                yield ToolResult(call_id=c["id"], content=content)
+
+            for call_id, content in results:
+                self.history.append(ToolResultMessage(
+                    tool_call_id=call_id,
+                    content=content,
+                ))
+            # loop continues — call the model again
+        raise RuntimeError(f"Agent {self.name} exceeded max_tool_iterations={self.max_tool_iterations}")
 
     async def _run_loop(self) -> AssistantMessage:
         for _ in range(self.max_tool_iterations + 1):
