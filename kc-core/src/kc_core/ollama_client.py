@@ -42,53 +42,19 @@ class OllamaClient:
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
 
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-    ) -> ChatResponse:
-        body: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-        }
-        if tools:
-            body["tools"] = tools
-        async with httpx.AsyncClient(timeout=self._timeout) as http:
-            r = await http.post(
-                self._completions_url,
-                json=body,
-                headers=self._headers(),
-            )
-        if r.status_code != 200:
-            raise RuntimeError(f"Ollama returned {r.status_code}: {r.text}")
-        data = r.json()
-        msg = data["choices"][0]["message"]
-        text = msg.get("content") or ""
-        raw_calls = msg.get("tool_calls") or []
-        tool_calls = [
-            {
-                "id": c["id"],
-                "name": c["function"]["name"],
-                "arguments": json.loads(c["function"]["arguments"] or "{}"),
-            }
-            for c in raw_calls
-        ]
-        return ChatResponse(
-            text=text,
-            tool_calls=tool_calls,
-            finish_reason=data["choices"][0].get("finish_reason", ""),
-            raw=data,
-        )
-
     async def chat_stream(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ):
-        """Async generator yielding text deltas. Tool calls are not surfaced
-        via the stream — for tool execution use chat() in the agent loop.
+        """Stream OpenAI-compatible SSE frames as ChatStreamFrame.
+
+        Tool calls in OpenAI's streaming format arrive as multi-chunk fragments
+        (function.arguments is split across deltas). We accumulate them per index
+        and emit ONE ToolCallsBlock when finish_reason='tool_calls' is seen.
         """
+        from kc_core.stream_frames import TextDelta, ToolCallsBlock, Done
+
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -96,6 +62,9 @@ class OllamaClient:
         }
         if tools:
             body["tools"] = tools
+
+        # Per-index accumulators for tool call fragments
+        tool_call_frags: dict[int, dict[str, Any]] = {}
 
         async with httpx.AsyncClient(timeout=self._timeout) as http:
             async with http.stream(
@@ -117,7 +86,74 @@ class OllamaClient:
                         chunk = json.loads(payload)
                     except json.JSONDecodeError:
                         continue
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    choice = chunk.get("choices", [{}])[0]
+                    delta = choice.get("delta", {}) or {}
+                    finish_reason = choice.get("finish_reason")
+
+                    # Accumulate tool-call fragments (arrive before finish_reason)
+                    deltas = delta.get("tool_calls")
+                    if deltas:
+                        for tc in deltas:
+                            idx = tc.get("index", 0)
+                            slot = tool_call_frags.setdefault(idx, {
+                                "id": "", "name": "", "arguments_str": "",
+                            })
+                            if tc.get("id"):
+                                slot["id"] = tc["id"]
+                            fn = tc.get("function") or {}
+                            if fn.get("name"):
+                                slot["name"] = fn["name"]
+                            args_frag = fn.get("arguments")
+                            if args_frag:
+                                slot["arguments_str"] += args_frag
+
+                    # Yield text content
                     text = delta.get("content")
                     if text:
-                        yield text
+                        yield TextDelta(content=text)
+
+                    # On finish_reason, flush accumulated tool calls then Done
+                    if finish_reason:
+                        if tool_call_frags:
+                            calls = []
+                            for idx in sorted(tool_call_frags.keys()):
+                                slot = tool_call_frags[idx]
+                                args_str = slot["arguments_str"] or "{}"
+                                try:
+                                    args = json.loads(args_str)
+                                except json.JSONDecodeError:
+                                    args = {}
+                                calls.append({
+                                    "id": slot["id"] or f"call_{idx}",
+                                    "name": slot["name"],
+                                    "arguments": args,
+                                })
+                            yield ToolCallsBlock(calls=calls)
+                            tool_call_frags.clear()
+                        yield Done(finish_reason=finish_reason)
+                        return
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> ChatResponse:
+        """Non-streaming convenience: accumulate chat_stream into a ChatResponse."""
+        from kc_core.stream_frames import TextDelta, ToolCallsBlock, Done
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        finish: str = ""
+        async for frame in self.chat_stream(messages=messages, tools=tools):
+            if isinstance(frame, TextDelta):
+                text_parts.append(frame.content)
+            elif isinstance(frame, ToolCallsBlock):
+                tool_calls.extend(frame.calls)
+            elif isinstance(frame, Done):
+                finish = frame.finish_reason
+                break
+        return ChatResponse(
+            text="".join(text_parts),
+            tool_calls=tool_calls,
+            finish_reason=finish,
+            raw={},  # not preserved when going through stream
+        )
