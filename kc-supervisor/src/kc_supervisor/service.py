@@ -31,4 +31,7 @@ def create_app(deps: Deps) -> FastAPI:
     from kc_supervisor.http_routes import register_http_routes
     register_http_routes(app)
 
+    from kc_supervisor.ws_routes import register_ws_routes
+    register_ws_routes(app)
+
     return app
