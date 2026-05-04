@@ -21,7 +21,7 @@ from kc_sandbox.wiring import build_sandboxed_agent
 
 HOME_CONFIG = Path.home() / ".konaclaw"
 DEFAULT_SHARE_PATH = Path.home() / "Documents" / "konaclaw"
-DEFAULT_MODEL = "gemma3:4b"
+DEFAULT_MODEL = "qwen2.5:7b"
 
 
 def ensure_first_run_setup() -> None:
