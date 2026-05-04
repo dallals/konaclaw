@@ -192,3 +192,27 @@ async def test_agent_no_permission_check_allows_all(fake_ollama):
     agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg)
     reply = await agent.send("echo")
     assert reply.content == "done"
+
+
+@pytest.mark.asyncio
+async def test_agent_permission_check_supports_async_callback(fake_ollama):
+    client = fake_ollama(
+        ChatResponse(
+            text="",
+            tool_calls=[{"id": "c1", "name": "echo", "arguments": {"text": "hi"}}],
+            finish_reason="tool_calls",
+        ),
+        ChatResponse(text="ok done", finish_reason="stop"),
+    )
+    reg = ToolRegistry()
+    reg.register(Tool(name="echo", description="", parameters={}, impl=lambda text: text))
+
+    async def async_allow(agent_name, tool_name, args):
+        return (True, None)
+
+    agent = Agent(
+        name="kc", client=client, system_prompt="sys", tools=reg,
+        permission_check=async_allow,
+    )
+    reply = await agent.send("echo hi")
+    assert reply.content == "ok done"
