@@ -404,3 +404,31 @@ async def test_agent_send_stream_appends_history_same_as_send(fake_ollama):
     assert agent.history[0].__class__.__name__ == "UserMessage"
     assert agent.history[1].__class__.__name__ == "AssistantMessage"
     assert agent.history[1].content == "hi back"
+
+
+@pytest.mark.asyncio
+async def test_agent_send_stream_uses_json_in_text_fallback(fake_ollama):
+    """If the model emits a tool call as JSON-in-text (no native tool_calls), send_stream
+    detects it via parse_text_tool_calls and runs the tool, same as send."""
+    json_call = '{"tool": "echo", "arguments": {"text": "hi"}}'
+    client = fake_ollama(
+        stream_responses=[
+            [
+                TextDelta(content=json_call),
+                Done(finish_reason="stop"),
+            ],
+            [
+                TextDelta(content="echoed: hi"),
+                Done(finish_reason="stop"),
+            ],
+        ],
+    )
+    reg = ToolRegistry()
+    reg.register(Tool(name="echo", description="", parameters={}, impl=lambda text: text))
+    agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg)
+    frames = [f async for f in agent.send_stream("please echo")]
+    types = [type(f).__name__ for f in frames]
+    assert "ToolCallStart" in types
+    assert "ToolResult" in types
+    assert isinstance(frames[-1], Complete)
+    assert frames[-1].reply.content == "echoed: hi"
