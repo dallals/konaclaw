@@ -1,7 +1,10 @@
 from __future__ import annotations
+import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from kc_core.messages import UserMessage
 from kc_supervisor.agents import AgentStatus
+
+logger = logging.getLogger(__name__)
 
 
 def register_ws_routes(app: FastAPI) -> None:
@@ -85,7 +88,7 @@ def register_ws_routes(app: FastAPI) -> None:
                     "arguments": req.arguments,
                 })
             except Exception:
-                pass
+                logger.warning("ws_approvals failed to send request %s", req.request_id, exc_info=True)
 
         import asyncio as _asyncio
         loop = _asyncio.get_running_loop()
@@ -103,9 +106,13 @@ def register_ws_routes(app: FastAPI) -> None:
                 msg = await ws.receive_json()
                 if msg.get("type") != "approval_response":
                     continue
+                request_id = msg.get("request_id")
+                if not isinstance(request_id, str):
+                    logger.warning("ws_approvals received malformed approval_response (no request_id)")
+                    continue
                 deps.approvals.resolve(
-                    request_id=msg["request_id"],
-                    allowed=bool(msg["allowed"]),
+                    request_id=request_id,
+                    allowed=bool(msg.get("allowed", False)),
                     reason=msg.get("reason"),
                 )
         except WebSocketDisconnect:

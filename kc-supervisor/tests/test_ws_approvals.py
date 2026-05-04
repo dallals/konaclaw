@@ -127,3 +127,42 @@ def test_approval_replays_pending_on_connect(app, deps):
             })
             t.join(timeout=2.0)
             assert not t.is_alive()
+
+
+def test_malformed_approval_response_does_not_crash_handler(app, deps):
+    """approval_response with no request_id should be ignored, connection stays alive."""
+    broker = deps.approvals
+    result_box: dict = {}
+
+    def trigger():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            allowed, reason = loop.run_until_complete(
+                broker.request_approval(agent="alice", tool="x", arguments={})
+            )
+            result_box["allowed"] = allowed
+            result_box["reason"] = reason
+        finally:
+            loop.close()
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/approvals") as ws:
+            t = threading.Thread(target=trigger, daemon=True)
+            t.start()
+            req_msg = ws.receive_json()
+            req_id = req_msg["request_id"]
+            # Malformed: no request_id
+            ws.send_json({"type": "approval_response", "allowed": True})
+            # Connection should still be alive — send a proper response
+            ws.send_json({
+                "type": "approval_response",
+                "request_id": req_id,
+                "allowed": False,
+                "reason": "via second response",
+            })
+            t.join(timeout=2.0)
+            assert not t.is_alive()
+
+    assert result_box["allowed"] is False
+    assert result_box["reason"] == "via second response"
