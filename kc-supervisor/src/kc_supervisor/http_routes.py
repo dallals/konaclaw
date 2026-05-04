@@ -1,8 +1,8 @@
 from __future__ import annotations
 import time
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 from typing import Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 
@@ -10,11 +10,9 @@ class CreateConversationRequest(BaseModel):
     channel: str = "dashboard"
 
 
-def _message_to_dict(m: object) -> dict:
+def _message_to_dict(m) -> dict:
     """Serialize a kc_core.messages dataclass for JSON."""
-    if is_dataclass(m):
-        return {"type": m.__class__.__name__, **asdict(m)}
-    raise TypeError(f"cannot serialize message of type {type(m).__name__}")
+    return {"type": m.__class__.__name__, **asdict(m)}
 
 
 def register_http_routes(app: FastAPI) -> None:
@@ -54,7 +52,10 @@ def register_http_routes(app: FastAPI) -> None:
         return {"messages": [_message_to_dict(m) for m in msgs]}
 
     @app.get("/audit")
-    def list_audit(agent: Optional[str] = None, limit: int = 100):
+    def list_audit(
+        agent: Optional[str] = None,
+        limit: int = Query(default=100, ge=1, le=1000),
+    ):
         rows = app.state.deps.storage.list_audit(agent=agent, limit=limit)
         return {"entries": rows}
 

@@ -96,4 +96,4 @@ def test_undo_returns_501(app, deps):
     with TestClient(app) as client:
         r = client.post(f"/undo/{aid}")
     assert r.status_code == 501
-    assert "not yet wired" in r.json()["detail"].lower() or "v1" in r.json()["detail"].lower() or "follow-up" in r.json()["detail"].lower()
+    assert "not yet wired" in r.json()["detail"]
