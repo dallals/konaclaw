@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kc-supervisor"
+version = "0.1.0"
+description = "KonaClaw supervisor — FastAPI service hosting agents"
+requires-python = ">=3.11"
+dependencies = [
+    "kc-core",
+    "kc-sandbox",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "httpx-ws>=0.6",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+kc-supervisor = "kc_supervisor.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kc_supervisor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
