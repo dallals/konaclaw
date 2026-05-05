@@ -173,8 +173,13 @@ def register_http_routes(app: FastAPI) -> None:
         if rt.assembled is None:
             raise HTTPException(409, detail=f"agent {row['agent']!r} is degraded; cannot undo")
 
-        # 4. Run the Undoer
-        undoer = Undoer(journals=rt.assembled.journals, log=rt.assembled.undo_log)
+        # 4. Run the Undoer. Memory writes record share="memory" in their
+        # UndoEntry; merge the memory journal alongside the file-share journals
+        # so /undo works for both file ops and memory.{append,replace}.
+        journals = dict(rt.assembled.journals)
+        if rt.assembled.memory_journal is not None:
+            journals.setdefault("memory", rt.assembled.memory_journal)
+        undoer = Undoer(journals=journals, log=rt.assembled.undo_log)
         try:
             undoer.undo(eid)
         except Exception as e:

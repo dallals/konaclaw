@@ -150,6 +150,84 @@ def test_undo_happy_path_reverses_a_real_file_write(app, deps):
     assert not (share_root / target).exists()
 
 
+def test_undo_round_trips_memory_append(tmp_path):
+    """End-to-end memory.append + POST /undo. The supervisor must merge the
+    memory journal into Undoer.journals so reverse_payload share="memory"
+    can be resolved."""
+    import yaml
+    from fastapi.testclient import TestClient
+    from kc_sandbox.shares import SharesRegistry
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.approvals import ApprovalBroker
+    from kc_supervisor.agents import AgentRegistry
+    from kc_supervisor.conversations import ConversationManager
+    from kc_supervisor.locks import ConversationLocks
+    from kc_supervisor.service import Deps, create_app
+    from kc_supervisor.audit_tools import _decision_contextvar, _eid_contextvar
+    from kc_sandbox.permissions import Decision, Tier
+
+    home = tmp_path / "kc-home"
+    (home / "agents").mkdir(parents=True)
+    (home / "data").mkdir(parents=True)
+    (home / "config").mkdir(parents=True)
+    (home / "shares" / "main").mkdir(parents=True)
+    (home / "config" / "shares.yaml").write_text(yaml.safe_dump({
+        "shares": [{"name": "main", "path": str(home / "shares" / "main"), "mode": "read-write"}],
+    }))
+    (home / "agents" / "alice.yaml").write_text(
+        "name: alice\nmodel: fake-model\nsystem_prompt: hi\n"
+    )
+
+    storage = Storage(home / "data" / "kc.db"); storage.init()
+    broker = ApprovalBroker()
+    shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
+    registry = AgentRegistry(
+        agents_dir=home / "agents",
+        shares=shares,
+        audit_storage=storage,
+        broker=broker,
+        ollama_url="http://localhost:11434",
+        default_model="fake-model",
+        undo_db_path=home / "data" / "undo.db",
+        memory_root=home / "memory",
+    )
+    registry.load_all()
+    deps = Deps(
+        storage=storage, registry=registry,
+        conversations=ConversationManager(storage), approvals=broker,
+        home=home, shares=shares, conv_locks=ConversationLocks(),
+    )
+    app = create_app(deps)
+
+    rt = registry.get("alice")
+    assert rt.assembled is not None
+    assert "memory.append" in rt.assembled.registry.names()
+
+    _decision_contextvar.set(Decision(allowed=True, tier=Tier.MUTATING, source="tier", reason=None))
+    _eid_contextvar.set(None)
+    rt.assembled.registry.invoke("memory.append", {
+        "scope": "user",
+        "content": "Sammy prefers concise replies.\n",
+    })
+    user_md = home / "memory" / "user.md"
+    assert "concise replies" in user_md.read_text()
+
+    rows = storage.list_audit()
+    mem_rows = [r for r in rows if r["tool"] == "memory.append"]
+    assert len(mem_rows) == 1
+    aid = mem_rows[0]["id"]
+    assert storage.get_undo_op_for_audit(aid) is not None
+
+    with TestClient(app) as client:
+        r = client.post(f"/undo/{aid}")
+    assert r.status_code == 200, r.json()
+    assert r.json()["reversed"]["kind"] == "git-revert"
+    # Memory file is reverted to its pre-append state (no concise-replies line).
+    # When the append was the file's first commit, revert removes it entirely;
+    # either case is correct — the appended content is gone.
+    assert (not user_md.exists()) or "concise replies" not in user_md.read_text()
+
+
 def test_undo_returns_500_on_undoer_failure(app, deps):
     """If the Undoer raises (sha doesn't exist), /undo returns 500 with audit_id in body."""
     rt = deps.registry.get("alice")
