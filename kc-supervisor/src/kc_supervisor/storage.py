@@ -47,6 +47,19 @@ CREATE TABLE IF NOT EXISTS audit_undo_link (
     FOREIGN KEY(audit_id) REFERENCES audit(id)
 );
 CREATE INDEX IF NOT EXISTS ix_link_undo ON audit_undo_link(undo_op_id);
+
+CREATE TABLE IF NOT EXISTS mcp_installs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    command TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    env_json TEXT NOT NULL,
+    why TEXT,
+    installed_by_agent TEXT NOT NULL,
+    ts REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running'
+);
+CREATE INDEX IF NOT EXISTS ix_mcp_status ON mcp_installs(status);
 """
 
 
