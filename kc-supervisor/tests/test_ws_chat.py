@@ -254,6 +254,42 @@ def test_ws_streaming_error_mid_stream_emits_error_frame_and_no_assistant_persis
     assert not any(m.__class__.__name__ == "AssistantMessage" for m in msgs)
 
 
+def test_ws_client_disconnect_mid_stream_still_persists_assistant_message(app, deps, fake_client_factory):
+    """If the browser closes the WS while tokens are being sent, the model's
+    reply must still get written to SQLite — otherwise refreshing the dashboard
+    loses the assistant response permanently."""
+    import time
+    from kc_supervisor.agents import AgentStatus
+    from kc_core.ollama_client import ChatResponse
+
+    fake = fake_client_factory(responses=[ChatResponse(text="full reply text", tool_calls=[], finish_reason="stop")])
+    _inject_fake(deps, "alice", fake)
+
+    with TestClient(app) as client:
+        cid = client.post(
+            "/agents/alice/conversations", json={"channel": "dashboard"}
+        ).json()["conversation_id"]
+        with client.websocket_connect(f"/ws/chat/{cid}") as ws:
+            ws.send_json({"type": "user_message", "content": "hi"})
+            # Read one frame to confirm streaming started, then bail before Complete.
+            ws.receive_json()
+
+        # Give the supervisor's task a moment to finish iterating send_stream
+        # and persist the AssistantMessage despite the closed WS.
+        for _ in range(50):
+            msgs = deps.conversations.list_messages(cid)
+            if any(m.__class__.__name__ == "AssistantMessage" for m in msgs):
+                break
+            time.sleep(0.05)
+
+    msgs = deps.conversations.list_messages(cid)
+    assert any(m.__class__.__name__ == "AssistantMessage" and m.content == "full reply text" for m in msgs), (
+        f"AssistantMessage was lost on disconnect; persisted: {[m.__class__.__name__ for m in msgs]}"
+    )
+    rt = deps.registry.get("alice")
+    assert rt.status != AgentStatus.DEGRADED
+
+
 def test_ws_client_disconnect_mid_stream_does_not_degrade_agent(app, deps):
     """Browser closing the WebSocket mid-reply (HMR, tab switch, navigation)
     must not flag the agent as degraded — the agent itself didn't fail."""

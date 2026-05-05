@@ -87,38 +87,58 @@ def register_ws_routes(app: FastAPI) -> None:
                     rt.assembled.core_agent.history = list(history)
 
                     rt.set_status(AgentStatus.THINKING)
-                    await ws.send_json({"type": "agent_status", "status": "thinking"})
+                    try:
+                        await ws.send_json({"type": "agent_status", "status": "thinking"})
+                    except (WebSocketDisconnect, RuntimeError):
+                        pass
+
+                    # Track whether the WS is still receiving us. If the client
+                    # closes mid-stream, we keep iterating send_stream so the
+                    # model's reply still gets persisted — only skip the sends.
+                    ws_alive = True
+
+                    async def _safe_send(payload: dict) -> None:
+                        nonlocal ws_alive
+                        if not ws_alive:
+                            return
+                        try:
+                            await ws.send_json(payload)
+                        except (WebSocketDisconnect, RuntimeError):
+                            ws_alive = False
+
                     try:
                         async for frame in rt.assembled.core_agent.send_stream(content):
                             if isinstance(frame, TokenDelta):
-                                await ws.send_json({"type": "token", "delta": frame.content})
+                                await _safe_send({"type": "token", "delta": frame.content})
                             elif isinstance(frame, ToolCallStart):
-                                await ws.send_json({
-                                    "type": "tool_call",
-                                    "call": frame.call,
-                                })
                                 deps.conversations.append(conversation_id, ToolCallMessage(
                                     tool_call_id=frame.call["id"],
                                     tool_name=frame.call["name"],
                                     arguments=frame.call["arguments"],
                                 ))
+                                await _safe_send({"type": "tool_call", "call": frame.call})
                             elif isinstance(frame, ToolResult):
-                                await ws.send_json({
-                                    "type": "tool_result",
-                                    "call_id": frame.call_id,
-                                    "content": frame.content,
-                                })
                                 deps.conversations.append(conversation_id, ToolResultMessage(
                                     tool_call_id=frame.call_id,
                                     content=frame.content,
                                 ))
+                                await _safe_send({
+                                    "type": "tool_result",
+                                    "call_id": frame.call_id,
+                                    "content": frame.content,
+                                })
                             elif isinstance(frame, Complete):
                                 deps.conversations.append(conversation_id, frame.reply)
-                                await ws.send_json({
+                                await _safe_send({
                                     "type": "assistant_complete",
                                     "content": frame.reply.content,
                                 })
                         rt.last_error = None
+                        if not ws_alive:
+                            # Client went away mid-reply; the reply was still
+                            # persisted, so a refresh will pick it up. Drop
+                            # the connection cleanly so the outer loop exits.
+                            raise WebSocketDisconnect()
                     except WebSocketDisconnect:
                         raise
                     except Exception as e:
