@@ -38,6 +38,42 @@ class Deps:
     connector_registry: Optional[Any] = None
 
 
+async def _maybe_register_zapier(deps: "Deps") -> None:
+    """Register the Zapier MCP server on `deps.mcp_manager` when configured.
+
+    Silent skip when:
+      - kc_zapier isn't importable (soft dep), or
+      - secrets.yaml lacks `zapier_api_key`.
+
+    On registration failure (e.g. bad API key), logs a warning and returns.
+    On success, calls `deps.registry.load_all()` so agents pick up the new
+    `mcp.zapier.*` tools and the `find_or_install_zap` meta-tool on the
+    next turn.
+    """
+    if deps.mcp_manager is None:
+        return
+    try:
+        from kc_zapier.config import load_config
+        from kc_zapier.register import register_zapier_mcp
+    except ImportError:
+        return
+    try:
+        cfg = load_config()
+    except KeyError:
+        # zapier_api_key not in secrets.yaml — silent skip.
+        return
+    try:
+        await register_zapier_mcp(deps.mcp_manager, cfg)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "zapier MCP registration failed: %s", e,
+        )
+        return
+    # Re-assemble agents now that Zapier tools exist.
+    deps.registry.load_all()
+
+
 DASHBOARD_ORIGINS = (
     "http://127.0.0.1:5173",
     "http://localhost:5173",
@@ -85,6 +121,16 @@ def create_app(deps: Deps) -> FastAPI:
             # snapshots the tool list at assembly time, so a second load_all() is
             # required after the manager finishes registering.
             deps.registry.load_all()
+
+    # Zapier MCP server — registered at startup if zapier_api_key is in
+    # secrets.yaml AND kc-zapier is importable. Lives on the same MCPManager
+    # as the file-system MCP servers. After registration, reload the agent
+    # registry so every agent picks up the new mcp.zapier.* tools and the
+    # find_or_install_zap meta-tool on its next turn.
+    if deps.mcp_manager is not None:
+        @app.on_event("startup")
+        async def _startup_register_zapier() -> None:
+            await _maybe_register_zapier(deps)
 
     # Channel connectors (Telegram, iMessage). Started/stopped on FastAPI
     # lifecycle so their long-running poll/listen tasks live inside uvicorn's

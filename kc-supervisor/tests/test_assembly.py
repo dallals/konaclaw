@@ -254,3 +254,64 @@ def test_google_tool_tiers_match_expected(home):
     }
     for name, tier in expected.items():
         assert a.engine.tier_map[name] == tier, f"{name} tier mismatch"
+
+
+# ------------------------------------------------------------------ Zapier
+# (kc-zapier integration — wave 2)
+
+def _make_fake_mcp_tool(name: str, description: str = "fake"):
+    """A minimal kc_core.tools.Tool-shaped object, sufficient for registry."""
+    from kc_core.tools import Tool
+
+    async def _impl(**kwargs):
+        return "ok"
+
+    return Tool(
+        name=name,
+        description=description,
+        parameters={"type": "object", "properties": {}},
+        impl=_impl,
+    )
+
+
+class _FakeMCPManager:
+    """Mocks the slice of MCPManager that assembly.py touches: names() and all_tools()."""
+    def __init__(self, server_names: list[str], tools: list):
+        self._names = server_names
+        self._tools = tools
+
+    def names(self) -> list[str]:
+        return list(self._names)
+
+    def all_tools(self) -> list:
+        return list(self._tools)
+
+
+def test_assemble_with_zapier_in_manager_registers_meta_tool(home):
+    fake_zap_tool = _make_fake_mcp_tool("mcp.zapier.send_slack", "send a slack message")
+    mgr = _FakeMCPManager(server_names=["zapier"], tools=[fake_zap_tool])
+
+    a = assemble_agent(**_basic_assemble_kwargs(home), mcp_manager=mgr)
+    names = set(a.registry.names())
+    assert "find_or_install_zap" in names
+    assert a.engine.tier_map["find_or_install_zap"] == Tier.SAFE
+
+
+def test_assemble_without_zapier_no_meta_tool(home):
+    fake_other_tool = _make_fake_mcp_tool("mcp.fs.read", "read fs")
+    mgr = _FakeMCPManager(server_names=["fs"], tools=[fake_other_tool])
+
+    a = assemble_agent(**_basic_assemble_kwargs(home), mcp_manager=mgr)
+    names = set(a.registry.names())
+    assert "find_or_install_zap" not in names
+
+
+def test_zapier_mcp_tools_still_destructive(home):
+    fake_zap_tool = _make_fake_mcp_tool("mcp.zapier.send_slack", "send a slack message")
+    mgr = _FakeMCPManager(server_names=["zapier"], tools=[fake_zap_tool])
+
+    a = assemble_agent(**_basic_assemble_kwargs(home), mcp_manager=mgr)
+    # The wrapped MCP tool keeps DESTRUCTIVE tier from the all_tools loop.
+    assert a.engine.tier_map["mcp.zapier.send_slack"] == Tier.DESTRUCTIVE
+    # And the meta-tool stays SAFE.
+    assert a.engine.tier_map["find_or_install_zap"] == Tier.SAFE

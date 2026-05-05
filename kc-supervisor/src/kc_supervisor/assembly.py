@@ -111,6 +111,18 @@ def assemble_agent(
         for mcp_tool in mcp_manager.all_tools():
             registry.register(mcp_tool)
             tier_map[mcp_tool.name] = Tier.DESTRUCTIVE
+        # Zapier meta-tool — only when the MCP manager has a "zapier" server
+        # registered. The Zapier MCP tools themselves are already registered
+        # above as DESTRUCTIVE via the manager.all_tools() loop. The meta-tool
+        # is SAFE because it only searches existing tool names/descriptions.
+        if "zapier" in mcp_manager.names():
+            try:
+                from kc_zapier.meta_tool import build_find_or_install_zap_tool
+                zap_tool = build_find_or_install_zap_tool(manager=mcp_manager)
+                registry.register(zap_tool)
+                tier_map[zap_tool.name] = Tier.SAFE
+            except ImportError:
+                pass
         if mcp_install_store is not None:
             from kc_mcp.meta_tool import build_install_mcp_server_tool
 
