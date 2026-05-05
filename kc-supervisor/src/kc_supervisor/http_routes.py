@@ -20,7 +20,8 @@ class CreateConversationRequest(BaseModel):
 
 
 class UpdateConversationRequest(BaseModel):
-    pinned: bool
+    pinned: Optional[bool] = None
+    title: Optional[str] = None  # explicit "" clears the title
 
 
 def _message_to_dict(m) -> dict:
@@ -95,8 +96,16 @@ def register_http_routes(app: FastAPI) -> None:
     @app.patch("/conversations/{cid}")
     def update_conversation(cid: int, req: UpdateConversationRequest):
         deps = app.state.deps
-        if not deps.storage.set_conversation_pinned(cid, req.pinned):
+        if deps.storage.get_conversation(cid) is None:
             raise HTTPException(404, detail=f"unknown conversation: {cid}")
+        fields = req.model_fields_set
+        if not fields:
+            raise HTTPException(422, detail="must set at least one of: pinned, title")
+        if "pinned" in fields and req.pinned is not None:
+            deps.storage.set_conversation_pinned(cid, req.pinned)
+        if "title" in fields:
+            t = req.title.strip() if req.title is not None else None
+            deps.storage.set_conversation_title(cid, t or None)
         return deps.storage.get_conversation(cid)
 
     @app.delete("/conversations/{cid}", status_code=204)

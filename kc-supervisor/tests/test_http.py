@@ -292,3 +292,37 @@ def test_delete_conversation_unknown_404(app):
     with TestClient(app) as client:
         r = client.delete("/conversations/99999")
     assert r.status_code == 404
+
+
+def test_patch_conversation_sets_title(app):
+    with TestClient(app) as client:
+        cid = client.post("/agents/alice/conversations", json={"channel": "dashboard"}).json()["conversation_id"]
+        r = client.patch(f"/conversations/{cid}", json={"title": "Trip planning"})
+        assert r.status_code == 200
+        assert r.json()["title"] == "Trip planning"
+
+
+def test_patch_conversation_clears_title_with_empty_string(app):
+    with TestClient(app) as client:
+        cid = client.post("/agents/alice/conversations", json={"channel": "dashboard"}).json()["conversation_id"]
+        client.patch(f"/conversations/{cid}", json={"title": "x"})
+        r = client.patch(f"/conversations/{cid}", json={"title": ""})
+    assert r.status_code == 200
+    assert r.json()["title"] is None
+
+
+def test_patch_conversation_pin_and_title_together(app):
+    with TestClient(app) as client:
+        cid = client.post("/agents/alice/conversations", json={"channel": "dashboard"}).json()["conversation_id"]
+        r = client.patch(f"/conversations/{cid}", json={"pinned": True, "title": "Important"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pinned"] == 1
+    assert body["title"] == "Important"
+
+
+def test_patch_conversation_empty_body_422(app):
+    with TestClient(app) as client:
+        cid = client.post("/agents/alice/conversations", json={"channel": "dashboard"}).json()["conversation_id"]
+        r = client.patch(f"/conversations/{cid}", json={})
+    assert r.status_code == 422

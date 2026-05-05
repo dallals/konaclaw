@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     agent TEXT NOT NULL,
     channel TEXT NOT NULL,
     started_at REAL NOT NULL,
-    pinned INTEGER NOT NULL DEFAULT 0
+    pinned INTEGER NOT NULL DEFAULT 0,
+    title TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_conv_agent ON conversations(agent);
 
@@ -69,6 +70,8 @@ class Storage:
             cols = {r["name"] for r in c.execute("PRAGMA table_info(conversations)").fetchall()}
             if "pinned" not in cols:
                 c.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            if "title" not in cols:
+                c.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
 
     @contextmanager
     def connect(self):
@@ -110,6 +113,14 @@ class Storage:
             cur = c.execute(
                 "UPDATE conversations SET pinned=? WHERE id=?",
                 (1 if pinned else 0, conversation_id),
+            )
+            return cur.rowcount > 0
+
+    def set_conversation_title(self, conversation_id: int, title: Optional[str]) -> bool:
+        with self.connect() as c:
+            cur = c.execute(
+                "UPDATE conversations SET title=? WHERE id=?",
+                (title, conversation_id),
             )
             return cur.rowcount > 0
 

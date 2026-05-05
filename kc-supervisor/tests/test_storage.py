@@ -151,6 +151,20 @@ def test_delete_conversation_unknown_returns_false(tmp_path):
     assert s.delete_conversation(99999) is False
 
 
+def test_set_title_and_clear(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    cid = s.create_conversation(agent="kc", channel="dashboard")
+    assert s.set_conversation_title(cid, "Trip planning") is True
+    assert s.get_conversation(cid)["title"] == "Trip planning"
+    assert s.set_conversation_title(cid, None) is True
+    assert s.get_conversation(cid)["title"] is None
+
+
+def test_set_title_unknown_returns_false(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    assert s.set_conversation_title(99999, "x") is False
+
+
 def test_init_idempotent_adds_pinned_column_to_legacy_db(tmp_path):
     db = tmp_path / "kc.db"
     import sqlite3
@@ -168,3 +182,4 @@ def test_init_idempotent_adds_pinned_column_to_legacy_db(tmp_path):
     convs = s.list_conversations()
     assert len(convs) == 1
     assert convs[0]["pinned"] == 0
+    assert convs[0]["title"] is None
