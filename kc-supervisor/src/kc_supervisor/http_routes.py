@@ -182,6 +182,22 @@ def register_http_routes(app: FastAPI) -> None:
         undoer = Undoer(journals=journals, log=rt.assembled.undo_log)
         try:
             undoer.undo(eid)
+        except ValueError as e:
+            # "already applied" — the journal op was reverted previously (possibly
+            # before audit_undo_link.undone_at existed). Backfill the stamp so
+            # the dashboard stops offering an Undo button on this row, and
+            # report 200 with a note instead of 500. The user's intent ("undo
+            # this") is already satisfied; surfacing an error would be confusing.
+            if "already applied" in str(e):
+                deps.storage.mark_audit_undone(audit_id)
+                return {"reversed": {"kind": "noop", "details": {"reason": "already undone"}}}
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": f"undo failed: {type(e).__name__}: {e}",
+                    "audit_id": audit_id,
+                },
+            )
         except Exception as e:
             return JSONResponse(
                 status_code=500,

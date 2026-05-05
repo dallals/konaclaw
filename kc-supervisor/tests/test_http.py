@@ -231,12 +231,13 @@ def test_undo_round_trips_memory_append(tmp_path):
     # button and prevent a double-click that would 500.
     fresh = next(r for r in storage.list_audit() if r["id"] == aid)
     assert fresh["undone"] == 1
-    # And re-undoing returns 500 with the "already applied" message — the
-    # mark_audit_undone is just for the UI hint, not a server-side block.
+    # And re-undoing now returns 200 with kind="noop" (the user's intent —
+    # undo this — is already satisfied; we backfill undone_at if it wasn't
+    # already set so the dashboard stops offering the button).
     with TestClient(app) as client:
         r2 = client.post(f"/undo/{aid}")
-    assert r2.status_code == 500
-    assert "already applied" in r2.json()["detail"]
+    assert r2.status_code == 200
+    assert r2.json()["reversed"]["kind"] == "noop"
 
 
 def test_undo_returns_500_on_undoer_failure(app, deps):
