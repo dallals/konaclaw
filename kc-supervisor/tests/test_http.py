@@ -326,3 +326,34 @@ def test_patch_conversation_empty_body_422(app):
         cid = client.post("/agents/alice/conversations", json={"channel": "dashboard"}).json()["conversation_id"]
         r = client.patch(f"/conversations/{cid}", json={})
     assert r.status_code == 422
+
+
+def test_delete_agent_removes_yaml_and_reloads(app, deps):
+    target = deps.home / "agents" / "alice.yaml"
+    assert target.exists()
+    with TestClient(app) as client:
+        assert "alice" in [a["name"] for a in client.get("/agents").json()["agents"]]
+        r = client.delete("/agents/alice")
+        assert r.status_code == 204
+        assert not target.exists()
+        names = [a["name"] for a in client.get("/agents").json()["agents"]]
+    assert "alice" not in names
+
+
+def test_delete_agent_unknown_404(app):
+    with TestClient(app) as client:
+        r = client.delete("/agents/ghost")
+    assert r.status_code == 404
+
+
+def test_delete_agent_keeps_conversations_and_audit(app, deps):
+    with TestClient(app) as client:
+        cid = client.post("/agents/alice/conversations", json={"channel": "dashboard"}).json()["conversation_id"]
+        deps.storage.append_audit(
+            agent="alice", tool="t", args_json="{}", decision="d", result="r", undoable=False,
+        )
+        client.delete("/agents/alice")
+        convs = client.get("/conversations").json()["conversations"]
+        audit = client.get("/audit").json()["entries"]
+    assert any(c["id"] == cid and c["agent"] == "alice" for c in convs)
+    assert any(e["agent"] == "alice" for e in audit)

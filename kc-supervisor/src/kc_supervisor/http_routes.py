@@ -44,6 +44,17 @@ def register_http_routes(app: FastAPI) -> None:
     def list_agents():
         return {"agents": app.state.deps.registry.snapshot()}
 
+    @app.delete("/agents/{name}", status_code=204)
+    def delete_agent(name: str):
+        from fastapi import Response
+        deps = app.state.deps
+        target = deps.home / "agents" / f"{name}.yaml"
+        if not target.exists():
+            raise HTTPException(404, detail=f"unknown agent: {name}")
+        target.unlink()
+        deps.registry.load_all()
+        return Response(status_code=204)
+
     @app.post("/agents")
     def create_agent(req: CreateAgentRequest):
         deps = app.state.deps
