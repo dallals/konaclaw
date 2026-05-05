@@ -62,6 +62,7 @@ class AgentRegistry:
         undo_db_path: Path,
         mcp_manager: "Optional[Any]" = None,
         mcp_install_store: "Optional[Any]" = None,
+        memory_root: "Optional[Path]" = None,
     ) -> None:
         self.agents_dir = Path(agents_dir)
         self.shares = shares
@@ -72,6 +73,7 @@ class AgentRegistry:
         self.undo_db_path = Path(undo_db_path)
         self.mcp_manager = mcp_manager
         self.mcp_install_store = mcp_install_store
+        self.memory_root = Path(memory_root) if memory_root else None
         self._by_name: dict[str, AgentRuntime] = {}
 
     def load_all(self) -> None:
@@ -117,6 +119,7 @@ class AgentRegistry:
                     mcp_manager=self.mcp_manager,
                     mcp_install_store=self.mcp_install_store,
                     on_mcp_install=self.load_all,
+                    memory_root=self.memory_root,
                 )
                 new_by_name[cfg.name] = AgentRuntime(
                     name=cfg.name,

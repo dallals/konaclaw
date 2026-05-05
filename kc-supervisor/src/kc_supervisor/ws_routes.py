@@ -86,6 +86,16 @@ def register_ws_routes(app: FastAPI) -> None:
                         history = history[:-1]
                     rt.assembled.core_agent.history = list(history)
 
+                    # Refresh the memory prefix from disk so any updates from
+                    # earlier turns (or other agents writing user.md) are
+                    # visible to the model on this turn.
+                    if rt.assembled.memory_reader is not None:
+                        prefix = rt.assembled.memory_reader.format_prefix(agent=rt.name)
+                        rt.assembled.core_agent.system_prompt = (
+                            prefix + rt.assembled.base_system_prompt if prefix
+                            else rt.assembled.base_system_prompt
+                        )
+
                     rt.set_status(AgentStatus.THINKING)
                     try:
                         await ws.send_json({"type": "agent_status", "status": "thinking"})

@@ -23,6 +23,12 @@ class AssembledAgent:
 
     Held by AgentRuntime. The kc-core Agent's `history` is reset before each turn from
     SQLite via ConversationManager — never carry per-turn state on this dataclass.
+
+    `base_system_prompt` holds the YAML's system_prompt verbatim. The CoreAgent's
+    `system_prompt` may have a memory prefix prepended; ws_routes refreshes it
+    per-turn from `memory_reader.format_prefix(name)` so updates from prior turns
+    are visible. When memory_reader is None (no memory wired), the CoreAgent's
+    system_prompt equals base_system_prompt.
     """
     name: str
     system_prompt: str
@@ -32,6 +38,9 @@ class AssembledAgent:
     journals: dict[str, Journal]
     undo_log: RecordingUndoLog
     core_agent: CoreAgent
+    base_system_prompt: str = ""
+    memory_reader: Optional[Any] = None
+    memory_journal: Optional[Journal] = None
 
 
 def assemble_agent(
@@ -49,6 +58,7 @@ def assemble_agent(
     mcp_manager: Optional[Any] = None,
     mcp_install_store: Optional[Any] = None,
     on_mcp_install: Optional[Callable[[], None]] = None,
+    memory_root: Optional[Path] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -145,6 +155,31 @@ def assemble_agent(
             registry.register(install_tool)
             tier_map[install_tool.name] = Tier.DESTRUCTIVE
 
+    # Memory integration — only when memory_root is supplied. Lazy-imports
+    # kc_memory so kc-supervisor doesn't take a hard dep on it; the presence
+    # of memory_root is the signal that kc_memory is importable.
+    memory_reader: Optional[Any] = None
+    memory_journal: Optional[Journal] = None
+    if memory_root is not None:
+        from kc_memory.store import MemoryStore as _MemStore
+        from kc_memory.reader import MemoryReader as _MemReader
+        from kc_memory.tools import build_memory_tools as _build_mem_tools
+        from kc_memory.tools import DEFAULT_MEMORY_TOOL_TIERS as _MEM_TIERS
+
+        mem_store = _MemStore(memory_root)
+        mem_store.init()
+        memory_journal = Journal(memory_root)
+        memory_journal.init()
+        memory_reader = _MemReader(store=mem_store)
+        for mt in _build_mem_tools(
+            store=mem_store,
+            journal=memory_journal,
+            undo_log=undo_log,
+            agent_name=cfg.name,
+        ).values():
+            registry.register(mt)
+        tier_map.update(_MEM_TIERS)
+
     # 4. PermissionEngine. broker.request_approval is async; the engine's
     # check_async detects coroutines via inspect.iscoroutine and awaits them.
     overrides_for_agent = {cfg.name: permission_overrides} if permission_overrides else {}
@@ -160,21 +195,33 @@ def assemble_agent(
     model = cfg.model or default_model
     ollama_client = OllamaClient(base_url=ollama_url, model=model)
 
+    # If memory is wired, prepend the formatted prefix to the system prompt.
+    # ws_routes.py refreshes this per-turn so updates are visible across turns
+    # within the same supervisor process.
+    effective_system_prompt = cfg.system_prompt
+    if memory_reader is not None:
+        prefix = memory_reader.format_prefix(agent=cfg.name)
+        if prefix:
+            effective_system_prompt = prefix + cfg.system_prompt
+
     core_agent = CoreAgent(
         name=cfg.name,
         client=ollama_client,
-        system_prompt=cfg.system_prompt,
+        system_prompt=effective_system_prompt,
         tools=registry,
         permission_check=make_audit_aware_callback(engine, agent_name=cfg.name),
     )
 
     return AssembledAgent(
         name=cfg.name,
-        system_prompt=cfg.system_prompt,
+        system_prompt=effective_system_prompt,
         ollama_client=ollama_client,
         registry=registry,
         engine=engine,
         journals=journals,
         undo_log=undo_log,
         core_agent=core_agent,
+        base_system_prompt=cfg.system_prompt,
+        memory_reader=memory_reader,
+        memory_journal=memory_journal,
     )

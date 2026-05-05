@@ -41,6 +41,17 @@ def main() -> None:
     except ImportError:
         pass
 
+    # Memory layer — if kc-memory is installed, point assembly at
+    # ~/KonaClaw/memory/. Each agent gets memory.read/append/replace tools
+    # plus its memory prefix injected into the system prompt.
+    memory_root = None
+    try:
+        import kc_memory  # noqa: F401  — presence check
+        memory_root = home / "memory"
+        memory_root.mkdir(parents=True, exist_ok=True)
+    except ImportError:
+        pass
+
     registry = AgentRegistry(
         agents_dir=home / "agents",
         shares=shares,
@@ -51,6 +62,7 @@ def main() -> None:
         undo_db_path=home / "data" / "undo.db",
         mcp_manager=mcp_manager,
         mcp_install_store=mcp_install_store,
+        memory_root=memory_root,
     )
     registry.load_all()
 
