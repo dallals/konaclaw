@@ -447,3 +447,97 @@ def test_delete_agent_keeps_conversations_and_audit(app, deps):
         audit = client.get("/audit").json()["entries"]
     assert any(c["id"] == cid and c["agent"] == "alice" for c in convs)
     assert any(e["agent"] == "alice" for e in audit)
+
+
+def test_get_models_returns_sorted_list(app):
+    """GET /models proxies /api/tags from Ollama and sorts the names."""
+    import respx
+    import httpx
+
+    fake_payload = {
+        "models": [
+            {"name": "qwen2.5:7b"},
+            {"name": "gemma3:4b"},
+        ],
+    }
+    with respx.mock(assert_all_called=False) as router:
+        router.get("http://localhost:11434/api/tags").mock(
+            return_value=httpx.Response(200, json=fake_payload),
+        )
+        with TestClient(app) as client:
+            r = client.get("/models")
+    assert r.status_code == 200
+    body = r.json()
+    assert "error" not in body
+    names = [m["name"] for m in body["models"]]
+    assert names == sorted(names)
+    assert names == ["gemma3:4b", "qwen2.5:7b"]
+
+
+def test_get_models_swallows_unreachable(app):
+    """When Ollama is unreachable, /models returns 200 with empty list + error msg."""
+    import respx
+    import httpx
+
+    with respx.mock(assert_all_called=False) as router:
+        router.get("http://localhost:11434/api/tags").mock(
+            side_effect=httpx.ConnectError("nope"),
+        )
+        with TestClient(app) as client:
+            r = client.get("/models")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["models"] == []
+    assert "error" in body
+    assert isinstance(body["error"], str)
+
+
+def test_patch_agent_updates_model(app, deps):
+    """PATCH /agents/{name} with new model writes YAML and reloads registry."""
+    with TestClient(app) as client:
+        r = client.patch("/agents/alice", json={"model": "newmodel:tag"})
+    assert r.status_code == 200
+    assert r.json()["model"] == "newmodel:tag"
+
+    yaml_text = (deps.home / "agents" / "alice.yaml").read_text()
+    assert "model: newmodel:tag" in yaml_text
+
+    with TestClient(app) as client:
+        agents = client.get("/agents").json()["agents"]
+    alice = next(a for a in agents if a["name"] == "alice")
+    assert alice["model"] == "newmodel:tag"
+
+
+def test_patch_agent_preserves_system_prompt(app, deps):
+    """Patching only model leaves system_prompt unchanged on disk."""
+    target = deps.home / "agents" / "alice.yaml"
+    original = target.read_text()
+    assert "hi from alice" in original
+
+    with TestClient(app) as client:
+        r = client.patch("/agents/alice", json={"model": "another:tag"})
+    assert r.status_code == 200
+
+    new_text = target.read_text()
+    assert "hi from alice" in new_text
+    assert "model: another:tag" in new_text
+
+
+def test_patch_agent_invalid_model_with_newline_422(app):
+    with TestClient(app) as client:
+        r = client.patch("/agents/alice", json={"model": "bad\nmodel"})
+    assert r.status_code == 422
+    assert "newline" in r.json()["detail"].lower()
+
+
+def test_patch_agent_invalid_model_empty_422(app):
+    with TestClient(app) as client:
+        r = client.patch("/agents/alice", json={"model": "   "})
+    assert r.status_code == 422
+
+
+def test_patch_unknown_agent_404(app):
+    with TestClient(app) as client:
+        r = client.patch("/agents/ghost", json={"model": "x:y"})
+    assert r.status_code == 404
+    assert "unknown agent" in r.json()["detail"].lower()

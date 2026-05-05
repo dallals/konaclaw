@@ -15,6 +15,11 @@ class CreateAgentRequest(BaseModel):
     model: Optional[str] = None
 
 
+class UpdateAgentRequest(BaseModel):
+    model: Optional[str] = None
+    system_prompt: Optional[str] = None
+
+
 class CreateConversationRequest(BaseModel):
     channel: str = "dashboard"
 
@@ -43,6 +48,62 @@ def register_http_routes(app: FastAPI) -> None:
     @app.get("/agents")
     def list_agents():
         return {"agents": app.state.deps.registry.snapshot()}
+
+    @app.get("/models")
+    async def list_models():
+        """Proxy Ollama's /api/tags so the dashboard can populate a model picker.
+
+        Returns {"models": [{"name": "qwen2.5:7b"}, ...]}. On Ollama-unreachable,
+        returns {"models": [], "error": "..."} with 200 — UI can still render an
+        empty dropdown with a friendly message.
+        """
+        deps = app.state.deps
+        base_url = deps.registry.ollama_url
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                r = await client.get(f"{base_url}/api/tags")
+                r.raise_for_status()
+                data = r.json()
+            models = [{"name": m["name"]} for m in data.get("models", [])]
+            models.sort(key=lambda m: m["name"])
+            return {"models": models}
+        except Exception as e:
+            return {"models": [], "error": f"{type(e).__name__}: {e}"}
+
+    @app.patch("/agents/{name}")
+    def update_agent(name: str, req: UpdateAgentRequest):
+        from kc_core.config import load_agent_config
+        deps = app.state.deps
+        target = deps.home / "agents" / f"{name}.yaml"
+        if not target.exists():
+            raise HTTPException(404, detail=f"unknown agent: {name}")
+
+        if req.model is not None:
+            if "\n" in req.model or "\r" in req.model or not req.model.strip():
+                raise HTTPException(
+                    422,
+                    detail="model must be non-empty and contain no newlines",
+                )
+
+        cfg = load_agent_config(target, default_model="")
+        new_model = req.model if req.model is not None else cfg.model
+        new_prompt = req.system_prompt if req.system_prompt is not None else cfg.system_prompt
+
+        lines = [f"name: {name}", "system_prompt: |"]
+        for pl in new_prompt.splitlines() or [""]:
+            lines.append(f"  {pl}")
+        if new_model:
+            lines.append(f"model: {new_model}")
+        yaml_content = "\n".join(lines) + "\n"
+
+        tmp = target.with_suffix(".yaml.tmp")
+        tmp.write_text(yaml_content)
+        tmp.rename(target)
+
+        deps.registry.load_all()
+        rt = deps.registry.get(name)
+        return rt.to_dict()
 
     @app.delete("/agents/{name}", status_code=204)
     def delete_agent(name: str):
