@@ -75,15 +75,21 @@ class AgentRegistry:
 
         Per-yaml failures (load_agent_config or assemble_agent raising) result in a
         DEGRADED runtime entry rather than aborting the whole load.
+
+        Atomicity: builds the new dict in a local variable, then reassigns
+        ``self._by_name`` in a single attribute write. Python's GIL guarantees the
+        reassignment is atomic, so concurrent readers (e.g. ws_chat looking up an
+        agent while POST /agents triggers a reload) see either the old or the new
+        dict — never a partially-rebuilt one.
         """
-        self._by_name.clear()
+        new_by_name: dict[str, AgentRuntime] = {}
         for p in sorted(self.agents_dir.glob("*.yaml")):
             try:
                 cfg = load_agent_config(p, default_model=self.default_model)
             except Exception as e:
                 stem = p.stem
                 logger.warning("load_agent_config failed for %s: %s", p, e)
-                self._by_name[stem] = AgentRuntime(
+                new_by_name[stem] = AgentRuntime(
                     name=stem,
                     model="?",
                     system_prompt="",
@@ -104,7 +110,7 @@ class AgentRegistry:
                     default_model=self.default_model,
                     undo_db_path=self.undo_db_path,
                 )
-                self._by_name[cfg.name] = AgentRuntime(
+                new_by_name[cfg.name] = AgentRuntime(
                     name=cfg.name,
                     model=cfg.model,
                     system_prompt=cfg.system_prompt,
@@ -113,7 +119,7 @@ class AgentRegistry:
                 )
             except Exception as e:
                 logger.warning("assemble_agent failed for %s: %s", p, e)
-                self._by_name[cfg.name] = AgentRuntime(
+                new_by_name[cfg.name] = AgentRuntime(
                     name=cfg.name,
                     model=cfg.model,
                     system_prompt=cfg.system_prompt,
@@ -122,6 +128,9 @@ class AgentRegistry:
                     last_error=f"assemble_agent: {e}",
                     assembled=None,
                 )
+
+        # Single atomic reassignment — concurrent readers see old or new, never partial.
+        self._by_name = new_by_name
 
     def names(self) -> list[str]:
         return list(self._by_name.keys())

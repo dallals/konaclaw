@@ -57,6 +57,8 @@ def register_http_routes(app: FastAPI) -> None:
         for pl in req.system_prompt.splitlines() or [""]:
             lines.append(f"  {pl}")
         if req.model:
+            if "\n" in req.model or "\r" in req.model:
+                raise HTTPException(422, detail="model must not contain newlines")
             lines.append(f"model: {req.model}")
         yaml_content = "\n".join(lines) + "\n"
 
