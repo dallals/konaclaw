@@ -190,3 +190,67 @@ def test_assemble_agent_without_memory_root_does_not_register_memory_tools(home)
     assert a.memory_reader is None
     assert a.base_system_prompt == "hi"  # equals system_prompt when no memory
     assert a.system_prompt == "hi"
+
+
+# ------------------------------------------------------------------ Google
+# (kc-connectors integration — wave 3a)
+
+GMAIL_TOOL_NAMES = {"gmail.search", "gmail.read_thread", "gmail.draft", "gmail.send"}
+GCAL_TOOL_NAMES = {"gcal.list_events", "gcal.create_event", "gcal.update_event", "gcal.delete_event"}
+
+
+def _basic_assemble_kwargs(home):
+    storage = Storage(home / "data" / "kc.db"); storage.init()
+    broker = ApprovalBroker()
+    shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
+    cfg = AgentConfig(name="alice", model="qwen2.5:7b", system_prompt="hi")
+    return dict(
+        cfg=cfg, shares=shares, audit_storage=storage, broker=broker,
+        ollama_url="http://localhost:11434", default_model="qwen2.5:7b",
+        undo_db_path=home / "data" / "undo.db",
+    )
+
+
+def test_assemble_with_gmail_service_registers_4_tools(home):
+    from unittest.mock import MagicMock
+    a = assemble_agent(**_basic_assemble_kwargs(home), gmail_service=MagicMock())
+    names = set(a.registry.names())
+    assert GMAIL_TOOL_NAMES <= names
+    # gcal not provided → gcal tools absent
+    assert not (GCAL_TOOL_NAMES & names)
+
+
+def test_assemble_with_gcal_service_registers_4_tools(home):
+    from unittest.mock import MagicMock
+    a = assemble_agent(**_basic_assemble_kwargs(home), gcal_service=MagicMock())
+    names = set(a.registry.names())
+    assert GCAL_TOOL_NAMES <= names
+    assert not (GMAIL_TOOL_NAMES & names)
+
+
+def test_assemble_without_google_services_no_google_tools(home):
+    a = assemble_agent(**_basic_assemble_kwargs(home))
+    names = set(a.registry.names())
+    assert not (GMAIL_TOOL_NAMES & names)
+    assert not (GCAL_TOOL_NAMES & names)
+
+
+def test_google_tool_tiers_match_expected(home):
+    from unittest.mock import MagicMock
+    a = assemble_agent(
+        **_basic_assemble_kwargs(home),
+        gmail_service=MagicMock(),
+        gcal_service=MagicMock(),
+    )
+    expected = {
+        "gmail.search":      Tier.SAFE,
+        "gmail.read_thread": Tier.SAFE,
+        "gmail.draft":       Tier.MUTATING,
+        "gmail.send":        Tier.DESTRUCTIVE,
+        "gcal.list_events":  Tier.SAFE,
+        "gcal.create_event": Tier.DESTRUCTIVE,
+        "gcal.update_event": Tier.DESTRUCTIVE,
+        "gcal.delete_event": Tier.DESTRUCTIVE,
+    }
+    for name, tier in expected.items():
+        assert a.engine.tier_map[name] == tier, f"{name} tier mismatch"

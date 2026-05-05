@@ -52,6 +52,43 @@ def main() -> None:
     except ImportError:
         pass
 
+    # Google connectors (Gmail + Calendar) — optional. Reads
+    # ~/KonaClaw/config/secrets.yaml for the OAuth credentials path. If the
+    # creds file is missing or kc-connectors isn't installed, agents simply
+    # don't get Google tools; the supervisor still boots.
+    gmail_service = None
+    gcal_service = None
+    try:
+        from kc_connectors.secrets import load_secrets
+        from kc_connectors.gmail_adapter import build_gmail_service, GMAIL_SCOPES
+        from kc_connectors.gcal_adapter import build_gcal_service, GCAL_SCOPES
+        secrets = load_secrets()
+        creds_path = secrets.get("google_credentials_json_path")
+        token_path = secrets.get("google_token_json_path",
+                                str(home / "config" / "google_token.json"))
+        if creds_path and Path(creds_path).exists():
+            from google.oauth2.credentials import Credentials
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            from google.auth.transport.requests import Request
+            scopes = GMAIL_SCOPES + GCAL_SCOPES
+            creds = None
+            if Path(token_path).exists():
+                creds = Credentials.from_authorized_user_file(token_path, scopes)
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    flow = InstalledAppFlow.from_client_secrets_file(creds_path, scopes)
+                    creds = flow.run_local_server(port=0)
+                Path(token_path).write_text(creds.to_json())
+            gmail_service = build_gmail_service(creds)
+            gcal_service = build_gcal_service(creds)
+    except ImportError:
+        pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("google connectors disabled: %s", e)
+
     registry = AgentRegistry(
         agents_dir=home / "agents",
         shares=shares,
@@ -63,6 +100,8 @@ def main() -> None:
         mcp_manager=mcp_manager,
         mcp_install_store=mcp_install_store,
         memory_root=memory_root,
+        gmail_service=gmail_service,
+        gcal_service=gcal_service,
     )
     registry.load_all()
 

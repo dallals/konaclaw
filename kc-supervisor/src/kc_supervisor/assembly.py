@@ -59,6 +59,8 @@ def assemble_agent(
     mcp_install_store: Optional[Any] = None,
     on_mcp_install: Optional[Callable[[], None]] = None,
     memory_root: Optional[Path] = None,
+    gmail_service: Optional[Any] = None,
+    gcal_service: Optional[Any] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -179,6 +181,34 @@ def assemble_agent(
         ).values():
             registry.register(mt)
         tier_map.update(_MEM_TIERS)
+
+    # Google tool-providers (Gmail + Calendar) — only when the supervisor has
+    # built credentialed service objects. Lazy-imports kc_connectors so
+    # kc-supervisor doesn't take a hard dep; the presence of a service object
+    # is the signal that kc_connectors is importable AND credentials exist.
+    if gmail_service is not None or gcal_service is not None:
+        from kc_connectors.gmail_adapter import build_gmail_tools
+        from kc_connectors.gcal_adapter import build_gcal_tools
+
+        google_tier_map: dict[str, Tier] = {
+            "gmail.search":      Tier.SAFE,
+            "gmail.read_thread": Tier.SAFE,
+            "gmail.draft":       Tier.MUTATING,
+            "gmail.send":        Tier.DESTRUCTIVE,
+            "gcal.list_events":  Tier.SAFE,
+            "gcal.create_event": Tier.DESTRUCTIVE,
+            "gcal.update_event": Tier.DESTRUCTIVE,
+            "gcal.delete_event": Tier.DESTRUCTIVE,
+        }
+
+        if gmail_service is not None:
+            for tool in build_gmail_tools(service=gmail_service).values():
+                registry.register(tool)
+                tier_map[tool.name] = google_tier_map[tool.name]
+        if gcal_service is not None:
+            for tool in build_gcal_tools(service=gcal_service).values():
+                registry.register(tool)
+                tier_map[tool.name] = google_tier_map[tool.name]
 
     # 4. PermissionEngine. broker.request_approval is async; the engine's
     # check_async detects coroutines via inspect.iscoroutine and awaits them.
