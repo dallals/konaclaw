@@ -62,4 +62,26 @@ def create_app(deps: Deps) -> FastAPI:
     from kc_supervisor.ws_routes import register_ws_routes
     register_ws_routes(app)
 
+    # MCP servers are spawned on the FastAPI startup event so their lifecycle
+    # tasks live inside uvicorn's event loop (anyio-scope correctness — see
+    # kc_mcp.handle module docstring). After loading, reload AgentRegistry so
+    # every agent picks up the freshly-registered MCP tools.
+    if deps.mcp_manager is not None and deps.mcp_install_store is not None:
+        @app.on_event("startup")
+        async def _startup_load_mcps() -> None:
+            try:
+                from kc_mcp.config_loader import load_static_mcp_servers_async
+            except ImportError:
+                return
+            cfg = deps.home / "config" / "mcp.yaml"
+            await load_static_mcp_servers_async(
+                config_path=cfg,
+                manager=deps.mcp_manager,
+                store=deps.mcp_install_store,
+            )
+            # Re-assemble agents now that MCP tools exist; their AuditingToolRegistry
+            # snapshots the tool list at assembly time, so a second load_all() is
+            # required after the manager finishes registering.
+            deps.registry.load_all()
+
     return app

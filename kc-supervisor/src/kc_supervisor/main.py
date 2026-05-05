@@ -27,25 +27,17 @@ def main() -> None:
     shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
     conv_locks = ConversationLocks()
 
-    # MCP integration is optional — if kc-mcp is installed, wire it up so
-    # agents get any configured/runtime-installed MCP tools. If not, the
-    # supervisor still boots with just the kc-sandbox file tools + delegate.
+    # MCP integration is optional — if kc-mcp is installed, instantiate the
+    # bookkeeping objects here so AgentRegistry sees them. The actual MCP
+    # subprocess spawning happens on the FastAPI startup hook in service.py
+    # (anyio-scope correctness — see kc_mcp.handle docstring).
     mcp_manager = None
     mcp_install_store = None
     try:
         from kc_mcp.manager import MCPManager
         from kc_mcp.store import MCPInstallStore
-        from kc_mcp.config_loader import load_static_mcp_servers
-
         mcp_manager = MCPManager()
         mcp_install_store = MCPInstallStore(storage)
-        # Load any servers declared in ~/KonaClaw/config/mcp.yaml synchronously
-        # at boot. Failures per-server are logged but don't abort startup.
-        load_static_mcp_servers(
-            config_path=home / "config" / "mcp.yaml",
-            manager=mcp_manager,
-            store=mcp_install_store,
-        )
     except ImportError:
         pass
 
