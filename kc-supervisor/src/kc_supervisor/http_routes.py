@@ -63,10 +63,53 @@ def register_http_routes(app: FastAPI) -> None:
 
     @app.post("/undo/{audit_id}")
     def undo(audit_id: int):
-        # v1 stub: kc-sandbox Undoer wiring lands in v0.2 once shares are
-        # configured at boot. The audit_undo_link table (Storage) already
-        # supports the lookup; the missing piece is access to the per-share
-        # Journal instances.
-        raise HTTPException(
-            501, detail="Undo not yet wired in kc-supervisor v1 — see roadmap.",
-        )
+        from fastapi.responses import JSONResponse
+        from kc_sandbox.undo import Undoer
+        deps = app.state.deps
+
+        # 1. Find the audit row
+        rows = deps.storage.list_audit(limit=1000000)
+        row = next((r for r in rows if r["id"] == audit_id), None)
+        if row is None:
+            raise HTTPException(404, detail=f"unknown audit_id: {audit_id}")
+
+        # 2. Find the linked eid
+        eid = deps.storage.get_undo_op_for_audit(audit_id)
+        if eid is None:
+            raise HTTPException(
+                422,
+                detail="this audit row has no journal op (only mutating/destructive file ops journal)",
+            )
+
+        # 3. Find the agent's AssembledAgent
+        try:
+            rt = deps.registry.get(row["agent"])
+        except KeyError:
+            raise HTTPException(
+                404,
+                detail=f"agent {row['agent']!r} (from audit row) no longer exists",
+            )
+        if rt.assembled is None:
+            raise HTTPException(409, detail=f"agent {row['agent']!r} is degraded; cannot undo")
+
+        # 4. Run the Undoer
+        undoer = Undoer(journals=rt.assembled.journals, log=rt.assembled.undo_log)
+        try:
+            undoer.undo(eid)
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": f"undo failed: {type(e).__name__}: {e}",
+                    "audit_id": audit_id,
+                },
+            )
+
+        # 5. Synthesize the reversed action description from the UndoEntry
+        entry = rt.assembled.undo_log.get(eid)
+        return {
+            "reversed": {
+                "kind": entry.reverse_kind,
+                "details": entry.reverse_payload,
+            },
+        }
