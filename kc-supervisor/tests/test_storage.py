@@ -165,6 +165,62 @@ def test_set_title_unknown_returns_false(tmp_path):
     assert s.set_conversation_title(99999, "x") is False
 
 
+def test_list_audit_includes_undone_flag(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    aid_undone = s.append_audit(
+        agent="kc", tool="file.write", args_json="{}",
+        decision="tier", result="ok", undoable=True,
+    )
+    s.link_audit_undo(aid_undone, undo_op_id=42)
+    aid_pending = s.append_audit(
+        agent="kc", tool="file.write", args_json="{}",
+        decision="tier", result="ok", undoable=True,
+    )
+    s.link_audit_undo(aid_pending, undo_op_id=43)
+    aid_no_link = s.append_audit(
+        agent="kc", tool="file.read", args_json="{}",
+        decision="tier", result="ok", undoable=False,
+    )
+
+    # Nothing undone yet.
+    rows = {r["id"]: r for r in s.list_audit()}
+    assert rows[aid_undone]["undone"] == 0
+    assert rows[aid_pending]["undone"] == 0
+    assert rows[aid_no_link]["undone"] == 0
+
+    # Mark one as undone — only that row's `undone` flips.
+    assert s.mark_audit_undone(aid_undone) is True
+    rows = {r["id"]: r for r in s.list_audit()}
+    assert rows[aid_undone]["undone"] == 1
+    assert rows[aid_pending]["undone"] == 0
+
+
+def test_mark_undone_unknown_audit_returns_false(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    assert s.mark_audit_undone(99999) is False
+
+
+def test_legacy_audit_undo_link_table_gets_undone_at_column(tmp_path):
+    """Idempotent migration: a DB whose audit_undo_link pre-dates undone_at
+    (a real KonaClaw install on Sammy's Mac) must keep working after init.
+    Simulate by initing a fresh DB, dropping the column, then re-initing."""
+    import sqlite3
+    db = tmp_path / "kc.db"
+    s = Storage(db); s.init()  # full SCHEMA, including undone_at
+
+    # Force-drop undone_at to simulate a pre-migration DB.
+    conn = sqlite3.connect(db, isolation_level=None)
+    conn.execute("ALTER TABLE audit_undo_link DROP COLUMN undone_at")
+    conn.execute("INSERT INTO audit_undo_link (audit_id, undo_op_id) VALUES (1, 5)")
+    conn.close()
+
+    # init() again — the migration block must add undone_at back without error.
+    s.init()
+    with s.connect() as c:
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(audit_undo_link)").fetchall()}
+    assert "undone_at" in cols
+
+
 def test_init_idempotent_adds_pinned_column_to_legacy_db(tmp_path):
     db = tmp_path / "kc.db"
     import sqlite3

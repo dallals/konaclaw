@@ -191,7 +191,11 @@ def register_http_routes(app: FastAPI) -> None:
                 },
             )
 
-        # 5. Synthesize the reversed action description from the UndoEntry
+        # 5. Stamp the link as undone so subsequent list_audit calls can hide
+        # the Undo button. (Idempotent — safe even if the link row vanished.)
+        deps.storage.mark_audit_undone(audit_id)
+
+        # 6. Synthesize the reversed action description from the UndoEntry.
         entry = rt.assembled.undo_log.get(eid)
         return {
             "reversed": {

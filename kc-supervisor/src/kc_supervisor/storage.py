@@ -44,6 +44,7 @@ CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit(ts);
 CREATE TABLE IF NOT EXISTS audit_undo_link (
     audit_id INTEGER PRIMARY KEY,
     undo_op_id INTEGER NOT NULL,
+    undone_at REAL,
     FOREIGN KEY(audit_id) REFERENCES audit(id)
 );
 CREATE INDEX IF NOT EXISTS ix_link_undo ON audit_undo_link(undo_op_id);
@@ -85,6 +86,9 @@ class Storage:
                 c.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
             if "title" not in cols:
                 c.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
+            link_cols = {r["name"] for r in c.execute("PRAGMA table_info(audit_undo_link)").fetchall()}
+            if "undone_at" not in link_cols:
+                c.execute("ALTER TABLE audit_undo_link ADD COLUMN undone_at REAL")
 
     @contextmanager
     def connect(self):
@@ -199,17 +203,35 @@ class Storage:
             return int(cur.lastrowid)
 
     def list_audit(self, agent: Optional[str] = None, limit: int = 100) -> list[dict]:
+        # LEFT JOIN audit_undo_link so each row carries undone=1 if /undo
+        # has already been run on this audit_id (so the dashboard can hide
+        # the Undo button instead of letting the user double-fire it).
+        base = (
+            "SELECT a.*, "
+            "CASE WHEN l.undone_at IS NOT NULL THEN 1 ELSE 0 END AS undone "
+            "FROM audit a LEFT JOIN audit_undo_link l ON l.audit_id = a.id "
+        )
         with self.connect() as c:
             if agent is not None:
                 rows = c.execute(
-                    "SELECT * FROM audit WHERE agent=? ORDER BY ts DESC LIMIT ?",
+                    base + "WHERE a.agent=? ORDER BY a.ts DESC LIMIT ?",
                     (agent, limit),
                 ).fetchall()
             else:
                 rows = c.execute(
-                    "SELECT * FROM audit ORDER BY ts DESC LIMIT ?", (limit,),
+                    base + "ORDER BY a.ts DESC LIMIT ?", (limit,),
                 ).fetchall()
         return [dict(r) for r in rows]
+
+    def mark_audit_undone(self, audit_id: int) -> bool:
+        """Stamp audit_undo_link.undone_at for this audit row. Returns True if a
+        link existed (i.e., the audit row had a journaled op to begin with)."""
+        with self.connect() as c:
+            cur = c.execute(
+                "UPDATE audit_undo_link SET undone_at=? WHERE audit_id=?",
+                (time.time(), audit_id),
+            )
+            return cur.rowcount > 0
 
     # ----- audit ↔ undo cross-reference -----
 

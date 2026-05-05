@@ -227,6 +227,17 @@ def test_undo_round_trips_memory_append(tmp_path):
     # either case is correct — the appended content is gone.
     assert (not user_md.exists()) or "concise replies" not in user_md.read_text()
 
+    # The audit row now reports undone=1 so the dashboard can hide its Undo
+    # button and prevent a double-click that would 500.
+    fresh = next(r for r in storage.list_audit() if r["id"] == aid)
+    assert fresh["undone"] == 1
+    # And re-undoing returns 500 with the "already applied" message — the
+    # mark_audit_undone is just for the UI hint, not a server-side block.
+    with TestClient(app) as client:
+        r2 = client.post(f"/undo/{aid}")
+    assert r2.status_code == 500
+    assert "already applied" in r2.json()["detail"]
+
 
 def test_undo_returns_500_on_undoer_failure(app, deps):
     """If the Undoer raises (sha doesn't exist), /undo returns 500 with audit_id in body."""
