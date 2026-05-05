@@ -3,17 +3,19 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from fastapi import FastAPI
-from kc_supervisor.storage import Storage
+from kc_sandbox.shares import SharesRegistry
 from kc_supervisor.agents import AgentRegistry
-from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.approvals import ApprovalBroker
+from kc_supervisor.conversations import ConversationManager
+from kc_supervisor.locks import ConversationLocks
+from kc_supervisor.storage import Storage
 
 
 @dataclass
 class Deps:
     """Dependency bundle injected into the FastAPI app at construction.
 
-    Tests build their own Deps with in-memory or tmp_path-backed components.
+    Tests build their own Deps with tmp_path-backed components.
     Production wiring lives in main.py.
     """
     storage: Storage
@@ -21,6 +23,8 @@ class Deps:
     conversations: ConversationManager
     approvals: ApprovalBroker
     home: Path
+    shares: SharesRegistry
+    conv_locks: ConversationLocks
     started_at: float = field(default_factory=time.time)
 
 

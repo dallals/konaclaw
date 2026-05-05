@@ -247,3 +247,188 @@ async def test_agent_permission_check_supports_async_deny(fake_ollama):
     err = next(m for m in second if m["role"] == "tool")
     assert "Denied" in err["content"]
     assert "async denied" in err["content"]
+
+
+from kc_core.stream_frames import (
+    TextDelta, ToolCallsBlock, Done,
+    TokenDelta, ToolCallStart, ToolResult, Complete,
+)
+
+
+@pytest.mark.asyncio
+async def test_agent_send_stream_yields_token_deltas_and_complete(fake_ollama):
+    """Single-turn text-only response: tokens stream, then Complete."""
+    client = fake_ollama(
+        stream_responses=[[
+            TextDelta(content="hello "),
+            TextDelta(content="world"),
+            Done(finish_reason="stop"),
+        ]],
+    )
+    reg = ToolRegistry()
+    agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg)
+    frames = []
+    async for f in agent.send_stream("hi"):
+        frames.append(f)
+
+    assert isinstance(frames[0], TokenDelta)
+    assert frames[0].content == "hello "
+    assert isinstance(frames[1], TokenDelta)
+    assert frames[1].content == "world"
+    assert isinstance(frames[-1], Complete)
+    assert frames[-1].reply.content == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_agent_send_stream_runs_tool_call_between_turns(fake_ollama):
+    """First turn: tool call. Second turn: text. Frame sequence covers all phases."""
+    client = fake_ollama(
+        stream_responses=[
+            [
+                ToolCallsBlock(calls=[{"id": "c1", "name": "echo", "arguments": {"text": "hi"}}]),
+                Done(finish_reason="tool_calls"),
+            ],
+            [
+                TextDelta(content="echoed: hi"),
+                Done(finish_reason="stop"),
+            ],
+        ],
+    )
+    reg = ToolRegistry()
+    reg.register(Tool(name="echo", description="", parameters={}, impl=lambda text: text))
+    agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg)
+
+    frames = [f async for f in agent.send_stream("please echo")]
+    types = [type(f).__name__ for f in frames]
+    assert "ToolCallStart" in types
+    assert "ToolResult" in types
+    assert types.index("ToolCallStart") < types.index("ToolResult")
+    assert types.index("ToolResult") < types.index("TokenDelta")
+    assert isinstance(frames[-1], Complete)
+    assert frames[-1].reply.content == "echoed: hi"
+
+
+@pytest.mark.asyncio
+async def test_agent_send_stream_propagates_permission_deny(fake_ollama):
+    """Sync deny callback short-circuits the tool — ToolResult content begins with 'Denied'."""
+    client = fake_ollama(
+        stream_responses=[
+            [
+                ToolCallsBlock(calls=[{"id": "c1", "name": "echo", "arguments": {"text": "hi"}}]),
+                Done(finish_reason="tool_calls"),
+            ],
+            [
+                TextDelta(content="couldn't run it"),
+                Done(finish_reason="stop"),
+            ],
+        ],
+    )
+    reg = ToolRegistry()
+    reg.register(Tool(name="echo", description="", parameters={}, impl=lambda text: text))
+
+    def deny_all(agent_name, tool_name, args):
+        return (False, "no")
+
+    agent = Agent(
+        name="kc", client=client, system_prompt="sys", tools=reg,
+        permission_check=deny_all,
+    )
+    frames = [f async for f in agent.send_stream("please echo")]
+    tool_results = [f for f in frames if isinstance(f, ToolResult)]
+    assert len(tool_results) == 1
+    assert "Denied" in tool_results[0].content
+
+
+@pytest.mark.asyncio
+async def test_agent_send_stream_supports_async_permission_check(fake_ollama):
+    """Async permission check works with streaming."""
+    client = fake_ollama(
+        stream_responses=[
+            [
+                ToolCallsBlock(calls=[{"id": "c1", "name": "echo", "arguments": {"text": "hi"}}]),
+                Done(finish_reason="tool_calls"),
+            ],
+            [
+                TextDelta(content="ok"),
+                Done(finish_reason="stop"),
+            ],
+        ],
+    )
+    reg = ToolRegistry()
+    reg.register(Tool(name="echo", description="", parameters={}, impl=lambda text: text))
+
+    async def async_allow(agent_name, tool_name, args):
+        return (True, None)
+
+    agent = Agent(
+        name="kc", client=client, system_prompt="sys", tools=reg,
+        permission_check=async_allow,
+    )
+    frames = [f async for f in agent.send_stream("please echo")]
+    assert isinstance(frames[-1], Complete)
+    assert frames[-1].reply.content == "ok"
+
+
+@pytest.mark.asyncio
+async def test_agent_send_stream_raises_on_max_iterations(fake_ollama):
+    """If the model loops forever asking for tool calls, send_stream raises."""
+    looping = [
+        ToolCallsBlock(calls=[{"id": "c1", "name": "echo", "arguments": {"text": "x"}}]),
+        Done(finish_reason="tool_calls"),
+    ]
+    client = fake_ollama(
+        stream_responses=[looping] * 11,
+    )
+    reg = ToolRegistry()
+    reg.register(Tool(name="echo", description="", parameters={}, impl=lambda text: text))
+    agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg, max_tool_iterations=10)
+    with pytest.raises(RuntimeError):
+        async for _ in agent.send_stream("loop"):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_agent_send_stream_appends_history_same_as_send(fake_ollama):
+    """After streaming, agent.history should match what send() leaves behind."""
+    client = fake_ollama(
+        stream_responses=[[
+            TextDelta(content="hi back"),
+            Done(finish_reason="stop"),
+        ]],
+    )
+    reg = ToolRegistry()
+    agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg)
+    async for _ in agent.send_stream("hello"):
+        pass
+    assert len(agent.history) == 2
+    assert agent.history[0].__class__.__name__ == "UserMessage"
+    assert agent.history[1].__class__.__name__ == "AssistantMessage"
+    assert agent.history[1].content == "hi back"
+
+
+@pytest.mark.asyncio
+async def test_agent_send_stream_uses_json_in_text_fallback(fake_ollama):
+    """If the model emits a tool call as JSON-in-text (no native tool_calls), send_stream
+    detects it via parse_text_tool_calls and runs the tool, same as send."""
+    json_call = '{"tool": "echo", "arguments": {"text": "hi"}}'
+    client = fake_ollama(
+        stream_responses=[
+            [
+                TextDelta(content=json_call),
+                Done(finish_reason="stop"),
+            ],
+            [
+                TextDelta(content="echoed: hi"),
+                Done(finish_reason="stop"),
+            ],
+        ],
+    )
+    reg = ToolRegistry()
+    reg.register(Tool(name="echo", description="", parameters={}, impl=lambda text: text))
+    agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg)
+    frames = [f async for f in agent.send_stream("please echo")]
+    types = [type(f).__name__ for f in frames]
+    assert "ToolCallStart" in types
+    assert "ToolResult" in types
+    assert isinstance(frames[-1], Complete)
+    assert frames[-1].reply.content == "echoed: hi"

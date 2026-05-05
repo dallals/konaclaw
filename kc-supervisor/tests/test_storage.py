@@ -65,8 +65,8 @@ def test_audit_undo_link_round_trip(tmp_path):
         agent="kc", tool="file.delete", args_json="{}",
         decision="destructive·callback", result="ok", undoable=True,
     )
-    s.link_audit_undo(audit_id=aid, undo_op_id="op-abc-123")
-    assert s.get_undo_op_for_audit(aid) == "op-abc-123"
+    s.link_audit_undo(audit_id=aid, undo_op_id=42)
+    assert s.get_undo_op_for_audit(aid) == 42
 
 
 def test_audit_undo_link_missing_returns_none(tmp_path):
@@ -78,18 +78,18 @@ def test_audit_undo_link_idempotent(tmp_path):
     s = Storage(tmp_path / "kc.db"); s.init()
     aid = s.append_audit(agent="kc", tool="x", args_json="{}",
                          decision="d", result="r", undoable=True)
-    s.link_audit_undo(aid, "op-1")
-    s.link_audit_undo(aid, "op-1")
-    assert s.get_undo_op_for_audit(aid) == "op-1"
+    s.link_audit_undo(aid, 42)
+    s.link_audit_undo(aid, 42)
+    assert s.get_undo_op_for_audit(aid) == 42
 
 
 def test_audit_undo_link_first_wins_on_conflict(tmp_path):
     s = Storage(tmp_path / "kc.db"); s.init()
     aid = s.append_audit(agent="kc", tool="x", args_json="{}",
                          decision="d", result="r", undoable=True)
-    s.link_audit_undo(aid, "op-original")
-    s.link_audit_undo(aid, "op-replacement")  # different op_id, same audit
-    assert s.get_undo_op_for_audit(aid) == "op-original"
+    s.link_audit_undo(aid, 100)
+    s.link_audit_undo(aid, 200)
+    assert s.get_undo_op_for_audit(aid) == 100
 
 
 def test_get_conversation_returns_dict(tmp_path):

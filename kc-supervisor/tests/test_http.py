@@ -88,19 +88,137 @@ def test_audit_endpoint_filter_by_agent(app, deps):
     assert entries[0]["agent"] == "alice"
 
 
-def test_undo_returns_501(app, deps):
-    aid = deps.storage.append_audit(
-        agent="alice", tool="file.delete", args_json="{}",
-        decision="destructive·callback", result="ok", undoable=True,
-    )
-    with TestClient(app) as client:
-        r = client.post(f"/undo/{aid}")
-    assert r.status_code == 501
-    assert "not yet wired" in r.json()["detail"]
-
-
 def test_list_messages_unknown_cid_returns_404(app):
     with TestClient(app) as client:
         r = client.get("/conversations/99999/messages")
     assert r.status_code == 404
     assert "unknown conversation" in r.json()["detail"]
+
+
+def test_undo_unknown_audit_id_returns_404(app):
+    with TestClient(app) as client:
+        r = client.post("/undo/99999")
+    assert r.status_code == 404
+    assert "unknown audit" in r.json()["detail"].lower()
+
+
+def test_undo_audit_with_no_link_returns_422(app, deps):
+    """An audit row with no audit_undo_link entry is not undoable (e.g. file.read)."""
+    aid = deps.storage.append_audit(
+        agent="alice", tool="file.read", args_json="{}",
+        decision="tier", result="ok", undoable=False,
+    )
+    with TestClient(app) as client:
+        r = client.post(f"/undo/{aid}")
+    assert r.status_code == 422
+    assert "no journal op" in r.json()["detail"].lower()
+
+
+def test_undo_happy_path_reverses_a_real_file_write(app, deps):
+    """End-to-end: write a file via the assembled agent's tool registry,
+    then undo via POST /undo/{audit_id}. The file should disappear."""
+    rt = deps.registry.get("alice")
+    assert rt.assembled is not None
+
+    from kc_supervisor.audit_tools import _decision_contextvar, _eid_contextvar
+    from kc_sandbox.permissions import Decision, Tier
+    _decision_contextvar.set(Decision(allowed=True, tier=Tier.MUTATING, source="tier", reason=None))
+    _eid_contextvar.set(None)
+
+    target = "hello.txt"
+    rt.assembled.registry.invoke("file.write", {
+        "share": "main", "relpath": target, "content": "hi from test",
+    })
+
+    share_root = deps.shares.get("main").path
+    assert (share_root / target).exists()
+
+    rows = deps.storage.list_audit()
+    write_rows = [r for r in rows if r["tool"] == "file.write"]
+    assert len(write_rows) == 1
+    aid = write_rows[0]["id"]
+    assert deps.storage.get_undo_op_for_audit(aid) is not None
+
+    with TestClient(app) as client:
+        r = client.post(f"/undo/{aid}")
+    assert r.status_code == 200
+    body = r.json()
+    assert "reversed" in body
+    assert body["reversed"]["kind"] == "git-revert"
+
+    # File should be reverted (gone)
+    assert not (share_root / target).exists()
+
+
+def test_undo_returns_500_on_undoer_failure(app, deps):
+    """If the Undoer raises (sha doesn't exist), /undo returns 500 with audit_id in body."""
+    rt = deps.registry.get("alice")
+    assert rt.assembled is not None
+
+    from kc_sandbox.undo import UndoEntry
+
+    # Manually record a fake undo entry pointing at a nonexistent sha
+    eid = rt.assembled.undo_log.record(UndoEntry(
+        agent="alice", tool="file.write",
+        reverse_kind="git-revert",
+        reverse_payload={"share": "main", "sha": "deadbeefdeadbeef"},
+    ))
+    aid = deps.storage.append_audit(
+        agent="alice", tool="file.write", args_json="{}",
+        decision="tier", result="wrote", undoable=True,
+    )
+    deps.storage.link_audit_undo(aid, eid)
+
+    with TestClient(app) as client:
+        r = client.post(f"/undo/{aid}")
+    assert r.status_code == 500
+    body = r.json()
+    assert body["detail"].startswith("undo failed")
+    assert body.get("audit_id") == aid
+
+
+def test_post_agents_creates_yaml_and_registry_picks_it_up(app, deps):
+    body = {"name": "carol", "system_prompt": "I am carol", "model": "fake-model"}
+    with TestClient(app) as client:
+        r = client.post("/agents", json=body)
+    assert r.status_code == 200
+    snap = r.json()
+    assert snap["name"] == "carol"
+    assert snap["status"] in ("idle", "degraded")
+    yaml_path = deps.home / "agents" / "carol.yaml"
+    assert yaml_path.exists()
+    assert "carol" in deps.registry.names()
+
+
+def test_post_agents_collision_returns_409(app, deps):
+    """alice already exists in the fixture. POSTing alice again should 409."""
+    body = {"name": "alice", "system_prompt": "another alice"}
+    with TestClient(app) as client:
+        r = client.post("/agents", json=body)
+    assert r.status_code == 409
+    assert "exists" in r.json()["detail"].lower()
+
+
+def test_post_agents_invalid_name_returns_422(app, deps):
+    """Names with path traversal or starting with non-letter are rejected."""
+    bad_names = ["../evil", "0name", "name with space", "x" * 80]
+    for name in bad_names:
+        with TestClient(app) as client:
+            r = client.post("/agents", json={"name": name, "system_prompt": "x"})
+        assert r.status_code == 422, f"expected 422 for {name!r}, got {r.status_code}"
+        assert not (deps.home / "agents" / f"{name}.yaml").exists()
+
+
+def test_post_agents_uses_default_model_when_omitted(app, deps):
+    """When model is omitted from the body, the YAML still validates against the
+    registry's default_model fallback."""
+    body = {"name": "dave", "system_prompt": "hi"}
+    with TestClient(app) as client:
+        r = client.post("/agents", json=body)
+    assert r.status_code == 200
+    yaml_text = (deps.home / "agents" / "dave.yaml").read_text()
+    assert "name: dave" in yaml_text
+    # The fixture's default_model is "fake-model" — the registry uses it as fallback
+    # because the YAML omits a model field
+    rt = deps.registry.get("dave")
+    assert rt.model == "fake-model"

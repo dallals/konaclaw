@@ -1,10 +1,16 @@
 from __future__ import annotations
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Any
-from kc_core.agent import Agent as CoreAgent
+from typing import Any, Optional
 from kc_core.config import load_agent_config
+from kc_sandbox.shares import SharesRegistry
+from kc_supervisor.approvals import ApprovalBroker
+from kc_supervisor.assembly import AssembledAgent, assemble_agent
+from kc_supervisor.storage import Storage
+
+logger = logging.getLogger(__name__)
 
 
 class AgentStatus(str, Enum):
@@ -23,7 +29,8 @@ class AgentRuntime:
     yaml_path: Path
     status: AgentStatus = AgentStatus.IDLE
     last_error: Optional[str] = None
-    core_agent: Optional[CoreAgent] = None  # built lazily on first use; v0.2 wiring
+    # Set on successful assembly. None means assembly failed (status=DEGRADED).
+    assembled: Optional[AssembledAgent] = None
 
     def set_status(self, s: AgentStatus) -> None:
         self.status = s
@@ -38,38 +45,92 @@ class AgentRuntime:
 
 
 class AgentRegistry:
-    """Loads and tracks the set of agents the supervisor hosts.
+    """Loads agents from YAML files and constructs an AssembledAgent per file.
 
-    Each YAML file in ``agents_dir`` becomes one ``AgentRuntime``. The
-    ``shares_yaml`` and ``undo_db`` paths are accepted at construction so the
-    registry can be wired up to kc-sandbox in v0.2 — today they're stored but
-    unused (the registry only handles config + status tracking in v1).
+    On assembly failure (bad YAML, missing share, etc.) the runtime is created with
+    status=DEGRADED, last_error set, and assembled=None. The supervisor still boots.
     """
 
     def __init__(
         self, *,
         agents_dir: Path,
-        shares_yaml: Path,
-        undo_db: Path,
+        shares: SharesRegistry,
+        audit_storage: Storage,
+        broker: ApprovalBroker,
+        ollama_url: str,
         default_model: str,
+        undo_db_path: Path,
     ) -> None:
         self.agents_dir = Path(agents_dir)
-        self.shares_yaml = Path(shares_yaml)
-        self.undo_db = Path(undo_db)
+        self.shares = shares
+        self.audit_storage = audit_storage
+        self.broker = broker
+        self.ollama_url = ollama_url
         self.default_model = default_model
+        self.undo_db_path = Path(undo_db_path)
         self._by_name: dict[str, AgentRuntime] = {}
 
     def load_all(self) -> None:
-        """Re-read every ``*.yaml`` in agents_dir. Replaces existing entries."""
-        self._by_name.clear()
+        """Re-read every *.yaml in agents_dir. Replaces existing entries.
+
+        Per-yaml failures (load_agent_config or assemble_agent raising) result in a
+        DEGRADED runtime entry rather than aborting the whole load.
+
+        Atomicity: builds the new dict in a local variable, then reassigns
+        ``self._by_name`` in a single attribute write. Python's GIL guarantees the
+        reassignment is atomic, so concurrent readers (e.g. ws_chat looking up an
+        agent while POST /agents triggers a reload) see either the old or the new
+        dict — never a partially-rebuilt one.
+        """
+        new_by_name: dict[str, AgentRuntime] = {}
         for p in sorted(self.agents_dir.glob("*.yaml")):
-            cfg = load_agent_config(p, default_model=self.default_model)
-            self._by_name[cfg.name] = AgentRuntime(
-                name=cfg.name,
-                model=cfg.model,
-                system_prompt=cfg.system_prompt,
-                yaml_path=p,
-            )
+            try:
+                cfg = load_agent_config(p, default_model=self.default_model)
+            except Exception as e:
+                stem = p.stem
+                logger.warning("load_agent_config failed for %s: %s", p, e)
+                new_by_name[stem] = AgentRuntime(
+                    name=stem,
+                    model="?",
+                    system_prompt="",
+                    yaml_path=p,
+                    status=AgentStatus.DEGRADED,
+                    last_error=f"load_agent_config: {e}",
+                    assembled=None,
+                )
+                continue
+
+            try:
+                assembled = assemble_agent(
+                    cfg=cfg,
+                    shares=self.shares,
+                    audit_storage=self.audit_storage,
+                    broker=self.broker,
+                    ollama_url=self.ollama_url,
+                    default_model=self.default_model,
+                    undo_db_path=self.undo_db_path,
+                )
+                new_by_name[cfg.name] = AgentRuntime(
+                    name=cfg.name,
+                    model=cfg.model,
+                    system_prompt=cfg.system_prompt,
+                    yaml_path=p,
+                    assembled=assembled,
+                )
+            except Exception as e:
+                logger.warning("assemble_agent failed for %s: %s", p, e)
+                new_by_name[cfg.name] = AgentRuntime(
+                    name=cfg.name,
+                    model=cfg.model,
+                    system_prompt=cfg.system_prompt,
+                    yaml_path=p,
+                    status=AgentStatus.DEGRADED,
+                    last_error=f"assemble_agent: {e}",
+                    assembled=None,
+                )
+
+        # Single atomic reassignment — concurrent readers see old or new, never partial.
+        self._by_name = new_by_name
 
     def names(self) -> list[str]:
         return list(self._by_name.keys())
@@ -86,5 +147,4 @@ class AgentRegistry:
         self.get(name).set_status(AgentStatus.IDLE)
 
     def snapshot(self) -> list[dict[str, Any]]:
-        """List of `to_dict()` views, in insertion (sort) order."""
         return [rt.to_dict() for rt in self._by_name.values()]

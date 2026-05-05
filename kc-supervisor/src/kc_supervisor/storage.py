@@ -41,7 +41,7 @@ CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit(ts);
 
 CREATE TABLE IF NOT EXISTS audit_undo_link (
     audit_id INTEGER PRIMARY KEY,
-    undo_op_id TEXT NOT NULL,
+    undo_op_id INTEGER NOT NULL,
     FOREIGN KEY(audit_id) REFERENCES audit(id)
 );
 CREATE INDEX IF NOT EXISTS ix_link_undo ON audit_undo_link(undo_op_id);
@@ -163,12 +163,11 @@ class Storage:
 
     # ----- audit ↔ undo cross-reference -----
 
-    def link_audit_undo(self, audit_id: int, undo_op_id: str) -> None:
-        """Record that audit row `audit_id` produced kc-sandbox undo op `undo_op_id`.
+    def link_audit_undo(self, audit_id: int, undo_op_id: int) -> None:
+        """Record that audit row `audit_id` produced kc-sandbox UndoLog row `undo_op_id`.
 
-        Uses ``INSERT OR IGNORE`` — first link wins. A second call with the same
-        ``audit_id`` but a different ``undo_op_id`` is silently dropped, preserving
-        the original mapping.
+        First link wins — a second call with a different undo_op_id for the same audit_id
+        is silently dropped (one tool call = one journal op in kc-sandbox's contract).
         """
         with self.connect() as c:
             c.execute(
@@ -176,8 +175,8 @@ class Storage:
                 (audit_id, undo_op_id),
             )
 
-    def get_undo_op_for_audit(self, audit_id: int) -> Optional[str]:
-        """Look up the kc-sandbox undo op_id for an audit row, if any."""
+    def get_undo_op_for_audit(self, audit_id: int) -> Optional[int]:
+        """Look up the kc-sandbox UndoLog eid for an audit row, if any."""
         with self.connect() as c:
             row = c.execute(
                 "SELECT undo_op_id FROM audit_undo_link WHERE audit_id=?",
