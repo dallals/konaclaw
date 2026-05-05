@@ -100,6 +100,8 @@ class Agent:
 
                 try:
                     result = self.tools.invoke(c["name"], c["arguments"])
+                    if inspect.iscoroutine(result):
+                        result = await result
                     content = str(result)
                 except KeyError:
                     content = f"Error: unknown_tool: {c['name']}"
@@ -155,6 +157,8 @@ class Agent:
                         continue
                 try:
                     result = self.tools.invoke(c["name"], c["arguments"])
+                    if inspect.iscoroutine(result):
+                        result = await result
                     content = str(result)
                 except KeyError:
                     content = f"Error: unknown_tool: {c['name']}"
