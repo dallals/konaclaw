@@ -1,7 +1,12 @@
 from __future__ import annotations
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from kc_core.messages import UserMessage
+from kc_core.messages import (
+    UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
+)
+from kc_core.stream_frames import (
+    TokenDelta, ToolCallStart, ToolResult, Complete,
+)
 from kc_supervisor.agents import AgentStatus
 
 logger = logging.getLogger(__name__)
@@ -33,13 +38,23 @@ def register_ws_routes(app: FastAPI) -> None:
             await ws.close()
             return
 
-        if rt.core_agent is None:
+        if rt.assembled is None or rt.status == AgentStatus.DEGRADED:
+            err = rt.last_error or "agent not assembled"
             await ws.send_json({
                 "type": "error",
-                "message": f"agent {rt.name} not initialized",
+                "message": f"agent {rt.name} is degraded: {err}",
             })
             await ws.close()
             return
+        if rt.status == AgentStatus.DISABLED:
+            await ws.send_json({
+                "type": "error",
+                "message": f"agent {rt.name} is disabled",
+            })
+            await ws.close()
+            return
+
+        lock = deps.conv_locks.get(conversation_id)
 
         try:
             while True:
@@ -50,7 +65,6 @@ def register_ws_routes(app: FastAPI) -> None:
                         "message": f"unexpected: {inbound.get('type')}",
                     })
                     continue
-
                 content = inbound.get("content", "")
                 if not content:
                     await ws.send_json({
@@ -58,18 +72,67 @@ def register_ws_routes(app: FastAPI) -> None:
                         "message": "user_message must include non-empty content",
                     })
                     continue
-                deps.conversations.append(conversation_id, UserMessage(content=content))
-                rt.set_status(AgentStatus.THINKING)
-                await ws.send_json({"type": "agent_status", "status": "thinking"})
-                try:
-                    reply = await rt.core_agent.send(content)
-                finally:
-                    rt.set_status(AgentStatus.IDLE)
-                deps.conversations.append(conversation_id, reply)
-                await ws.send_json({
-                    "type": "assistant_complete",
-                    "content": reply.content,
-                })
+
+                async with lock:
+                    # Persist user message FIRST so /conversations/{cid}/messages
+                    # shows the user input even if the model call fails.
+                    deps.conversations.append(conversation_id, UserMessage(content=content))
+
+                    # Rehydrate kc-core Agent.history from SQLite. send_stream appends
+                    # its own UserMessage(content), so we trim a trailing UserMessage
+                    # from history before assigning.
+                    history = deps.conversations.list_messages(conversation_id)
+                    if history and history[-1].__class__.__name__ == "UserMessage":
+                        history = history[:-1]
+                    rt.assembled.core_agent.history = list(history)
+
+                    rt.set_status(AgentStatus.THINKING)
+                    await ws.send_json({"type": "agent_status", "status": "thinking"})
+                    try:
+                        async for frame in rt.assembled.core_agent.send_stream(content):
+                            if isinstance(frame, TokenDelta):
+                                await ws.send_json({"type": "token", "delta": frame.content})
+                            elif isinstance(frame, ToolCallStart):
+                                await ws.send_json({
+                                    "type": "tool_call",
+                                    "call": frame.call,
+                                })
+                                deps.conversations.append(conversation_id, ToolCallMessage(
+                                    tool_call_id=frame.call["id"],
+                                    tool_name=frame.call["name"],
+                                    arguments=frame.call["arguments"],
+                                ))
+                            elif isinstance(frame, ToolResult):
+                                await ws.send_json({
+                                    "type": "tool_result",
+                                    "call_id": frame.call_id,
+                                    "content": frame.content,
+                                })
+                                deps.conversations.append(conversation_id, ToolResultMessage(
+                                    tool_call_id=frame.call_id,
+                                    content=frame.content,
+                                ))
+                            elif isinstance(frame, Complete):
+                                deps.conversations.append(conversation_id, frame.reply)
+                                await ws.send_json({
+                                    "type": "assistant_complete",
+                                    "content": frame.reply.content,
+                                })
+                        rt.last_error = None
+                    except Exception as e:
+                        logger.exception("ws_chat send_stream raised")
+                        rt.last_error = str(e)
+                        rt.set_status(AgentStatus.DEGRADED)
+                        await ws.send_json({
+                            "type": "error",
+                            "stage": "model_call",
+                            "message": str(e),
+                        })
+                        await ws.close()
+                        return
+                    finally:
+                        if rt.status == AgentStatus.THINKING:
+                            rt.set_status(AgentStatus.IDLE)
         except WebSocketDisconnect:
             return
 
@@ -92,8 +155,6 @@ def register_ws_routes(app: FastAPI) -> None:
 
         import asyncio as _asyncio
         loop = _asyncio.get_running_loop()
-        # Subscriber callback runs in whatever thread/loop calls request_approval;
-        # schedule the actual send on the WS handler's loop.
         sub = deps.approvals.subscribe(
             lambda req: loop.call_soon_threadsafe(_asyncio.create_task, _send(req))
         )
