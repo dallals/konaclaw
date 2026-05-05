@@ -1,9 +1,18 @@
 from __future__ import annotations
+import re
 import time
 from dataclasses import asdict
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
+
+_AGENT_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
+
+
+class CreateAgentRequest(BaseModel):
+    name: str
+    system_prompt: str
+    model: Optional[str] = None
 
 
 class CreateConversationRequest(BaseModel):
@@ -29,6 +38,37 @@ def register_http_routes(app: FastAPI) -> None:
     @app.get("/agents")
     def list_agents():
         return {"agents": app.state.deps.registry.snapshot()}
+
+    @app.post("/agents")
+    def create_agent(req: CreateAgentRequest):
+        deps = app.state.deps
+        if not _AGENT_NAME_PATTERN.match(req.name):
+            raise HTTPException(
+                422,
+                detail=f"name must match {_AGENT_NAME_PATTERN.pattern}",
+            )
+        agent_dir = deps.home / "agents"
+        target = agent_dir / f"{req.name}.yaml"
+        if target.exists():
+            raise HTTPException(409, detail=f"agent {req.name!r} already exists")
+
+        # Build YAML content (model is optional; load_agent_config falls back to default).
+        lines = [f"name: {req.name}", "system_prompt: |"]
+        for pl in req.system_prompt.splitlines() or [""]:
+            lines.append(f"  {pl}")
+        if req.model:
+            lines.append(f"model: {req.model}")
+        yaml_content = "\n".join(lines) + "\n"
+
+        # Atomic write: tempfile + rename
+        tmp = target.with_suffix(".yaml.tmp")
+        tmp.write_text(yaml_content)
+        tmp.rename(target)
+
+        # Reload registry; new agent appears as IDLE or DEGRADED
+        deps.registry.load_all()
+        rt = deps.registry.get(req.name)
+        return rt.to_dict()
 
     @app.get("/conversations")
     def list_conversations(agent: Optional[str] = None):

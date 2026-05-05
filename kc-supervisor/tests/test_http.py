@@ -175,3 +175,50 @@ def test_undo_returns_500_on_undoer_failure(app, deps):
     body = r.json()
     assert body["detail"].startswith("undo failed")
     assert body.get("audit_id") == aid
+
+
+def test_post_agents_creates_yaml_and_registry_picks_it_up(app, deps):
+    body = {"name": "carol", "system_prompt": "I am carol", "model": "fake-model"}
+    with TestClient(app) as client:
+        r = client.post("/agents", json=body)
+    assert r.status_code == 200
+    snap = r.json()
+    assert snap["name"] == "carol"
+    assert snap["status"] in ("idle", "degraded")
+    yaml_path = deps.home / "agents" / "carol.yaml"
+    assert yaml_path.exists()
+    assert "carol" in deps.registry.names()
+
+
+def test_post_agents_collision_returns_409(app, deps):
+    """alice already exists in the fixture. POSTing alice again should 409."""
+    body = {"name": "alice", "system_prompt": "another alice"}
+    with TestClient(app) as client:
+        r = client.post("/agents", json=body)
+    assert r.status_code == 409
+    assert "exists" in r.json()["detail"].lower()
+
+
+def test_post_agents_invalid_name_returns_422(app, deps):
+    """Names with path traversal or starting with non-letter are rejected."""
+    bad_names = ["../evil", "0name", "name with space", "x" * 80]
+    for name in bad_names:
+        with TestClient(app) as client:
+            r = client.post("/agents", json={"name": name, "system_prompt": "x"})
+        assert r.status_code == 422, f"expected 422 for {name!r}, got {r.status_code}"
+        assert not (deps.home / "agents" / f"{name}.yaml").exists()
+
+
+def test_post_agents_uses_default_model_when_omitted(app, deps):
+    """When model is omitted from the body, the YAML still validates against the
+    registry's default_model fallback."""
+    body = {"name": "dave", "system_prompt": "hi"}
+    with TestClient(app) as client:
+        r = client.post("/agents", json=body)
+    assert r.status_code == 200
+    yaml_text = (deps.home / "agents" / "dave.yaml").read_text()
+    assert "name: dave" in yaml_text
+    # The fixture's default_model is "fake-model" — the registry uses it as fallback
+    # because the YAML omits a model field
+    rt = deps.registry.get("dave")
+    assert rt.model == "fake-model"
