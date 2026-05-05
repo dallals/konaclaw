@@ -121,12 +121,13 @@ def register_ws_routes(app: FastAPI) -> None:
                         rt.last_error = None
                     except Exception as e:
                         logger.exception("ws_chat send_stream raised")
-                        rt.last_error = str(e)
+                        msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                        rt.last_error = msg
                         rt.set_status(AgentStatus.DEGRADED)
                         await ws.send_json({
                             "type": "error",
                             "stage": "model_call",
-                            "message": str(e),
+                            "message": msg,
                         })
                     finally:
                         if rt.status == AgentStatus.THINKING:
