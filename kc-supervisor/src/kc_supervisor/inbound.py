@@ -1,0 +1,125 @@
+from __future__ import annotations
+import logging
+from typing import Optional
+from kc_core.messages import (
+    UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
+)
+from kc_core.stream_frames import (
+    TokenDelta, ToolCallStart, ToolResult, Complete,
+)
+from kc_supervisor.agents import AgentRegistry, AgentStatus
+from kc_supervisor.conversations import ConversationManager
+from kc_supervisor.locks import ConversationLocks
+
+logger = logging.getLogger(__name__)
+
+
+class InboundRouter:
+    """Bridges connector inbound messages to agent turns.
+
+    The connector's start(supervisor) receives an instance of this class as
+    its `supervisor` argument; calling `supervisor.handle_inbound(env)` from
+    the connector starts (or continues) an agent conversation.
+
+    Per-(channel, chat_id) conversation continuity is maintained in an
+    in-memory dict for v1 — it resets on supervisor restart, in which case
+    the next inbound message creates a new conversation. Persisting this
+    mapping to SQLite is a v0.2 follow-up.
+    """
+
+    def __init__(
+        self,
+        *,
+        registry: AgentRegistry,
+        conversations: ConversationManager,
+        conv_locks: ConversationLocks,
+        routing_table,                  # kc_connectors.routing.RoutingTable
+        connector_registry,             # kc_connectors.base.ConnectorRegistry
+    ) -> None:
+        self.registry = registry
+        self.conversations = conversations
+        self.conv_locks = conv_locks
+        self.routing_table = routing_table
+        self.connector_registry = connector_registry
+        self._conv_by_chat: dict[tuple[str, str], int] = {}
+
+    async def handle_inbound(self, env) -> None:
+        """Run an agent turn for a single inbound MessageEnvelope.
+
+        Resolves agent via routing_table, persists user message, runs
+        send_stream, persists each frame, and on Complete sends the assistant
+        reply back through the originating connector. Errors are logged and
+        swallowed — connectors stay running.
+        """
+        agent_name = self.routing_table.route(env.channel, env.chat_id)
+        try:
+            rt = self.registry.get(agent_name)
+        except KeyError:
+            logger.warning("inbound dropped: unknown agent %s for env %s/%s",
+                           agent_name, env.channel, env.chat_id)
+            return
+        if rt.assembled is None:
+            logger.warning("inbound dropped: agent %s degraded: %s",
+                           agent_name, rt.last_error)
+            return
+
+        key = (env.channel, env.chat_id)
+        cid = self._conv_by_chat.get(key)
+        if cid is None:
+            cid = self.conversations.start(agent=agent_name, channel=env.channel)
+            self._conv_by_chat[key] = cid
+
+        lock = self.conv_locks.get(cid)
+        async with lock:
+            self.conversations.append(cid, UserMessage(content=env.content))
+
+            history = self.conversations.list_messages(cid)
+            if history and isinstance(history[-1], UserMessage):
+                history = history[:-1]
+            rt.assembled.core_agent.history = list(history)
+
+            if rt.assembled.memory_reader is not None:
+                prefix = rt.assembled.memory_reader.format_prefix(agent=rt.name)
+                rt.assembled.core_agent.system_prompt = (
+                    prefix + rt.assembled.base_system_prompt if prefix
+                    else rt.assembled.base_system_prompt
+                )
+
+            rt.set_status(AgentStatus.THINKING)
+            reply_text: Optional[str] = None
+            try:
+                async for frame in rt.assembled.core_agent.send_stream(env.content):
+                    if isinstance(frame, TokenDelta):
+                        pass  # not bridged to channels
+                    elif isinstance(frame, ToolCallStart):
+                        self.conversations.append(cid, ToolCallMessage(
+                            tool_call_id=frame.call["id"],
+                            tool_name=frame.call["name"],
+                            arguments=frame.call["arguments"],
+                        ))
+                    elif isinstance(frame, ToolResult):
+                        self.conversations.append(cid, ToolResultMessage(
+                            tool_call_id=frame.call_id,
+                            content=frame.content,
+                        ))
+                    elif isinstance(frame, Complete):
+                        self.conversations.append(cid, frame.reply)
+                        reply_text = frame.reply.content
+                rt.last_error = None
+            except Exception as e:
+                logger.exception("InboundRouter.handle_inbound send_stream raised")
+                msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                rt.last_error = msg
+                rt.set_status(AgentStatus.DEGRADED)
+                reply_text = f"(error: {msg})"
+            finally:
+                if rt.status == AgentStatus.THINKING:
+                    rt.set_status(AgentStatus.IDLE)
+
+        if reply_text:
+            try:
+                connector = self.connector_registry.get(env.channel)
+                await connector.send(env.chat_id, reply_text)
+            except Exception:
+                logger.exception("connector.send failed for %s/%s",
+                                 env.channel, env.chat_id)

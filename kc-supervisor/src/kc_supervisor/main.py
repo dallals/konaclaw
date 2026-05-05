@@ -89,6 +89,51 @@ def main() -> None:
         import logging
         logging.getLogger(__name__).warning("google connectors disabled: %s", e)
 
+    # Channel connectors (Telegram, iMessage). Built only when secrets.yaml
+    # supplies the relevant config and kc-connectors is importable. Failures
+    # are non-fatal — supervisor still boots without channel connectors.
+    connector_registry = None
+    routing_table = None
+    try:
+        from kc_connectors.base import ConnectorRegistry as _ConnReg
+        from kc_connectors.routing import RoutingTable as _RT
+        from kc_connectors.secrets import load_secrets as _ls
+        secrets = _ls()
+        connector_registry = _ConnReg()
+        routing_path = home / "config" / "routing.yaml"
+        if routing_path.exists():
+            routing_table = _RT.load_from_yaml(routing_path)
+        else:
+            routing_table = _RT(default_agent=os.environ.get("KC_DEFAULT_AGENT", "kona"))
+
+        tg_token = secrets.get("telegram_bot_token")
+        tg_allow = secrets.get("telegram_allowlist") or []
+        if tg_token and tg_allow:
+            from kc_connectors.telegram_adapter import TelegramConnector
+            connector_registry.register(TelegramConnector(
+                token=tg_token, allowlist=set(str(x) for x in tg_allow),
+            ))
+
+        # iMessage — only attempt on macOS where chat.db lives at the standard path.
+        import platform as _plat
+        if _plat.system() == "Darwin":
+            im_allow = secrets.get("imessage_allowlist") or []
+            chat_db = Path.home() / "Library" / "Messages" / "chat.db"
+            if im_allow and chat_db.exists():
+                from kc_connectors.imessage_adapter import IMessageConnector
+                connector_registry.register(IMessageConnector(
+                    chat_db_path=chat_db,
+                    allowlist=set(str(x) for x in im_allow),
+                ))
+    except ImportError:
+        connector_registry = None
+        routing_table = None
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("connectors disabled: %s", e)
+        connector_registry = None
+        routing_table = None
+
     registry = AgentRegistry(
         agents_dir=home / "agents",
         shares=shares,
@@ -116,6 +161,20 @@ def main() -> None:
         mcp_manager=mcp_manager,
         mcp_install_store=mcp_install_store,
     )
+    # InboundRouter is created after Deps so it has access to the same
+    # registry/conversations/conv_locks. Stored on Deps so service.py can
+    # start connectors at FastAPI startup.
+    if connector_registry is not None and routing_table is not None and connector_registry.all():
+        from kc_supervisor.inbound import InboundRouter
+        deps.inbound_router = InboundRouter(
+            registry=registry,
+            conversations=deps.conversations,
+            conv_locks=conv_locks,
+            routing_table=routing_table,
+            connector_registry=connector_registry,
+        )
+        deps.connector_registry = connector_registry
+
     app = create_app(deps)
     uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("KC_PORT", "8765")))
 

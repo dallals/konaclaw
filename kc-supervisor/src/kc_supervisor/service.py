@@ -34,6 +34,8 @@ class Deps:
     started_at: float = field(default_factory=time.time)
     mcp_manager: Optional[Any] = None
     mcp_install_store: Optional[Any] = None
+    inbound_router: Optional[Any] = None
+    connector_registry: Optional[Any] = None
 
 
 DASHBOARD_ORIGINS = (
@@ -83,5 +85,29 @@ def create_app(deps: Deps) -> FastAPI:
             # snapshots the tool list at assembly time, so a second load_all() is
             # required after the manager finishes registering.
             deps.registry.load_all()
+
+    # Channel connectors (Telegram, iMessage). Started/stopped on FastAPI
+    # lifecycle so their long-running poll/listen tasks live inside uvicorn's
+    # event loop. Failures are logged, never fatal.
+    if deps.connector_registry is not None and deps.inbound_router is not None:
+        @app.on_event("startup")
+        async def _startup_start_connectors() -> None:
+            for c in deps.connector_registry.all():
+                try:
+                    await c.start(deps.inbound_router)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "connector %s failed to start", c.name)
+
+        @app.on_event("shutdown")
+        async def _shutdown_stop_connectors() -> None:
+            for c in deps.connector_registry.all():
+                try:
+                    await c.stop()
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "connector %s failed to stop", c.name)
 
     return app
