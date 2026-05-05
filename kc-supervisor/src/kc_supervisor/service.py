@@ -3,6 +3,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from kc_sandbox.shares import SharesRegistry
 from kc_supervisor.agents import AgentRegistry
 from kc_supervisor.approvals import ApprovalBroker
@@ -28,9 +29,25 @@ class Deps:
     started_at: float = field(default_factory=time.time)
 
 
+DASHBOARD_ORIGINS = (
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "http://127.0.0.1:8766",
+    "http://localhost:8766",
+)
+
+
 def create_app(deps: Deps) -> FastAPI:
     app = FastAPI(title="kc-supervisor")
     app.state.deps = deps
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(DASHBOARD_ORIGINS),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     from kc_supervisor.http_routes import register_http_routes
     register_http_routes(app)

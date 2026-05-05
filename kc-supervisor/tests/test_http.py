@@ -222,3 +222,38 @@ def test_post_agents_uses_default_model_when_omitted(app, deps):
     # because the YAML omits a model field
     rt = deps.registry.get("dave")
     assert rt.model == "fake-model"
+
+
+def test_cors_allows_dashboard_origins(app):
+    with TestClient(app) as client:
+        for origin in (
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+            "http://127.0.0.1:8766",
+            "http://localhost:8766",
+        ):
+            r = client.get("/health", headers={"Origin": origin})
+            assert r.status_code == 200
+            assert r.headers.get("access-control-allow-origin") == origin
+
+
+def test_cors_preflight_for_post(app):
+    with TestClient(app) as client:
+        r = client.options(
+            "/agents/alice/conversations",
+            headers={
+                "Origin": "http://127.0.0.1:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"
+    assert "POST" in r.headers.get("access-control-allow-methods", "")
+
+
+def test_cors_blocks_unknown_origin(app):
+    with TestClient(app) as client:
+        r = client.get("/health", headers={"Origin": "http://evil.example"})
+    assert r.status_code == 200
+    assert "access-control-allow-origin" not in r.headers
