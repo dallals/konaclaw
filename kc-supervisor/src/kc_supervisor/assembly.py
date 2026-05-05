@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 from kc_core.agent import Agent as CoreAgent
 from kc_core.config import AgentConfig
 from kc_core.ollama_client import OllamaClient
@@ -46,6 +46,9 @@ def assemble_agent(
     permission_overrides: Optional[dict[str, Tier]] = None,
     resolve_agent: Optional[ResolveAgent] = None,
     delegation_depth_limit: int = 1,
+    mcp_manager: Optional[Any] = None,
+    mcp_install_store: Optional[Any] = None,
+    on_mcp_install: Optional[Callable[[], None]] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -88,6 +91,59 @@ def assemble_agent(
         )
         registry.register(delegate_tool)
         tier_map[delegate_tool.name] = Tier.SAFE
+
+    # MCP integration — only when the supervisor has wired up an MCPManager.
+    # Lazy-imports kc_mcp so kc-supervisor doesn't get a hard dep on it; the
+    # presence of mcp_manager is the signal that kc_mcp is importable.
+    if mcp_manager is not None:
+        for mcp_tool in mcp_manager.all_tools():
+            registry.register(mcp_tool)
+            tier_map[mcp_tool.name] = Tier.DESTRUCTIVE
+        if mcp_install_store is not None:
+            from kc_mcp.meta_tool import build_install_mcp_server_tool
+
+            def _on_install_complete() -> None:
+                # Reload the registry so every agent picks up the new MCP
+                # tools on its next turn (the current agent's tool registry
+                # is a snapshot from this assemble_agent call).
+                if on_mcp_install is not None:
+                    on_mcp_install()
+
+            class _CallbackHandleFactory:
+                """Wraps the real MCPServerHandle so we can fire on_install_complete
+                AFTER MCPManager.register_handle returns successfully."""
+                def __init__(self):
+                    from kc_mcp.handle import MCPServerHandle as RealHandle
+                    self._real = RealHandle
+
+                def __call__(self, **kw):
+                    return self._real(**kw)
+
+            install_tool = build_install_mcp_server_tool(
+                manager=mcp_manager,
+                store=mcp_install_store,
+                broker=broker,
+                agent_name=cfg.name,
+                handle_factory=_CallbackHandleFactory(),
+            )
+            # Wrap impl so we trigger the registry reload after a successful install.
+            original_impl = install_tool.impl
+
+            async def install_with_reload(**kwargs):
+                result = await original_impl(**kwargs)
+                if isinstance(result, str) and result.lower().startswith("installed"):
+                    _on_install_complete()
+                return result
+
+            from kc_core.tools import Tool
+            install_tool = Tool(
+                name=install_tool.name,
+                description=install_tool.description,
+                parameters=install_tool.parameters,
+                impl=install_with_reload,
+            )
+            registry.register(install_tool)
+            tier_map[install_tool.name] = Tier.DESTRUCTIVE
 
     # 4. PermissionEngine. broker.request_approval is async; the engine's
     # check_async detects coroutines via inspect.iscoroutine and awaits them.

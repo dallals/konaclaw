@@ -60,6 +60,8 @@ class AgentRegistry:
         ollama_url: str,
         default_model: str,
         undo_db_path: Path,
+        mcp_manager: "Optional[Any]" = None,
+        mcp_install_store: "Optional[Any]" = None,
     ) -> None:
         self.agents_dir = Path(agents_dir)
         self.shares = shares
@@ -68,6 +70,8 @@ class AgentRegistry:
         self.ollama_url = ollama_url
         self.default_model = default_model
         self.undo_db_path = Path(undo_db_path)
+        self.mcp_manager = mcp_manager
+        self.mcp_install_store = mcp_install_store
         self._by_name: dict[str, AgentRuntime] = {}
 
     def load_all(self) -> None:
@@ -110,6 +114,9 @@ class AgentRegistry:
                     default_model=self.default_model,
                     undo_db_path=self.undo_db_path,
                     resolve_agent=self._resolve_assembled,
+                    mcp_manager=self.mcp_manager,
+                    mcp_install_store=self.mcp_install_store,
+                    on_mcp_install=self.load_all,
                 )
                 new_by_name[cfg.name] = AgentRuntime(
                     name=cfg.name,

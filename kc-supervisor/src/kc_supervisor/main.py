@@ -27,6 +27,28 @@ def main() -> None:
     shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
     conv_locks = ConversationLocks()
 
+    # MCP integration is optional — if kc-mcp is installed, wire it up so
+    # agents get any configured/runtime-installed MCP tools. If not, the
+    # supervisor still boots with just the kc-sandbox file tools + delegate.
+    mcp_manager = None
+    mcp_install_store = None
+    try:
+        from kc_mcp.manager import MCPManager
+        from kc_mcp.store import MCPInstallStore
+        from kc_mcp.config_loader import load_static_mcp_servers
+
+        mcp_manager = MCPManager()
+        mcp_install_store = MCPInstallStore(storage)
+        # Load any servers declared in ~/KonaClaw/config/mcp.yaml synchronously
+        # at boot. Failures per-server are logged but don't abort startup.
+        load_static_mcp_servers(
+            config_path=home / "config" / "mcp.yaml",
+            manager=mcp_manager,
+            store=mcp_install_store,
+        )
+    except ImportError:
+        pass
+
     registry = AgentRegistry(
         agents_dir=home / "agents",
         shares=shares,
@@ -35,6 +57,8 @@ def main() -> None:
         ollama_url=ollama_url,
         default_model=default_model,
         undo_db_path=home / "data" / "undo.db",
+        mcp_manager=mcp_manager,
+        mcp_install_store=mcp_install_store,
     )
     registry.load_all()
 
@@ -46,6 +70,8 @@ def main() -> None:
         home=home,
         shares=shares,
         conv_locks=conv_locks,
+        mcp_manager=mcp_manager,
+        mcp_install_store=mcp_install_store,
     )
     app = create_app(deps)
     uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("KC_PORT", "8765")))
