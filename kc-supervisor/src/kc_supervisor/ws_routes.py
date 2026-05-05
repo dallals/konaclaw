@@ -82,7 +82,7 @@ def register_ws_routes(app: FastAPI) -> None:
                     # its own UserMessage(content), so we trim a trailing UserMessage
                     # from history before assigning.
                     history = deps.conversations.list_messages(conversation_id)
-                    if history and history[-1].__class__.__name__ == "UserMessage":
+                    if history and isinstance(history[-1], UserMessage):
                         history = history[:-1]
                     rt.assembled.core_agent.history = list(history)
 
@@ -128,8 +128,6 @@ def register_ws_routes(app: FastAPI) -> None:
                             "stage": "model_call",
                             "message": str(e),
                         })
-                        await ws.close()
-                        return
                     finally:
                         if rt.status == AgentStatus.THINKING:
                             rt.set_status(AgentStatus.IDLE)

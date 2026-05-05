@@ -236,12 +236,15 @@ def test_ws_streaming_error_mid_stream_emits_error_frame_and_no_assistant_persis
         ).json()["conversation_id"]
         with client.websocket_connect(f"/ws/chat/{cid}") as ws:
             ws.send_json({"type": "user_message", "content": "hi"})
+            # Drain frames until we see the error frame (which is final for this turn).
+            # WS stays open per the contract — exiting the with-block closes from the
+            # client side.
             seen = []
-            try:
-                while True:
-                    seen.append(ws.receive_json())
-            except Exception:
-                pass
+            while True:
+                msg = ws.receive_json()
+                seen.append(msg)
+                if msg["type"] == "error" and msg.get("stage") == "model_call":
+                    break
 
     err_frames = [f for f in seen if f["type"] == "error"]
     assert any("ollama" in f.get("message", "").lower() for f in err_frames)
