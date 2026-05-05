@@ -119,16 +119,21 @@ def register_ws_routes(app: FastAPI) -> None:
                                     "content": frame.reply.content,
                                 })
                         rt.last_error = None
+                    except WebSocketDisconnect:
+                        raise
                     except Exception as e:
                         logger.exception("ws_chat send_stream raised")
                         msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
                         rt.last_error = msg
                         rt.set_status(AgentStatus.DEGRADED)
-                        await ws.send_json({
-                            "type": "error",
-                            "stage": "model_call",
-                            "message": msg,
-                        })
+                        try:
+                            await ws.send_json({
+                                "type": "error",
+                                "stage": "model_call",
+                                "message": msg,
+                            })
+                        except Exception:
+                            pass
                     finally:
                         if rt.status == AgentStatus.THINKING:
                             rt.set_status(AgentStatus.IDLE)

@@ -252,3 +252,50 @@ def test_ws_streaming_error_mid_stream_emits_error_frame_and_no_assistant_persis
     msgs = deps.conversations.list_messages(cid)
     assert any(m.__class__.__name__ == "UserMessage" for m in msgs)
     assert not any(m.__class__.__name__ == "AssistantMessage" for m in msgs)
+
+
+def test_ws_client_disconnect_mid_stream_does_not_degrade_agent(app, deps):
+    """Browser closing the WebSocket mid-reply (HMR, tab switch, navigation)
+    must not flag the agent as degraded — the agent itself didn't fail."""
+    import asyncio
+    from dataclasses import dataclass
+    from kc_supervisor.agents import AgentStatus
+
+    @dataclass
+    class SlowClient:
+        model: str = "fake-model"
+        async def chat(self, messages, tools):
+            await asyncio.sleep(5)
+            raise AssertionError("unreachable")
+        async def chat_stream(self, messages, tools):
+            # Stream a few token deltas with delays so the client has time to
+            # disconnect before we finish.
+            for _ in range(50):
+                await asyncio.sleep(0.05)
+                yield TextDelta(content="x")
+            yield Done(finish_reason="stop")
+
+    _inject_fake(deps, "alice", SlowClient())
+
+    with TestClient(app) as client:
+        cid = client.post(
+            "/agents/alice/conversations", json={"channel": "dashboard"}
+        ).json()["conversation_id"]
+        with client.websocket_connect(f"/ws/chat/{cid}") as ws:
+            ws.send_json({"type": "user_message", "content": "hi"})
+            ws.receive_json()  # consume one frame so the stream is in flight
+            # Exit the with-block — TestClient closes the WS from the client side.
+
+        # Give the server's task a moment to observe the disconnect and unwind.
+        import time
+        for _ in range(40):
+            rt = deps.registry.get("alice")
+            if rt.status != AgentStatus.THINKING:
+                break
+            time.sleep(0.05)
+
+    rt = deps.registry.get("alice")
+    assert rt.status != AgentStatus.DEGRADED, (
+        f"agent should not be degraded after client disconnect, got "
+        f"status={rt.status}, last_error={rt.last_error!r}"
+    )
