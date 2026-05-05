@@ -19,6 +19,10 @@ class CreateConversationRequest(BaseModel):
     channel: str = "dashboard"
 
 
+class UpdateConversationRequest(BaseModel):
+    pinned: bool
+
+
 def _message_to_dict(m) -> dict:
     """Serialize a kc_core.messages dataclass for JSON."""
     return {"type": m.__class__.__name__, **asdict(m)}
@@ -87,6 +91,21 @@ def register_http_routes(app: FastAPI) -> None:
             raise HTTPException(404, detail=f"unknown agent: {name}")
         cid = app.state.deps.conversations.start(agent=name, channel=req.channel)
         return {"conversation_id": cid}
+
+    @app.patch("/conversations/{cid}")
+    def update_conversation(cid: int, req: UpdateConversationRequest):
+        deps = app.state.deps
+        if not deps.storage.set_conversation_pinned(cid, req.pinned):
+            raise HTTPException(404, detail=f"unknown conversation: {cid}")
+        return deps.storage.get_conversation(cid)
+
+    @app.delete("/conversations/{cid}", status_code=204)
+    def delete_conversation(cid: int):
+        from fastapi import Response
+        deps = app.state.deps
+        if not deps.storage.delete_conversation(cid):
+            raise HTTPException(404, detail=f"unknown conversation: {cid}")
+        return Response(status_code=204)
 
     @app.get("/conversations/{cid}/messages")
     def list_messages(cid: int):

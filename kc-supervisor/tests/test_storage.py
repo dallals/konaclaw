@@ -105,3 +105,66 @@ def test_get_conversation_returns_dict(tmp_path):
 def test_get_conversation_missing_returns_none(tmp_path):
     s = Storage(tmp_path / "kc.db"); s.init()
     assert s.get_conversation(99999) is None
+
+
+def test_pin_and_list_orders_pinned_first(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    a = s.create_conversation(agent="kc", channel="dashboard")
+    time.sleep(0.01)
+    b = s.create_conversation(agent="kc", channel="dashboard")
+    time.sleep(0.01)
+    c = s.create_conversation(agent="kc", channel="dashboard")
+    assert s.set_conversation_pinned(a, True) is True
+    convs = s.list_conversations(agent="kc")
+    assert [r["id"] for r in convs] == [a, c, b]
+    assert convs[0]["pinned"] == 1
+    assert convs[1]["pinned"] == 0
+
+
+def test_set_pinned_false_unpins(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    cid = s.create_conversation(agent="kc", channel="dashboard")
+    s.set_conversation_pinned(cid, True)
+    s.set_conversation_pinned(cid, False)
+    assert s.get_conversation(cid)["pinned"] == 0
+
+
+def test_set_pinned_unknown_returns_false(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    assert s.set_conversation_pinned(99999, True) is False
+
+
+def test_delete_conversation_removes_messages_and_row(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    cid = s.create_conversation(agent="kc", channel="dashboard")
+    s.append_message(cid, role="user", content="hi", tool_call_json=None)
+    s.append_message(cid, role="assistant", content="hello", tool_call_json=None)
+    s.append_audit(agent="kc", tool="t", args_json="{}", decision="d", result="r", undoable=False)
+    assert s.delete_conversation(cid) is True
+    assert s.get_conversation(cid) is None
+    assert s.list_messages(cid) == []
+    assert len(s.list_audit()) == 1  # audit untouched
+
+
+def test_delete_conversation_unknown_returns_false(tmp_path):
+    s = Storage(tmp_path / "kc.db"); s.init()
+    assert s.delete_conversation(99999) is False
+
+
+def test_init_idempotent_adds_pinned_column_to_legacy_db(tmp_path):
+    db = tmp_path / "kc.db"
+    import sqlite3
+    conn = sqlite3.connect(db, isolation_level=None)
+    conn.execute(
+        "CREATE TABLE conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "agent TEXT NOT NULL, channel TEXT NOT NULL, started_at REAL NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO conversations (agent, channel, started_at) VALUES (?,?,?)",
+        ("legacy", "dashboard", time.time()),
+    )
+    conn.close()
+    s = Storage(db); s.init()
+    convs = s.list_conversations()
+    assert len(convs) == 1
+    assert convs[0]["pinned"] == 0

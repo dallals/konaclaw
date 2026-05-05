@@ -257,3 +257,38 @@ def test_cors_blocks_unknown_origin(app):
         r = client.get("/health", headers={"Origin": "http://evil.example"})
     assert r.status_code == 200
     assert "access-control-allow-origin" not in r.headers
+
+
+def test_patch_conversation_pin_and_list_order(app):
+    with TestClient(app) as client:
+        a = client.post("/agents/alice/conversations", json={"channel": "dashboard"}).json()["conversation_id"]
+        b = client.post("/agents/alice/conversations", json={"channel": "dashboard"}).json()["conversation_id"]
+        r = client.patch(f"/conversations/{a}", json={"pinned": True})
+        assert r.status_code == 200
+        assert r.json()["pinned"] == 1
+        convs = client.get("/conversations?agent=alice").json()["conversations"]
+    assert convs[0]["id"] == a
+    assert convs[0]["pinned"] == 1
+    assert convs[1]["id"] == b
+
+
+def test_patch_conversation_unknown_404(app):
+    with TestClient(app) as client:
+        r = client.patch("/conversations/99999", json={"pinned": True})
+    assert r.status_code == 404
+
+
+def test_delete_conversation_cascades_messages(app, deps):
+    with TestClient(app) as client:
+        cid = client.post("/agents/alice/conversations", json={"channel": "dashboard"}).json()["conversation_id"]
+        deps.storage.append_message(cid, role="user", content="hi", tool_call_json=None)
+        r = client.delete(f"/conversations/{cid}")
+        assert r.status_code == 204
+        m = client.get(f"/conversations/{cid}/messages")
+    assert m.status_code == 404
+
+
+def test_delete_conversation_unknown_404(app):
+    with TestClient(app) as client:
+        r = client.delete("/conversations/99999")
+    assert r.status_code == 404

@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     agent TEXT NOT NULL,
     channel TEXT NOT NULL,
-    started_at REAL NOT NULL
+    started_at REAL NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_conv_agent ON conversations(agent);
 
@@ -65,6 +66,9 @@ class Storage:
         with self.connect() as c:
             c.execute("PRAGMA journal_mode=WAL")
             c.executescript(SCHEMA)
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(conversations)").fetchall()}
+            if "pinned" not in cols:
+                c.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def connect(self):
@@ -89,15 +93,37 @@ class Storage:
         with self.connect() as c:
             if agent is not None:
                 rows = c.execute(
-                    "SELECT * FROM conversations WHERE agent=? ORDER BY started_at DESC LIMIT ?",
+                    "SELECT * FROM conversations WHERE agent=? "
+                    "ORDER BY pinned DESC, started_at DESC LIMIT ?",
                     (agent, limit),
                 ).fetchall()
             else:
                 rows = c.execute(
-                    "SELECT * FROM conversations ORDER BY started_at DESC LIMIT ?",
+                    "SELECT * FROM conversations "
+                    "ORDER BY pinned DESC, started_at DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
         return [dict(r) for r in rows]
+
+    def set_conversation_pinned(self, conversation_id: int, pinned: bool) -> bool:
+        with self.connect() as c:
+            cur = c.execute(
+                "UPDATE conversations SET pinned=? WHERE id=?",
+                (1 if pinned else 0, conversation_id),
+            )
+            return cur.rowcount > 0
+
+    def delete_conversation(self, conversation_id: int) -> bool:
+        with self.connect() as c:
+            c.execute("BEGIN")
+            try:
+                c.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))
+                cur = c.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+            return cur.rowcount > 0
 
     def get_conversation(self, conversation_id: int) -> Optional[dict]:
         """Look up a single conversation by id. Returns None if not found."""
