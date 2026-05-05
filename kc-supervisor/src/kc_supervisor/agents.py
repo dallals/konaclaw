@@ -109,6 +109,7 @@ class AgentRegistry:
                     ollama_url=self.ollama_url,
                     default_model=self.default_model,
                     undo_db_path=self.undo_db_path,
+                    resolve_agent=self._resolve_assembled,
                 )
                 new_by_name[cfg.name] = AgentRuntime(
                     name=cfg.name,
@@ -148,3 +149,20 @@ class AgentRegistry:
 
     def snapshot(self) -> list[dict[str, Any]]:
         return [rt.to_dict() for rt in self._by_name.values()]
+
+    def _resolve_assembled(self, name: str):
+        """Late-bound resolver passed to assemble_agent for the delegation tool.
+
+        Returns (assembled_or_none, status) where status is one of:
+          "ok"       — agent exists and is assembled
+          "unknown"  — no agent with that name
+          "degraded" — agent exists but failed to assemble
+        Reads `self._by_name` lazily so it sees the latest registry state at
+        delegation time (after a hot reload, after a sibling came online, etc.)
+        """
+        rt = self._by_name.get(name)
+        if rt is None:
+            return (None, "unknown")
+        if rt.assembled is None:
+            return (None, "degraded")
+        return (rt.assembled, "ok")

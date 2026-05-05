@@ -13,6 +13,7 @@ from kc_supervisor.audit_tools import (
     RecordingUndoLog, AuditingToolRegistry, make_audit_aware_callback,
 )
 from kc_supervisor.approvals import ApprovalBroker
+from kc_supervisor.delegation import make_delegate_tool, ResolveAgent
 from kc_supervisor.storage import Storage
 
 
@@ -43,6 +44,8 @@ def assemble_agent(
     default_model: str,
     undo_db_path: Path,
     permission_overrides: Optional[dict[str, Tier]] = None,
+    resolve_agent: Optional[ResolveAgent] = None,
+    delegation_depth_limit: int = 1,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -74,11 +77,23 @@ def assemble_agent(
     for tool in file_tools.values():
         registry.register(tool)
 
+    # Delegation tool — only registered when a resolver is supplied (so unit
+    # tests that build a single agent in isolation aren't forced to stub one).
+    tier_map = dict(DEFAULT_FILE_TOOL_TIERS)
+    if resolve_agent is not None:
+        delegate_tool = make_delegate_tool(
+            resolve_agent,
+            parent_name=cfg.name,
+            depth_limit=delegation_depth_limit,
+        )
+        registry.register(delegate_tool)
+        tier_map[delegate_tool.name] = Tier.SAFE
+
     # 4. PermissionEngine. broker.request_approval is async; the engine's
     # check_async detects coroutines via inspect.iscoroutine and awaits them.
     overrides_for_agent = {cfg.name: permission_overrides} if permission_overrides else {}
     engine = PermissionEngine(
-        tier_map=dict(DEFAULT_FILE_TOOL_TIERS),
+        tier_map=tier_map,
         agent_overrides=overrides_for_agent,
         approval_callback=lambda agent, tool, args: broker.request_approval(
             agent=agent, tool=tool, arguments=args,

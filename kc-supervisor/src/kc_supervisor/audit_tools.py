@@ -1,5 +1,6 @@
 from __future__ import annotations
 import contextvars
+import inspect
 import json
 from typing import Any, Optional
 from kc_core.tools import Tool, ToolRegistry
@@ -57,37 +58,49 @@ class AuditingToolRegistry(ToolRegistry):
         storage = self._audit_storage
         tool_name = tool.name
 
-        def audited_impl(*args, **kwargs):
-            # Reset eid contextvar — only count eids written during THIS call.
-            # If a tool ever calls UndoLog.record() more than once, only the
-            # last eid is linked (kc-sandbox's file tools each call record()
-            # exactly once, so this assumption holds today).
-            _eid_contextvar.set(None)
-            decision = _decision_contextvar.get()
-            decision_source = decision.source if decision is not None else "unknown"
+        def _write_audit(result_str: str, decision_source: str, args_json: str) -> None:
+            captured_eid = _eid_contextvar.get()
+            audit_id = storage.append_audit(
+                agent=agent_name,
+                tool=tool_name,
+                args_json=args_json,
+                decision=decision_source,
+                result=result_str,
+                undoable=captured_eid is not None,
+            )
+            if captured_eid is not None:
+                storage.link_audit_undo(audit_id, captured_eid)
 
-            args_json = json.dumps(kwargs if kwargs else list(args), default=str)
-
-            def _write_audit(result_str: str) -> None:
-                captured_eid = _eid_contextvar.get()
-                audit_id = storage.append_audit(
-                    agent=agent_name,
-                    tool=tool_name,
-                    args_json=args_json,
-                    decision=decision_source,
-                    result=result_str,
-                    undoable=captured_eid is not None,
-                )
-                if captured_eid is not None:
-                    storage.link_audit_undo(audit_id, captured_eid)
-
-            try:
-                result = original_impl(*args, **kwargs)
-            except Exception as e:
-                _write_audit(f"Error: {type(e).__name__}: {e}")
-                raise
-            _write_audit(str(result))
-            return result
+        # Two impl variants: keep sync tools sync (so existing sync callers
+        # like reg.invoke() in tests continue to work) and only return a
+        # coroutine when the underlying impl is itself async. The kc-core
+        # agent loop awaits coroutine results either way.
+        if inspect.iscoroutinefunction(original_impl):
+            async def audited_impl(*args, **kwargs):
+                _eid_contextvar.set(None)
+                decision = _decision_contextvar.get()
+                decision_source = decision.source if decision is not None else "unknown"
+                args_json = json.dumps(kwargs if kwargs else list(args), default=str)
+                try:
+                    result = await original_impl(*args, **kwargs)
+                except Exception as e:
+                    _write_audit(f"Error: {type(e).__name__}: {e}", decision_source, args_json)
+                    raise
+                _write_audit(str(result), decision_source, args_json)
+                return result
+        else:
+            def audited_impl(*args, **kwargs):
+                _eid_contextvar.set(None)
+                decision = _decision_contextvar.get()
+                decision_source = decision.source if decision is not None else "unknown"
+                args_json = json.dumps(kwargs if kwargs else list(args), default=str)
+                try:
+                    result = original_impl(*args, **kwargs)
+                except Exception as e:
+                    _write_audit(f"Error: {type(e).__name__}: {e}", decision_source, args_json)
+                    raise
+                _write_audit(str(result), decision_source, args_json)
+                return result
 
         return Tool(
             name=tool.name,
