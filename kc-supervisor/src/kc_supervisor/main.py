@@ -96,8 +96,17 @@ def main() -> None:
     # Channel connectors (Telegram, iMessage). Built only when secrets
     # supplies the relevant config and kc-connectors is importable. Failures
     # are non-fatal — supervisor still boots without channel connectors.
+    #
+    # We use a builder + mutable holder pattern so the hot-restart hooks
+    # (wired below, after Deps construction) can rebuild a connector from
+    # fresh secrets, swap the live instance, and re-register on the same
+    # ConnectorRegistry without a supervisor reboot. See Task 7 of v0.2.1.
     connector_registry = None
     routing_table = None
+    _telegram_holder: list = [None]
+    _imessage_holder: list = [None]
+    _build_telegram = None
+    _build_imessage = None
     try:
         from kc_connectors.base import ConnectorRegistry as _ConnReg
         from kc_connectors.routing import RoutingTable as _RT
@@ -108,25 +117,49 @@ def main() -> None:
         else:
             routing_table = _RT(default_agent=os.environ.get("KC_DEFAULT_AGENT", "kona"))
 
-        tg_token = secrets.get("telegram_bot_token")
-        tg_allow = secrets.get("telegram_allowlist") or []
-        if tg_token and tg_allow:
+        # Telegram — builder + holder + hot-restart pair.
+        try:
             from kc_connectors.telegram_adapter import TelegramConnector
-            connector_registry.register(TelegramConnector(
-                token=tg_token, allowlist=set(str(x) for x in tg_allow),
-            ))
+        except ImportError:
+            TelegramConnector = None  # type: ignore
 
-        # iMessage — only attempt on macOS where chat.db lives at the standard path.
+        def _build_telegram(secrets_dict: dict):
+            if TelegramConnector is None:
+                return None
+            tok = secrets_dict.get("telegram_bot_token")
+            allow = secrets_dict.get("telegram_allowlist") or []
+            if not tok or not allow:
+                return None
+            return TelegramConnector(token=tok, allowlist=set(str(x) for x in allow))
+
+        _telegram_holder[0] = _build_telegram(secrets)
+        if _telegram_holder[0] is not None:
+            connector_registry.register(_telegram_holder[0])
+
+        # iMessage — same pattern, only on Darwin where chat.db exists.
         import platform as _plat
+        IMessageConnector = None
+        chat_db = Path.home() / "Library" / "Messages" / "chat.db"
         if _plat.system() == "Darwin":
-            im_allow = secrets.get("imessage_allowlist") or []
-            chat_db = Path.home() / "Library" / "Messages" / "chat.db"
-            if im_allow and chat_db.exists():
+            try:
                 from kc_connectors.imessage_adapter import IMessageConnector
-                connector_registry.register(IMessageConnector(
-                    chat_db_path=chat_db,
-                    allowlist=set(str(x) for x in im_allow),
-                ))
+            except ImportError:
+                IMessageConnector = None  # type: ignore
+
+        def _build_imessage(secrets_dict: dict):
+            if IMessageConnector is None or not chat_db.exists():
+                return None
+            allow = secrets_dict.get("imessage_allowlist") or []
+            if not allow:
+                return None
+            return IMessageConnector(
+                chat_db_path=chat_db,
+                allowlist=set(str(x) for x in allow),
+            )
+
+        _imessage_holder[0] = _build_imessage(secrets)
+        if _imessage_holder[0] is not None:
+            connector_registry.register(_imessage_holder[0])
     except ImportError:
         connector_registry = None
         routing_table = None
@@ -177,6 +210,50 @@ def main() -> None:
             connector_registry=connector_registry,
         )
         deps.connector_registry = connector_registry
+
+    # Hot-restart hooks for PATCH /connectors/{name} (Task 7 of v0.2.1).
+    # The hook is sync (called from a sync FastAPI handler in a threadpool),
+    # so we dispatch the async stop/start via run_coroutine_threadsafe back
+    # to the main event loop captured at FastAPI startup (deps.event_loop).
+    #
+    # Wired even when no connector was registered at boot: if the user PATCHes
+    # /connectors/telegram with a fresh token, the hook needs to build and
+    # register the connector for the first time.
+    if connector_registry is not None and _build_telegram is not None and _build_imessage is not None:
+        import asyncio as _asyncio
+        import logging as _logging
+
+        def _make_restart(name: str, holder: list, builder):
+            def _restart() -> None:
+                loop = deps.event_loop
+                fresh = deps.secrets_store.load() if deps.secrets_store else {}
+                old = holder[0]
+                if old is not None:
+                    connector_registry.unregister(name)
+                    if loop is not None and loop.is_running():
+                        try:
+                            _asyncio.run_coroutine_threadsafe(old.stop(), loop)
+                        except Exception as exc:
+                            _logging.getLogger(__name__).warning(
+                                "%s stop() dispatch failed: %s", name, exc, exc_info=True,
+                            )
+                new = builder(fresh)
+                holder[0] = new
+                if new is not None:
+                    connector_registry.register(new)
+                    if loop is not None and loop.is_running() and deps.inbound_router is not None:
+                        try:
+                            _asyncio.run_coroutine_threadsafe(
+                                new.start(deps.inbound_router), loop,
+                            )
+                        except Exception as exc:
+                            _logging.getLogger(__name__).warning(
+                                "%s start() dispatch failed: %s", name, exc, exc_info=True,
+                            )
+            return _restart
+
+        deps.restart_telegram = _make_restart("telegram", _telegram_holder, _build_telegram)
+        deps.restart_imessage = _make_restart("imessage", _imessage_holder, _build_imessage)
 
     app = create_app(deps)
     uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("KC_PORT", "8765")))

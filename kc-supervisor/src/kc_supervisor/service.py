@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +55,16 @@ class Deps:
     google_oauth: GoogleOAuthState = field(default_factory=GoogleOAuthState)
     google_token_path: Optional[Path] = None
     google_credentials_path: Optional[Path] = None
+    # Captured at FastAPI startup so sync route handlers (running in the
+    # threadpool) can dispatch coroutines back to the main event loop via
+    # asyncio.run_coroutine_threadsafe — used by the hot-restart hooks below.
+    event_loop: Optional[asyncio.AbstractEventLoop] = None
+    # Hot-restart hooks for PATCH /connectors/{name}. Wired in main.py;
+    # connectors_routes._restart_connector() invokes them via getattr.
+    # Type is Any (rather than a Protocol) because they're runtime-injected
+    # zero-arg callables and don't appear in any test fixture's Deps(...).
+    restart_telegram: Optional[Any] = None
+    restart_imessage: Optional[Any] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:
@@ -159,6 +170,10 @@ def create_app(deps: Deps) -> FastAPI:
     if deps.connector_registry is not None and deps.inbound_router is not None:
         @app.on_event("startup")
         async def _startup_start_connectors() -> None:
+            # Capture the running event loop so sync PATCH handlers (run in
+            # FastAPI's threadpool, where asyncio.get_running_loop() raises)
+            # can dispatch coroutines back here via run_coroutine_threadsafe.
+            deps.event_loop = asyncio.get_running_loop()
             for c in deps.connector_registry.all():
                 try:
                     await c.start(deps.inbound_router)
