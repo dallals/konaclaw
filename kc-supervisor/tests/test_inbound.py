@@ -141,8 +141,11 @@ async def test_handle_inbound_creates_conversation_per_chat(deps):
     await router.handle_inbound(env_a2)
     await router.handle_inbound(env_b)
 
-    cid_a = router._conv_by_chat[("telegram", "AAA")]
-    cid_b = router._conv_by_chat[("telegram", "BBB")]
+    storage = deps.conversations.s
+    cid_a = storage.get_conv_for_chat("telegram", "AAA", "alice")
+    cid_b = storage.get_conv_for_chat("telegram", "BBB", "alice")
+    assert cid_a is not None
+    assert cid_b is not None
     assert cid_a != cid_b
 
     msgs_a = deps.conversations.list_messages(cid_a)
@@ -197,10 +200,66 @@ async def test_handle_inbound_persists_user_and_assistant_messages(deps):
     env = _Env("telegram", "C", "u", "ping")
     await router.handle_inbound(env)
 
-    cid = router._conv_by_chat[("telegram", "C")]
+    cid = deps.conversations.s.get_conv_for_chat("telegram", "C", "alice")
+    assert cid is not None
     msgs = deps.conversations.list_messages(cid)
     assert len(msgs) == 2
     assert isinstance(msgs[0], UserMessage)
     assert msgs[0].content == "ping"
     assert isinstance(msgs[1], AssistantMessage)
     assert msgs[1].content == "answer"
+
+
+@pytest.mark.asyncio
+async def test_inbound_router_conversation_persists_across_reconstruction(deps):
+    """A reconstructed InboundRouter (simulated supervisor restart) reuses
+    the same conversation_id for the same (channel, chat_id, agent) tuple."""
+    # Build a runtime whose send_stream can be called multiple times
+    assembled = MagicMock()
+
+    async def _gen(content):
+        yield Complete(reply=AssistantMessage(content="ok"))
+
+    assembled.core_agent.send_stream = _gen
+    assembled.core_agent.history = []
+    assembled.core_agent.system_prompt = "base"
+    assembled.base_system_prompt = "base"
+    assembled.memory_reader = None
+    rt = AgentRuntime(
+        name="alice", model="fake", system_prompt="base",
+        yaml_path=None, assembled=assembled,
+    )
+    registry = _make_registry({"alice": rt})
+    connector = _FakeConnector("telegram")
+    conn_registry = _FakeConnectorRegistry({"telegram": connector})
+    routing = _FakeRoutingTable(default_agent="alice")
+
+    # First router instance: handle a message from alice
+    router1 = _make_router(deps, registry, conn_registry, routing)
+    env = _Env("telegram", "alice_chat", "alice", "hello")
+    await router1.handle_inbound(env)
+
+    # Verify first conv was created and recorded in storage
+    storage = deps.conversations.s
+    cid_first = storage.get_conv_for_chat("telegram", "alice_chat", "alice")
+    assert cid_first is not None, "storage should record the conv_id after first handle"
+
+    # Count conversations before reconstruction
+    rows_before = len(storage.list_conversations(agent="alice"))
+
+    # Reconstruct router with the SAME storage (simulated supervisor restart)
+    router2 = _make_router(deps, registry, conn_registry, routing)
+    await router2.handle_inbound(env)
+
+    # Verify the SAME conversation was reused — no new row created
+    rows_after = len(storage.list_conversations(agent="alice"))
+    assert rows_after == rows_before, (
+        f"Expected no new conversation created after restart, "
+        f"but row count went from {rows_before} to {rows_after}"
+    )
+
+    # Verify same cid is still in storage
+    cid_second = storage.get_conv_for_chat("telegram", "alice_chat", "alice")
+    assert cid_second == cid_first, (
+        f"Expected same conv_id {cid_first} after restart, got {cid_second}"
+    )
