@@ -204,6 +204,11 @@ def install(app, deps: Any) -> None:
             entry["call_count"] = row["n"] if row else 0
         return {"zaps": live}
 
+    @router.post("/zapier/refresh")
+    def refresh_zapier():
+        deps.registry.load_all()
+        return {"ok": True, "refreshed_at": time.time()}
+
     @router.post("/google/connect", status_code=202)
     def google_connect():
         state = deps.google_oauth

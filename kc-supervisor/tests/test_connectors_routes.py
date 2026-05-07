@@ -122,6 +122,17 @@ def test_zapier_zaps_returns_empty_when_unconfigured(app):
     assert body == {"zaps": []}
 
 
+def test_zapier_refresh_calls_registry_load_all(app, monkeypatch):
+    calls = []
+    monkeypatch.setattr(app.state.deps.registry, "load_all",
+                        lambda: calls.append(1))
+    with TestClient(app) as client:
+        res = client.post("/connectors/zapier/refresh")
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
+    assert calls == [1]
+
+
 def test_google_disconnect_resets_state(app, deps):
     # Simulate a previously-completed flow: write a token file and mark
     # state="connected", then verify disconnect clears both.
