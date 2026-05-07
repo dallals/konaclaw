@@ -2,7 +2,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from kc_sandbox.shares import SharesRegistry
@@ -11,6 +11,20 @@ from kc_supervisor.approvals import ApprovalBroker
 from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.locks import ConversationLocks
 from kc_supervisor.storage import Storage
+
+
+@dataclass
+class GoogleOAuthState:
+    """Tracks the in-process state of a Google OAuth installed-app flow.
+
+    Lives on `Deps.google_oauth`. Mutated by the /connectors/google/*
+    endpoints (connect kicks off a background thread, status reads, disconnect
+    resets). Single-process only — restarting the supervisor resets to "idle"
+    even if the on-disk token still exists; the next connect will re-detect.
+    """
+    state: Literal["idle", "pending", "connected"] = "idle"
+    since: float = 0.0
+    last_error: Optional[str] = None
 
 
 @dataclass
@@ -37,6 +51,9 @@ class Deps:
     inbound_router: Optional[Any] = None
     connector_registry: Optional[Any] = None
     secrets_store: Optional[Any] = None
+    google_oauth: GoogleOAuthState = field(default_factory=GoogleOAuthState)
+    google_token_path: Optional[Path] = None
+    google_credentials_path: Optional[Path] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:

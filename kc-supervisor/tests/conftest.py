@@ -62,6 +62,7 @@ def deps(tmp_path):
     registry.load_all()
     convs = ConversationManager(storage=storage)
     secrets_store = SecretsStore(config_dir=home / "config", keychain=FakeKeychain())
+    google_token_path = home / "data" / "google_token.json"
     return Deps(
         storage=storage,
         registry=registry,
@@ -71,6 +72,7 @@ def deps(tmp_path):
         shares=shares,
         conv_locks=ConversationLocks(),
         secrets_store=secrets_store,
+        google_token_path=google_token_path,
     )
 
 

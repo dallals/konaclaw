@@ -1,12 +1,13 @@
 from __future__ import annotations
 import logging
 import platform
+import sys
+import threading
+import time
 from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-
-router = APIRouter(prefix="/connectors")
 
 CONNECTOR_NAMES = ("telegram", "imessage", "gmail", "calendar", "zapier")
 
@@ -97,8 +98,42 @@ def _connector_summary(name: str, secrets: dict[str, Any], deps: Any) -> dict[st
     raise ValueError(f"unknown connector: {name}")
 
 
+def _run_google_flow(deps: Any) -> None:
+    """Run InstalledAppFlow.run_local_server, then update deps.google_oauth.
+
+    Imported lazily so the supervisor still boots without google-auth-oauthlib.
+    On any failure, resets state to "idle" with `last_error` populated so the
+    dashboard can surface the message.
+    """
+    state = deps.google_oauth
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
+        flow = InstalledAppFlow.from_client_secrets_file(
+            str(deps.google_credentials_path),
+            scopes=getattr(deps, "google_scopes",
+                           ["https://www.googleapis.com/auth/gmail.modify",
+                            "https://www.googleapis.com/auth/calendar"]),
+        )
+        creds = flow.run_local_server(host="localhost", port=0, open_browser=True)
+        deps.google_token_path.write_text(creds.to_json())
+        state.state = "connected"
+        state.since = time.time()
+        state.last_error = None
+    except Exception as exc:
+        state.state = "idle"
+        state.last_error = f"{type(exc).__name__}: {exc}"
+
+
 def install(app, deps: Any) -> None:
-    """Mount the connectors router. Called from service.py at app build time."""
+    """Mount the connectors router. Called from service.py at app build time.
+
+    The APIRouter is constructed inside install() (not at module scope) so each
+    FastAPI app gets a fresh router. Otherwise tests that build multiple apps
+    would accumulate duplicate route registrations on a shared module-level
+    router, and FastAPI's first-match routing would dispatch to closures
+    capturing a stale `deps` from an earlier test.
+    """
+    router = APIRouter(prefix="/connectors")
 
     @router.get("")
     def list_connectors():
@@ -146,6 +181,36 @@ def install(app, deps: Any) -> None:
 
         if name in ("telegram", "imessage"):
             _restart_connector(name, deps)
+        return {"ok": True}
+
+    @router.post("/google/connect", status_code=202)
+    def google_connect():
+        state = deps.google_oauth
+        if state.state == "pending":
+            return {"state": "pending", "since": state.since}
+        state.state = "pending"
+        state.since = time.time()
+        state.last_error = None
+        # Resolve the runner via the module namespace so monkeypatching
+        # `_run_google_flow` in tests is visible at thread-start time
+        # (a closure-captured reference would skip the patched symbol).
+        runner = sys.modules[__name__]._run_google_flow
+        threading.Thread(target=runner, args=(deps,), daemon=True).start()
+        return {"state": "pending", "since": state.since}
+
+    @router.get("/google/status")
+    def google_status():
+        s = deps.google_oauth
+        return {"state": s.state, "since": s.since, "last_error": s.last_error}
+
+    @router.post("/google/disconnect")
+    def google_disconnect():
+        token_path = getattr(deps, "google_token_path", None)
+        if token_path is not None and token_path.exists():
+            token_path.unlink()
+        deps.google_oauth.state = "idle"
+        deps.google_oauth.since = time.time()
+        deps.google_oauth.last_error = None
         return {"ok": True}
 
     app.include_router(router)

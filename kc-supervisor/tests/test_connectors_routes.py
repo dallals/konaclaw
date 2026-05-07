@@ -66,3 +66,64 @@ def test_patch_unknown_connector_returns_404(app):
     with TestClient(app) as client:
         res = client.patch("/connectors/nope", json={"x": 1})
     assert res.status_code == 404
+
+
+def test_google_status_initial_is_idle(app):
+    with TestClient(app) as client:
+        body = client.get("/connectors/google/status").json()
+    assert body["state"] == "idle"
+    assert body["last_error"] is None
+
+
+def test_google_connect_returns_202_pending(app, monkeypatch):
+    # Patch the InstalledAppFlow runner so the test doesn't open a browser.
+    import kc_supervisor.connectors_routes as cr
+    monkeypatch.setattr(cr, "_run_google_flow", lambda deps: None)
+
+    with TestClient(app) as client:
+        res = client.post("/connectors/google/connect")
+    assert res.status_code == 202
+    assert res.json()["state"] == "pending"
+
+
+def test_google_connect_double_click_is_noop_while_pending(app, monkeypatch):
+    import threading as _threading
+    import kc_supervisor.connectors_routes as cr
+    started = []
+    started_event = _threading.Event()
+
+    def fake_runner(deps):
+        started.append(1)
+        started_event.set()
+        # Don't change deps.google_oauth.state — we want the second POST to
+        # observe "pending" and short-circuit.
+
+    monkeypatch.setattr(cr, "_run_google_flow", fake_runner)
+    with TestClient(app) as client:
+        r1 = client.post("/connectors/google/connect")
+        # Wait for the first thread's runner to actually execute, so we can be
+        # sure the second POST observes state="pending" set by the endpoint.
+        # (The endpoint sets state BEFORE Thread.start(), so this is belt-and-
+        # suspenders, but the wait also guarantees `started` is populated by
+        # the time we assert.)
+        assert started_event.wait(timeout=2.0)
+        r2 = client.post("/connectors/google/connect")
+    assert r1.status_code == 202
+    assert r2.status_code == 202
+    # Only one flow kicked off; second POST saw state="pending" and skipped.
+    assert len(started) == 1
+
+
+def test_google_disconnect_resets_state(app, deps):
+    # Simulate a previously-completed flow: write a token file and mark
+    # state="connected", then verify disconnect clears both.
+    deps.google_token_path.write_text('{"token":"fake"}')
+    deps.google_oauth.state = "connected"
+
+    with TestClient(app) as client:
+        res = client.post("/connectors/google/disconnect")
+        assert res.status_code == 200
+        assert res.json() == {"ok": True}
+        body = client.get("/connectors/google/status").json()
+    assert body["state"] == "idle"
+    assert not deps.google_token_path.exists()
