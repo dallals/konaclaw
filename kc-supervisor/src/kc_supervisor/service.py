@@ -36,6 +36,7 @@ class Deps:
     mcp_install_store: Optional[Any] = None
     inbound_router: Optional[Any] = None
     connector_registry: Optional[Any] = None
+    secrets_store: Optional[Any] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:

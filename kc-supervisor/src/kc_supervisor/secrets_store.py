@@ -88,6 +88,8 @@ class SecretsStore:
             data = loaded if isinstance(loaded, dict) else {}
             self.save(data)
             plaintext_path.unlink()
+            import sys
+            print(f"migrated secrets to encrypted store: {self._enc_path}", file=sys.stderr)
             return data
         return {}
 

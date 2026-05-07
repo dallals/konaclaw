@@ -7,6 +7,7 @@ from kc_supervisor.agents import AgentRegistry
 from kc_supervisor.approvals import ApprovalBroker
 from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.locks import ConversationLocks
+from kc_supervisor.secrets_store import SecretsStore, SecurityCliKeychain
 from kc_supervisor.service import Deps, create_app
 from kc_supervisor.storage import Storage
 
@@ -26,6 +27,11 @@ def main() -> None:
     broker = ApprovalBroker()
     shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
     conv_locks = ConversationLocks()
+
+    # Secrets store — manages encrypted secrets.yaml.enc with keychain-backed AES-GCM.
+    # On first run, migrates plaintext secrets.yaml to encrypted store.
+    secrets_store = SecretsStore(config_dir=home / "config", keychain=SecurityCliKeychain())
+    secrets = secrets_store.load()
 
     # MCP integration is optional — if kc-mcp is installed, instantiate the
     # bookkeeping objects here so AgentRegistry sees them. The actual MCP
@@ -52,17 +58,15 @@ def main() -> None:
     except ImportError:
         pass
 
-    # Google connectors (Gmail + Calendar) — optional. Reads
-    # ~/KonaClaw/config/secrets.yaml for the OAuth credentials path. If the
-    # creds file is missing or kc-connectors isn't installed, agents simply
-    # don't get Google tools; the supervisor still boots.
+    # Google connectors (Gmail + Calendar) — optional. Uses secrets loaded above
+    # for the OAuth credentials path. If the creds file is missing or
+    # kc-connectors isn't installed, agents simply don't get Google tools;
+    # the supervisor still boots.
     gmail_service = None
     gcal_service = None
     try:
-        from kc_connectors.secrets import load_secrets
         from kc_connectors.gmail_adapter import build_gmail_service, GMAIL_SCOPES
         from kc_connectors.gcal_adapter import build_gcal_service, GCAL_SCOPES
-        secrets = load_secrets()
         creds_path = secrets.get("google_credentials_json_path")
         token_path = secrets.get("google_token_json_path",
                                 str(home / "config" / "google_token.json"))
@@ -89,7 +93,7 @@ def main() -> None:
         import logging
         logging.getLogger(__name__).warning("google connectors disabled: %s", e)
 
-    # Channel connectors (Telegram, iMessage). Built only when secrets.yaml
+    # Channel connectors (Telegram, iMessage). Built only when secrets
     # supplies the relevant config and kc-connectors is importable. Failures
     # are non-fatal — supervisor still boots without channel connectors.
     connector_registry = None
@@ -97,8 +101,6 @@ def main() -> None:
     try:
         from kc_connectors.base import ConnectorRegistry as _ConnReg
         from kc_connectors.routing import RoutingTable as _RT
-        from kc_connectors.secrets import load_secrets as _ls
-        secrets = _ls()
         connector_registry = _ConnReg()
         routing_path = home / "config" / "routing.yaml"
         if routing_path.exists():
@@ -160,6 +162,7 @@ def main() -> None:
         conv_locks=conv_locks,
         mcp_manager=mcp_manager,
         mcp_install_store=mcp_install_store,
+        secrets_store=secrets_store,
     )
     # InboundRouter is created after Deps so it has access to the same
     # registry/conversations/conv_locks. Stored on Deps so service.py can
