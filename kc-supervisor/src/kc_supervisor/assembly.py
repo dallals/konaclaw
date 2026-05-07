@@ -251,7 +251,7 @@ def assemble_agent(
         client=ollama_client,
         system_prompt=effective_system_prompt,
         tools=registry,
-        permission_check=make_audit_aware_callback(engine, agent_name=cfg.name),
+        permission_check=make_audit_aware_callback(engine, agent_name=cfg.name, storage=audit_storage),
     )
 
     return AssembledAgent(
