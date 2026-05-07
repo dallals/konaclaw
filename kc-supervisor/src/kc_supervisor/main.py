@@ -221,7 +221,24 @@ def main() -> None:
     # register the connector for the first time.
     if connector_registry is not None and _build_telegram is not None and _build_imessage is not None:
         import asyncio as _asyncio
+        import concurrent.futures as _futures
         import logging as _logging
+
+        async def _stop_then_start(old_conn, new_conn, supervisor):
+            """Stop the previous connector, then start the new one. Sequential
+            on the event loop so we don't hit a transient 409 against the same
+            long-poll endpoint. Errors during stop are logged but don't prevent
+            start.
+            """
+            if old_conn is not None:
+                try:
+                    await old_conn.stop()
+                except Exception as exc:
+                    _logging.getLogger(__name__).warning(
+                        "stop() failed during restart: %s", exc, exc_info=True,
+                    )
+            if new_conn is not None and supervisor is not None:
+                await new_conn.start(supervisor)
 
         def _make_restart(name: str, holder: list, builder):
             def _restart() -> None:
@@ -230,26 +247,30 @@ def main() -> None:
                 old = holder[0]
                 if old is not None:
                     connector_registry.unregister(name)
-                    if loop is not None and loop.is_running():
-                        try:
-                            _asyncio.run_coroutine_threadsafe(old.stop(), loop)
-                        except Exception as exc:
-                            _logging.getLogger(__name__).warning(
-                                "%s stop() dispatch failed: %s", name, exc, exc_info=True,
-                            )
                 new = builder(fresh)
                 holder[0] = new
                 if new is not None:
                     connector_registry.register(new)
-                    if loop is not None and loop.is_running() and deps.inbound_router is not None:
+                if loop is not None and loop.is_running():
+                    try:
+                        fut = _asyncio.run_coroutine_threadsafe(
+                            _stop_then_start(old, new, deps.inbound_router), loop,
+                        )
                         try:
-                            _asyncio.run_coroutine_threadsafe(
-                                new.start(deps.inbound_router), loop,
+                            fut.result(timeout=2.0)
+                        except _futures.TimeoutError:
+                            _logging.getLogger(__name__).warning(
+                                "%s restart did not complete within 2s; continuing anyway",
+                                name, exc_info=True,
                             )
                         except Exception as exc:
                             _logging.getLogger(__name__).warning(
-                                "%s start() dispatch failed: %s", name, exc, exc_info=True,
+                                "%s restart failed: %s", name, exc, exc_info=True,
                             )
+                    except Exception as exc:
+                        _logging.getLogger(__name__).warning(
+                            "%s restart dispatch failed: %s", name, exc, exc_info=True,
+                        )
             return _restart
 
         deps.restart_telegram = _make_restart("telegram", _telegram_holder, _build_telegram)
