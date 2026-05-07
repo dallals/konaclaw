@@ -3,7 +3,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 SCHEMA = """
@@ -247,25 +247,30 @@ class Storage:
             )
             return int(cur.lastrowid)
 
-    def list_audit(self, agent: Optional[str] = None, limit: int = 100) -> list[dict]:
+    def list_audit(
+        self, agent: Optional[str] = None, limit: int = 100,
+        decision: Optional[str] = None,
+    ) -> list[dict]:
         # LEFT JOIN audit_undo_link so each row carries undone=1 if /undo
         # has already been run on this audit_id (so the dashboard can hide
         # the Undo button instead of letting the user double-fire it).
-        base = (
+        clauses: list[str] = []
+        params: list[Any] = []
+        if agent is not None:
+            clauses.append("a.agent=?"); params.append(agent)
+        if decision is not None:
+            clauses.append("a.decision=?"); params.append(decision)
+        sql = (
             "SELECT a.*, "
             "CASE WHEN l.undone_at IS NOT NULL THEN 1 ELSE 0 END AS undone "
             "FROM audit a LEFT JOIN audit_undo_link l ON l.audit_id = a.id "
         )
+        if clauses:
+            sql += "WHERE " + " AND ".join(clauses) + " "
+        sql += "ORDER BY a.ts DESC LIMIT ?"
+        params.append(limit)
         with self.connect() as c:
-            if agent is not None:
-                rows = c.execute(
-                    base + "WHERE a.agent=? ORDER BY a.ts DESC LIMIT ?",
-                    (agent, limit),
-                ).fetchall()
-            else:
-                rows = c.execute(
-                    base + "ORDER BY a.ts DESC LIMIT ?", (limit,),
-                ).fetchall()
+            rows = c.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def mark_audit_undone(self, audit_id: int) -> bool:

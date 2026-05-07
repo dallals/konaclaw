@@ -293,3 +293,14 @@ def test_conv_map_upsert(tmp_path):
     s.put_conv_for_chat("telegram", "abc", "kona", cid2)  # overwrite
 
     assert s.get_conv_for_chat("telegram", "abc", "kona") == cid2
+
+
+def test_list_audit_decision_filter(tmp_path):
+    s = Storage(tmp_path / "db.sqlite"); s.init()
+    s.append_audit(agent="kona", tool="t1", args_json="{}", decision="allowed", result="ok", undoable=False)
+    s.append_audit(agent="kona", tool="t2", args_json="{}", decision="denied", result="reason", undoable=False)
+    s.append_audit(agent="kona", tool="t3", args_json="{}", decision="allowed", result="ok", undoable=False)
+
+    assert len(s.list_audit(agent="kona")) == 3
+    assert len(s.list_audit(agent="kona", decision="allowed")) == 2
+    assert len(s.list_audit(agent="kona", decision="denied")) == 1

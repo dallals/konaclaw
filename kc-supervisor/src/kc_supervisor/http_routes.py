@@ -199,8 +199,11 @@ def register_http_routes(app: FastAPI) -> None:
     def list_audit(
         agent: Optional[str] = None,
         limit: int = Query(default=100, ge=1, le=1000),
+        decision: Optional[str] = Query(default=None, pattern="^(allowed|denied)$"),
     ):
-        rows = app.state.deps.storage.list_audit(agent=agent, limit=limit)
+        rows = app.state.deps.storage.list_audit(
+            agent=agent, limit=limit, decision=decision,
+        )
         return {"entries": rows}
 
     @app.post("/undo/{audit_id}")

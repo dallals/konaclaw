@@ -88,6 +88,19 @@ def test_audit_endpoint_filter_by_agent(app, deps):
     assert entries[0]["agent"] == "alice"
 
 
+def test_audit_endpoint_decision_filter(app, deps):
+    deps.storage.append_audit(agent="kona", tool="t1", args_json="{}", decision="allowed", result="ok", undoable=False)
+    deps.storage.append_audit(agent="kona", tool="t2", args_json="{}", decision="denied", result="r", undoable=False)
+
+    with TestClient(app) as client:
+        all_rows = client.get("/audit").json()["entries"]
+        only_denied = client.get("/audit?decision=denied").json()["entries"]
+
+    assert len(all_rows) == 2
+    assert len(only_denied) == 1
+    assert only_denied[0]["decision"] == "denied"
+
+
 def test_list_messages_unknown_cid_returns_404(app):
     with TestClient(app) as client:
         r = client.get("/conversations/99999/messages")
