@@ -258,8 +258,12 @@ class Storage:
         params: list[Any] = []
         if agent is not None:
             clauses.append("a.agent=?"); params.append(agent)
-        if decision is not None:
-            clauses.append("a.decision=?"); params.append(decision)
+        if decision == "denied":
+            clauses.append("a.decision=?"); params.append("denied")
+        elif decision == "allowed":
+            # Allowed rows are written with decision=<source> (tier|callback|override|unknown);
+            # the user-facing filter is binary. Anything that is not "denied" counts as allowed.
+            clauses.append("a.decision != ?"); params.append("denied")
         sql = (
             "SELECT a.*, "
             "CASE WHEN l.undone_at IS NOT NULL THEN 1 ELSE 0 END AS undone "

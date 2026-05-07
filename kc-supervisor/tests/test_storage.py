@@ -297,10 +297,12 @@ def test_conv_map_upsert(tmp_path):
 
 def test_list_audit_decision_filter(tmp_path):
     s = Storage(tmp_path / "db.sqlite"); s.init()
-    s.append_audit(agent="kona", tool="t1", args_json="{}", decision="allowed", result="ok", undoable=False)
-    s.append_audit(agent="kona", tool="t2", args_json="{}", decision="denied", result="reason", undoable=False)
-    s.append_audit(agent="kona", tool="t3", args_json="{}", decision="allowed", result="ok", undoable=False)
+    # Real-world decision values that AuditingToolRegistry actually writes:
+    s.append_audit(agent="kona", tool="t1", args_json="{}", decision="tier",     result="ok",     undoable=False)
+    s.append_audit(agent="kona", tool="t2", args_json="{}", decision="callback", result="ok",     undoable=False)
+    s.append_audit(agent="kona", tool="t3", args_json="{}", decision="denied",   result="reason", undoable=False)
+    s.append_audit(agent="kona", tool="t4", args_json="{}", decision="override", result="ok",     undoable=False)
 
-    assert len(s.list_audit(agent="kona")) == 3
-    assert len(s.list_audit(agent="kona", decision="allowed")) == 2
-    assert len(s.list_audit(agent="kona", decision="denied")) == 1
+    assert len(s.list_audit(agent="kona")) == 4
+    assert len(s.list_audit(agent="kona", decision="allowed")) == 3   # tier, callback, override
+    assert len(s.list_audit(agent="kona", decision="denied")) == 1    # only the literal "denied"
