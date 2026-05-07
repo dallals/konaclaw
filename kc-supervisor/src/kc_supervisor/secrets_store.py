@@ -79,6 +79,16 @@ class SecretsStore:
     def load(self) -> dict[str, Any]:
         if self._enc_path.exists():
             return self._decrypt_file(self._enc_path)
+        plaintext_path = self._config_dir / "secrets.yaml"
+        if plaintext_path.exists():
+            try:
+                loaded = yaml.safe_load(plaintext_path.read_text(encoding="utf-8"))
+            except yaml.YAMLError as exc:
+                raise SecretsStoreError(f"{plaintext_path}: invalid YAML ({exc})") from exc
+            data = loaded if isinstance(loaded, dict) else {}
+            self.save(data)
+            plaintext_path.unlink()
+            return data
         return {}
 
     def _decrypt_file(self, path: Path) -> dict[str, Any]:

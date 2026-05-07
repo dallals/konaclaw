@@ -63,3 +63,44 @@ def test_key_missing_after_save(tmp_path: Path) -> None:
 
     with pytest.raises(KeyMissingError):
         store.load()
+
+
+def test_migration_from_plaintext(tmp_path: Path) -> None:
+    plaintext_path = tmp_path / "secrets.yaml"
+    plaintext_path.write_text("telegram_bot_token: abc:123\n")
+    store = SecretsStore(config_dir=tmp_path, keychain=FakeKeychain())
+
+    out = store.load()
+
+    assert out == {"telegram_bot_token": "abc:123"}
+    assert not plaintext_path.exists()
+    assert (tmp_path / "secrets.yaml.enc").exists()
+
+
+def test_double_migration_is_noop(tmp_path: Path) -> None:
+    (tmp_path / "secrets.yaml").write_text("k: v\n")
+    keychain = FakeKeychain()
+    store = SecretsStore(config_dir=tmp_path, keychain=keychain)
+
+    first = store.load()
+    enc_bytes_after_first = (tmp_path / "secrets.yaml.enc").read_bytes()
+    second = store.load()
+
+    assert first == {"k": "v"}
+    assert second == {"k": "v"}
+    # Second load must not have re-encrypted (different nonce → different bytes)
+    assert (tmp_path / "secrets.yaml.enc").read_bytes() == enc_bytes_after_first
+
+
+def test_full_config_roundtrip(tmp_path: Path) -> None:
+    payload = {
+        "telegram_bot_token": "8123:abc",
+        "telegram_allowlist": ["@sammydallal"],
+        "imessage_allowlist": ["+15551234567"],
+        "google_credentials_json_path": "/Users/sammy/google.json",
+        "zapier_api_key": "zk_live_xyz",
+        "openai_api_key": "sk-xyz",
+    }
+    store = SecretsStore(config_dir=tmp_path, keychain=FakeKeychain())
+    store.save(payload)
+    assert store.load() == payload
