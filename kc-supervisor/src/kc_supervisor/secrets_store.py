@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import secrets as _secrets
 import shutil
 import subprocess
@@ -10,6 +11,9 @@ from typing import Any, Optional, Protocol
 
 import yaml
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+logger = logging.getLogger(__name__)
 
 
 class SecretsStoreError(Exception):
@@ -88,8 +92,7 @@ class SecretsStore:
             data = loaded if isinstance(loaded, dict) else {}
             self.save(data)
             plaintext_path.unlink()
-            import sys
-            print(f"migrated secrets to encrypted store: {self._enc_path}", file=sys.stderr)
+            logger.info("migrated secrets to encrypted store: %s", self._enc_path)
             return data
         return {}
 
