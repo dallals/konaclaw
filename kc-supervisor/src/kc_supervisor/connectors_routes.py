@@ -50,6 +50,7 @@ def _connector_summary(name: str, secrets: dict[str, Any], deps: Any) -> dict[st
         zap_count = 0
         if deps and getattr(deps, "mcp_manager", None) is not None:
             zap_count = sum(1 for n in deps.mcp_manager.names() if n == "zapier")
+            # Actual zap-tool count is computed on the dedicated /zaps endpoint
         return {"name": name,
                 "status": "connected" if api_key else "not_configured",
                 "has_token": bool(api_key),
@@ -67,5 +68,23 @@ def install(app, deps: Any) -> None:
         return {
             "connectors": [_connector_summary(n, secrets, deps) for n in CONNECTOR_NAMES],
         }
+
+    @router.get("/{name}")
+    def get_connector(name: str):
+        if name not in CONNECTOR_NAMES:
+            raise HTTPException(404, detail=f"unknown connector: {name}")
+        secrets = deps.secrets_store.load() if deps.secrets_store else {}
+        summary = _connector_summary(name, secrets, deps)
+        if name == "telegram":
+            summary["token_hint"] = _token_hint(secrets.get("telegram_bot_token"))
+            summary["allowlist"] = list(secrets.get("telegram_allowlist") or [])
+        elif name == "imessage":
+            summary["allowlist"] = list(secrets.get("imessage_allowlist") or [])
+            summary["flags"] = {"platform_supported": platform.system() == "Darwin"}
+        elif name == "zapier":
+            summary["token_hint"] = _token_hint(secrets.get("zapier_api_key"))
+        elif name in ("gmail", "calendar"):
+            summary["flags"] = {"oauth": True}
+        return summary
 
     app.include_router(router)
