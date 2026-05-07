@@ -239,3 +239,57 @@ def test_init_idempotent_adds_pinned_column_to_legacy_db(tmp_path):
     assert len(convs) == 1
     assert convs[0]["pinned"] == 0
     assert convs[0]["title"] is None
+
+
+def test_conv_map_put_and_get(tmp_path):
+    s = Storage(tmp_path / "db.sqlite")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="telegram")
+
+    s.put_conv_for_chat("telegram", "12345", "kona", cid)
+
+    assert s.get_conv_for_chat("telegram", "12345", "kona") == cid
+    assert s.get_conv_for_chat("telegram", "99999", "kona") is None
+
+
+def test_conv_map_persists_across_reopens(tmp_path):
+    db = tmp_path / "db.sqlite"
+    s1 = Storage(db); s1.init()
+    cid = s1.create_conversation(agent="kona", channel="telegram")
+    s1.put_conv_for_chat("telegram", "12345", "kona", cid)
+
+    s2 = Storage(db); s2.init()
+    assert s2.get_conv_for_chat("telegram", "12345", "kona") == cid
+
+
+def test_conv_map_channel_isolation(tmp_path):
+    s = Storage(tmp_path / "db.sqlite"); s.init()
+    cid_t = s.create_conversation(agent="kona", channel="telegram")
+    cid_i = s.create_conversation(agent="kona", channel="imessage")
+
+    s.put_conv_for_chat("telegram", "abc", "kona", cid_t)
+    s.put_conv_for_chat("imessage", "abc", "kona", cid_i)
+
+    assert s.get_conv_for_chat("telegram", "abc", "kona") == cid_t
+    assert s.get_conv_for_chat("imessage", "abc", "kona") == cid_i
+
+
+def test_conv_map_cascade_on_conversation_delete(tmp_path):
+    s = Storage(tmp_path / "db.sqlite"); s.init()
+    cid = s.create_conversation(agent="kona", channel="telegram")
+    s.put_conv_for_chat("telegram", "abc", "kona", cid)
+
+    s.delete_conversation(cid)
+
+    assert s.get_conv_for_chat("telegram", "abc", "kona") is None
+
+
+def test_conv_map_upsert(tmp_path):
+    s = Storage(tmp_path / "db.sqlite"); s.init()
+    cid1 = s.create_conversation(agent="kona", channel="telegram")
+    cid2 = s.create_conversation(agent="kona", channel="telegram")
+
+    s.put_conv_for_chat("telegram", "abc", "kona", cid1)
+    s.put_conv_for_chat("telegram", "abc", "kona", cid2)  # overwrite
+
+    assert s.get_conv_for_chat("telegram", "abc", "kona") == cid2

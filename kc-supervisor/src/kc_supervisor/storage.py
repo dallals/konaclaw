@@ -61,6 +61,16 @@ CREATE TABLE IF NOT EXISTS mcp_installs (
     status TEXT NOT NULL DEFAULT 'running'
 );
 CREATE INDEX IF NOT EXISTS ix_mcp_status ON mcp_installs(status);
+
+CREATE TABLE IF NOT EXISTS connector_conv_map (
+    channel    TEXT NOT NULL,
+    chat_id    TEXT NOT NULL,
+    agent      TEXT NOT NULL,
+    conv_id    INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (channel, chat_id, agent),
+    FOREIGN KEY (conv_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
 """
 
 
@@ -94,6 +104,7 @@ class Storage:
     def connect(self):
         conn = sqlite3.connect(self.db_path, isolation_level=None)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
         finally:
@@ -152,6 +163,40 @@ class Storage:
                 c.execute("ROLLBACK")
                 raise
             return cur.rowcount > 0
+
+    # ----- connector → conversation map -----
+    def put_conv_for_chat(
+        self, channel: str, chat_id: str, agent: str, conv_id: int,
+    ) -> None:
+        with self.connect() as c:
+            c.execute(
+                "INSERT INTO connector_conv_map (channel, chat_id, agent, conv_id) "
+                "VALUES (?,?,?,?) "
+                "ON CONFLICT(channel, chat_id, agent) DO UPDATE SET "
+                "conv_id=excluded.conv_id, updated_at=CURRENT_TIMESTAMP",
+                (channel, chat_id, agent, conv_id),
+            )
+
+    def get_conv_for_chat(
+        self, channel: str, chat_id: str, agent: str,
+    ) -> Optional[int]:
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT conv_id FROM connector_conv_map "
+                "WHERE channel=? AND chat_id=? AND agent=?",
+                (channel, chat_id, agent),
+            ).fetchone()
+        return row["conv_id"] if row else None
+
+    def clear_conv_for_chat(
+        self, channel: str, chat_id: str, agent: str,
+    ) -> None:
+        with self.connect() as c:
+            c.execute(
+                "DELETE FROM connector_conv_map "
+                "WHERE channel=? AND chat_id=? AND agent=?",
+                (channel, chat_id, agent),
+            )
 
     def get_conversation(self, conversation_id: int) -> Optional[dict]:
         """Look up a single conversation by id. Returns None if not found."""
