@@ -124,7 +124,7 @@ The `get_conversation()` defensive check guards against manual SQLite edits or f
 **Site.** Two paths share one helper. (a) The user-prompt path: wrap `broker.request_approval` (currently called inside `approval_callback` at `assembly.py:231`) so a returned `False` writes the audit row. (b) The synchronous deny path: `PermissionEngine.check_async` returns `Decision(allow=False, source="tier")` without ever invoking `approval_callback` for tier-resolved DENIED tools. Catch this by wrapping the engine's `check_async` (or the kc-core hook that calls it) so any resolved `Decision.allow == False` writes the row. Both sites call the same helper:
 
 ```python
-deps.storage.write_audit(
+deps.storage.append_audit(
     agent=agent_name,
     tool=tool_name,
     args_json=json.dumps(args),
