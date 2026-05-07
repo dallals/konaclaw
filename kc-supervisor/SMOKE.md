@@ -75,6 +75,28 @@ Restart the supervisor.
 - [ ] Re-running `POST /undo/<same-id>` after a successful undo → 500 with detail mentioning a journal failure (idempotent-applied tracking is a v0.3 follow-up).
 - [ ] `POST /undo/<audit_id_for_a_file_read>` → 422 "no journal op".
 
+## v0.2.1 polish smoke
+
+1. Boot with existing plaintext `~/KonaClaw/config/secrets.yaml`.
+   - Expect log line `migrated secrets to encrypted store`.
+   - Expect `~/KonaClaw/config/secrets.yaml.enc` exists.
+   - Expect `~/KonaClaw/config/secrets.yaml` is gone.
+   - Restart; expect normal boot (no migration log).
+
+2. Send a Telegram message from an allowlisted chat.
+   - Expect a row in `connector_conv_map` (sqlite3 ~/KonaClaw/data/db.sqlite "SELECT * FROM connector_conv_map").
+   - Restart supervisor.
+   - Send another message from same chat.
+   - Expect same conv_id reused (no new row in conversations).
+
+3. Trigger an approval-required tool; click Deny in the dashboard.
+   - Expect a row in audit with decision='denied' and result containing the reason.
+
+4. Close the launcher's terminal window without Ctrl-C.
+   - Relaunch.
+   - Expect clean boot, no "address already in use" errors.
+   - If port-in-use: expect a clear error message + immediate exit.
+
 ## Known not-yet-wired (v0.3)
 
 - Approval timeout (currently blocks indefinitely if no `/ws/approvals` client connects).
