@@ -101,6 +101,9 @@ def create_app(deps: Deps) -> FastAPI:
     from kc_supervisor.ws_routes import register_ws_routes
     register_ws_routes(app)
 
+    from kc_supervisor import connectors_routes
+    connectors_routes.install(app, deps)
+
     # MCP servers are spawned on the FastAPI startup event so their lifecycle
     # tasks live inside uvicorn's event loop (anyio-scope correctness — see
     # kc_mcp.handle module docstring). After loading, reload AgentRegistry so
