@@ -103,3 +103,44 @@ class SecretsStore:
             raise DecryptError(f"{path}: decrypt failed ({type(exc).__name__})") from exc
         loaded = yaml.safe_load(plaintext.decode("utf-8"))
         return loaded if isinstance(loaded, dict) else {}
+
+
+class SecurityCliKeychain:
+    """Keychain backed by the macOS `security` CLI.
+
+    Uses the user's login keychain (default), so the master key is
+    auto-unlocked at user login — no boot-time prompt.
+    """
+
+    SERVICE = "com.konaclaw.supervisor"
+    ACCOUNT = "secrets-master-key"
+
+    def __init__(self, security_bin: str = "security") -> None:
+        self._security_bin = security_bin
+        if shutil.which(security_bin) is None:
+            raise SecretsStoreError(
+                "login Keychain unavailable; KonaClaw needs the macOS `security` "
+                "CLI to read secrets"
+            )
+
+    def get(self) -> Optional[str]:
+        result = subprocess.run(
+            [self._security_bin, "find-generic-password", "-s", self.SERVICE,
+             "-a", self.ACCOUNT, "-w"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            # Item not found is exit 44; treat all errors as missing.
+            return None
+        return result.stdout.strip()
+
+    def set(self, value: str) -> None:
+        result = subprocess.run(
+            [self._security_bin, "add-generic-password", "-U",
+             "-s", self.SERVICE, "-a", self.ACCOUNT, "-w", value],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise SecretsStoreError(
+                f"`security add-generic-password` failed: {result.stderr.strip()}"
+            )
