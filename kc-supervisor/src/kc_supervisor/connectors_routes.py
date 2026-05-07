@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import platform
 from typing import Any
 from fastapi import APIRouter, HTTPException
@@ -39,8 +40,12 @@ def _restart_connector(name: str, deps: Any) -> None:
         return
     try:
         hook()
-    except Exception:
-        pass
+    except Exception as exc:
+        # The connector restart hook should log internally; we don't
+        # surface failure to the dashboard because the secret is saved.
+        logging.getLogger(__name__).warning(
+            "restart_%s hook failed: %s", name, exc, exc_info=True,
+        )
 
 
 def _token_hint(value: str | None) -> str | None:

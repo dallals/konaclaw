@@ -39,6 +39,7 @@ def test_patch_telegram_persists_through_secrets_store(app):
         })
         assert res.status_code == 200
         assert res.json() == {"ok": True}
+        assert "bot_token" not in res.json()
 
         detail = client.get("/connectors/telegram").json()
     assert detail["has_token"] is True
