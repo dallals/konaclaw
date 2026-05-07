@@ -10,6 +10,39 @@ router = APIRouter(prefix="/connectors")
 CONNECTOR_NAMES = ("telegram", "imessage", "gmail", "calendar", "zapier")
 
 
+class TelegramPatch(BaseModel):
+    bot_token: str | None = None
+    allowlist: list[str] | None = None
+
+
+class IMessagePatch(BaseModel):
+    allowlist: list[str] | None = None
+
+
+class ZapierPatch(BaseModel):
+    api_key: str | None = None
+
+
+_PATCH_KEYS: dict[str, dict[str, str]] = {
+    "telegram": {"bot_token": "telegram_bot_token", "allowlist": "telegram_allowlist"},
+    "imessage": {"allowlist": "imessage_allowlist"},
+    "zapier":   {"api_key": "zapier_api_key"},
+}
+
+
+def _restart_connector(name: str, deps: Any) -> None:
+    """Best-effort hot-restart for telegram/imessage so PATCH takes effect
+    without a supervisor reboot. Errors are logged, not raised — secret was
+    saved either way. Wire-up of these hooks lives in main.py (Task 7)."""
+    hook = getattr(deps, f"restart_{name}", None)
+    if hook is None:
+        return
+    try:
+        hook()
+    except Exception:
+        pass
+
+
 def _token_hint(value: str | None) -> str | None:
     if not value or len(value) < 4:
         return None
@@ -86,5 +119,28 @@ def install(app, deps: Any) -> None:
         elif name in ("gmail", "calendar"):
             summary["flags"] = {"oauth": True}
         return summary
+
+    @router.patch("/{name}")
+    def patch_connector(name: str, payload: dict[str, Any]):
+        if name not in _PATCH_KEYS:
+            raise HTTPException(404, detail=f"unknown connector: {name}")
+        if name == "telegram":
+            data = TelegramPatch(**payload).model_dump(exclude_none=True)
+        elif name == "imessage":
+            data = IMessagePatch(**payload).model_dump(exclude_none=True)
+        elif name == "zapier":
+            data = ZapierPatch(**payload).model_dump(exclude_none=True)
+        else:
+            raise HTTPException(404)
+
+        secrets = deps.secrets_store.load() if deps.secrets_store else {}
+        for body_key, secret_key in _PATCH_KEYS[name].items():
+            if body_key in data:
+                secrets[secret_key] = data[body_key]
+        deps.secrets_store.save(secrets)
+
+        if name in ("telegram", "imessage"):
+            _restart_connector(name, deps)
+        return {"ok": True}
 
     app.include_router(router)

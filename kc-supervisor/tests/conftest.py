@@ -1,4 +1,6 @@
 from pathlib import Path
+from typing import Optional
+
 import pytest
 import yaml
 from kc_sandbox.shares import SharesRegistry
@@ -7,7 +9,21 @@ from kc_supervisor.agents import AgentRegistry
 from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.approvals import ApprovalBroker
 from kc_supervisor.locks import ConversationLocks
+from kc_supervisor.secrets_store import SecretsStore
 from kc_supervisor.service import Deps, create_app
+
+
+class FakeKeychain:
+    """In-memory keychain for tests; mirrors the one in test_secrets_store.py."""
+
+    def __init__(self, value: Optional[str] = None) -> None:
+        self._value = value
+
+    def get(self) -> Optional[str]:
+        return self._value
+
+    def set(self, value: str) -> None:
+        self._value = value
 
 
 @pytest.fixture
@@ -45,6 +61,7 @@ def deps(tmp_path):
     )
     registry.load_all()
     convs = ConversationManager(storage=storage)
+    secrets_store = SecretsStore(config_dir=home / "config", keychain=FakeKeychain())
     return Deps(
         storage=storage,
         registry=registry,
@@ -53,6 +70,7 @@ def deps(tmp_path):
         home=home,
         shares=shares,
         conv_locks=ConversationLocks(),
+        secrets_store=secrets_store,
     )
 
 
