@@ -183,6 +183,27 @@ def install(app, deps: Any) -> None:
             _restart_connector(name, deps)
         return {"ok": True}
 
+    @router.get("/zapier/zaps")
+    def list_zaps():
+        # Find live mcp.zapier.* tools through deps.mcp_manager.
+        live: list[dict[str, Any]] = []
+        manager = getattr(deps, "mcp_manager", None)
+        if manager is not None and "zapier" in manager.names():
+            handle = manager.get("zapier")
+            for tool in handle.tools_cache or []:
+                # tool comes from kc_mcc.tool_adapter — name is "mcp.zapier.<x>"
+                live.append({
+                    "tool": tool.name,
+                    "description": tool.description or "",
+                })
+        # Join with audit aggregation.
+        agg = {r["tool"]: r for r in deps.storage.audit_aggregate_by_tool_prefix("mcp.zapier.")}
+        for entry in live:
+            row = agg.get(entry["tool"])
+            entry["last_used_ts"] = row["last_ts"] if row else None
+            entry["call_count"] = row["n"] if row else 0
+        return {"zaps": live}
+
     @router.post("/google/connect", status_code=202)
     def google_connect():
         state = deps.google_oauth

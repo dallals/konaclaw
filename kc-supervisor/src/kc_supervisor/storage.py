@@ -277,6 +277,24 @@ class Storage:
             rows = c.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    def audit_aggregate_by_tool_prefix(
+        self, prefix: str,
+    ) -> list[dict]:
+        """Per-tool MAX(ts) and COUNT(*) for tools matching prefix%.
+
+        Mirrors `list_audit(decision="allowed")`: allowed audit rows store
+        decision=<source> (tier|callback|override|unknown), not the literal
+        "allowed", so we filter `decision != 'denied'` to exclude denied rows.
+        """
+        with self.connect() as c:
+            rows = c.execute(
+                "SELECT tool, MAX(ts) AS last_ts, COUNT(*) AS n "
+                "FROM audit WHERE tool LIKE ? AND decision != 'denied' "
+                "GROUP BY tool",
+                (prefix + "%",),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def mark_audit_undone(self, audit_id: int) -> bool:
         """Stamp audit_undo_link.undone_at for this audit row. Returns True if a
         link existed (i.e., the audit row had a journaled op to begin with)."""

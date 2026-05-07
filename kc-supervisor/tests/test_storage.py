@@ -306,3 +306,19 @@ def test_list_audit_decision_filter(tmp_path):
     assert len(s.list_audit(agent="kona")) == 4
     assert len(s.list_audit(agent="kona", decision="allowed")) == 3   # tier, callback, override
     assert len(s.list_audit(agent="kona", decision="denied")) == 1    # only the literal "denied"
+
+
+def test_audit_aggregate_by_tool_prefix(tmp_path):
+    s = Storage(tmp_path / "db.sqlite"); s.init()
+    s.append_audit(agent="a", tool="mcp.zapier.gmail_send",   args_json="{}", decision="callback", result="ok",                 undoable=False)
+    s.append_audit(agent="a", tool="mcp.zapier.gmail_send",   args_json="{}", decision="tier",     result="ok",                 undoable=False)
+    s.append_audit(agent="a", tool="mcp.zapier.notion_create", args_json="{}", decision="callback", result="ok",                undoable=False)
+    s.append_audit(agent="a", tool="other.tool",              args_json="{}", decision="callback", result="ok",                 undoable=False)
+    s.append_audit(agent="a", tool="mcp.zapier.gmail_send",   args_json="{}", decision="denied",   result="{\"reason\":\"x\"}", undoable=False)
+
+    out = sorted(s.audit_aggregate_by_tool_prefix("mcp.zapier."), key=lambda r: r["tool"])
+    assert len(out) == 2
+    assert out[0]["tool"] == "mcp.zapier.gmail_send"
+    assert out[0]["n"] == 2  # NOT 3 — the denied row is excluded
+    assert out[1]["tool"] == "mcp.zapier.notion_create"
+    assert out[1]["n"] == 1

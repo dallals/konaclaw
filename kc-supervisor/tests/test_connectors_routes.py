@@ -114,6 +114,14 @@ def test_google_connect_double_click_is_noop_while_pending(app, monkeypatch):
     assert len(started) == 1
 
 
+def test_zapier_zaps_returns_empty_when_unconfigured(app):
+    # deps.mcp_manager is unset on the conftest fixture, so the route's
+    # `if manager is not None` guard short-circuits to an empty live list.
+    with TestClient(app) as client:
+        body = client.get("/connectors/zapier/zaps").json()
+    assert body == {"zaps": []}
+
+
 def test_google_disconnect_resets_state(app, deps):
     # Simulate a previously-completed flow: write a token file and mark
     # state="connected", then verify disconnect clears both.
