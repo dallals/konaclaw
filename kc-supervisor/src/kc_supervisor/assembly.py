@@ -61,6 +61,7 @@ def assemble_agent(
     memory_root: Optional[Path] = None,
     gmail_service: Optional[Any] = None,
     gcal_service: Optional[Any] = None,
+    ollama_api_key: Optional[str] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -235,7 +236,7 @@ def assemble_agent(
 
     # 5. OllamaClient + kc-core Agent. cfg.model wins over default_model when present.
     model = cfg.model or default_model
-    ollama_client = OllamaClient(base_url=ollama_url, model=model)
+    ollama_client = OllamaClient(base_url=ollama_url, model=model, api_key=ollama_api_key)
 
     # If memory is wired, prepend the formatted prefix to the system prompt.
     # ws_routes.py refreshes this per-turn so updates are visible across turns

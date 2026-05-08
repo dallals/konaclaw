@@ -65,12 +65,14 @@ class AgentRegistry:
         memory_root: "Optional[Path]" = None,
         gmail_service: "Optional[Any]" = None,
         gcal_service: "Optional[Any]" = None,
+        ollama_api_key: "Optional[str]" = None,
     ) -> None:
         self.agents_dir = Path(agents_dir)
         self.shares = shares
         self.audit_storage = audit_storage
         self.broker = broker
         self.ollama_url = ollama_url
+        self.ollama_api_key = ollama_api_key
         self.default_model = default_model
         self.undo_db_path = Path(undo_db_path)
         self.mcp_manager = mcp_manager
@@ -126,6 +128,7 @@ class AgentRegistry:
                     memory_root=self.memory_root,
                     gmail_service=self.gmail_service,
                     gcal_service=self.gcal_service,
+                    ollama_api_key=self.ollama_api_key,
                 )
                 new_by_name[cfg.name] = AgentRuntime(
                     name=cfg.name,

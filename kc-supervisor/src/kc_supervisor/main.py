@@ -16,6 +16,7 @@ def main() -> None:
     home = Path(os.environ.get("KC_HOME", str(Path.home() / "KonaClaw")))
     default_model = os.environ.get("KC_DEFAULT_MODEL", "qwen2.5:7b")
     ollama_url = os.environ.get("KC_OLLAMA_URL", "http://localhost:11434")
+    ollama_api_key = os.environ.get("KC_OLLAMA_API_KEY") or None
 
     (home / "agents").mkdir(parents=True, exist_ok=True)
     (home / "data").mkdir(parents=True, exist_ok=True)
@@ -188,6 +189,7 @@ def main() -> None:
         memory_root=memory_root,
         gmail_service=gmail_service,
         gcal_service=gcal_service,
+        ollama_api_key=ollama_api_key,
     )
     registry.load_all()
 
