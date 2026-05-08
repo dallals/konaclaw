@@ -198,8 +198,10 @@ def install(app, deps: Any) -> None:
         manager = getattr(deps, "mcp_manager", None)
         if manager is not None and "zapier" in manager.names():
             handle = manager.get("zapier")
-            for tool in handle.tools_cache or []:
-                # tool comes from kc_mcc.tool_adapter — name is "mcp.zapier.<x>"
+            # `_tools_cache` is the actual attribute on MCPServerHandle;
+            # the public surface is `await handle.list_tools()` but we read
+            # the cache directly to keep this route synchronous.
+            for tool in getattr(handle, "_tools_cache", None) or []:
                 live.append({
                     "tool": tool.name,
                     "description": tool.description or "",
@@ -213,7 +215,35 @@ def install(app, deps: Any) -> None:
         return {"zaps": live}
 
     @router.post("/zapier/refresh")
-    def refresh_zapier():
+    async def refresh_zapier():
+        # Hard-refresh the Zapier MCP handle so newly-added apps in
+        # mcp.zapier.com show up without a supervisor restart. Sequence:
+        # unregister old handle (drops cached tool list), then re-register
+        # using the current zapier_api_key from the encrypted secrets store
+        # (which forces a fresh `session.list_tools()` call on init), then
+        # re-assemble agents so tool registries pick up the new names.
+        manager = deps.mcp_manager
+        if manager is not None and "zapier" in manager.names():
+            try:
+                await manager.unregister("zapier")
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "zapier unregister during refresh failed: %s", exc, exc_info=True,
+                )
+        if manager is not None and deps.secrets_store is not None:
+            try:
+                from kc_zapier.config import ZapierConfig
+                from kc_zapier.register import register_zapier_mcp
+                secrets = deps.secrets_store.load()
+                api_key = secrets.get("zapier_api_key")
+                if api_key:
+                    await register_zapier_mcp(manager, ZapierConfig(api_key=api_key))
+            except ImportError:
+                pass
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "zapier register during refresh failed: %s", exc, exc_info=True,
+                )
         deps.registry.load_all()
         return {"ok": True, "refreshed_at": time.time()}
 

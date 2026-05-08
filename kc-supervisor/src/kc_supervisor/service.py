@@ -72,25 +72,29 @@ async def _maybe_register_zapier(deps: "Deps") -> None:
 
     Silent skip when:
       - kc_zapier isn't importable (soft dep), or
-      - secrets.yaml lacks `zapier_api_key`.
+      - the encrypted secrets store lacks `zapier_api_key`.
 
     On registration failure (e.g. bad API key), logs a warning and returns.
     On success, calls `deps.registry.load_all()` so agents pick up the new
     `mcp.zapier.*` tools and the `find_or_install_zap` meta-tool on the
     next turn.
+
+    Reads from `deps.secrets_store` directly (NOT `kc_zapier.config.load_config`,
+    which still hits plaintext `~/KonaClaw/config/secrets.yaml` — gone after
+    Plan 1's encrypted-store migration).
     """
-    if deps.mcp_manager is None:
+    if deps.mcp_manager is None or deps.secrets_store is None:
         return
     try:
-        from kc_zapier.config import load_config
+        from kc_zapier.config import ZapierConfig
         from kc_zapier.register import register_zapier_mcp
     except ImportError:
         return
-    try:
-        cfg = load_config()
-    except KeyError:
-        # zapier_api_key not in secrets.yaml — silent skip.
+    secrets = deps.secrets_store.load()
+    api_key = secrets.get("zapier_api_key")
+    if not api_key:
         return
+    cfg = ZapierConfig(api_key=api_key)
     try:
         await register_zapier_mcp(deps.mcp_manager, cfg)
     except Exception as e:
