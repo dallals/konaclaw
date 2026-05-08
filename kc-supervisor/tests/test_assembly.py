@@ -306,12 +306,19 @@ def test_assemble_without_zapier_no_meta_tool(home):
     assert "find_or_install_zap" not in names
 
 
-def test_zapier_mcp_tools_still_destructive(home):
+def test_zapier_mcp_tools_are_mutating_not_destructive(home):
+    """Zapier MCP tools are user-authorized at mcp.zapier.com (per-app OAuth),
+    so KonaClaw treats them as MUTATING (audited, no popup) rather than
+    DESTRUCTIVE. Other MCP servers stay DESTRUCTIVE by default."""
     fake_zap_tool = _make_fake_mcp_tool("mcp.zapier.send_slack", "send a slack message")
-    mgr = _FakeMCPManager(server_names=["zapier"], tools=[fake_zap_tool])
+    fake_other_tool = _make_fake_mcp_tool("mcp.fs.delete", "delete a file")
+    mgr = _FakeMCPManager(
+        server_names=["zapier", "fs"],
+        tools=[fake_zap_tool, fake_other_tool],
+    )
 
     a = assemble_agent(**_basic_assemble_kwargs(home), mcp_manager=mgr)
-    # The wrapped MCP tool keeps DESTRUCTIVE tier from the all_tools loop.
-    assert a.engine.tier_map["mcp.zapier.send_slack"] == Tier.DESTRUCTIVE
-    # And the meta-tool stays SAFE.
+    assert a.engine.tier_map["mcp.zapier.send_slack"] == Tier.MUTATING
+    assert a.engine.tier_map["mcp.fs.delete"] == Tier.DESTRUCTIVE
+    # The meta-tool stays SAFE.
     assert a.engine.tier_map["find_or_install_zap"] == Tier.SAFE

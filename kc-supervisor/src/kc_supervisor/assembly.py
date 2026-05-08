@@ -111,7 +111,14 @@ def assemble_agent(
     if mcp_manager is not None:
         for mcp_tool in mcp_manager.all_tools():
             registry.register(mcp_tool)
-            tier_map[mcp_tool.name] = Tier.DESTRUCTIVE
+            # Zapier MCP tools are user-authorized server-side at mcp.zapier.com
+            # (per-app OAuth + Zapier's own approval gate), so re-prompting in
+            # KonaClaw is redundant. Treat them as MUTATING (audited, no
+            # approval popup) rather than DESTRUCTIVE.
+            if mcp_tool.name.startswith("mcp.zapier."):
+                tier_map[mcp_tool.name] = Tier.MUTATING
+            else:
+                tier_map[mcp_tool.name] = Tier.DESTRUCTIVE
         # Zapier meta-tool — only when the MCP manager has a "zapier" server
         # registered. The Zapier MCP tools themselves are already registered
         # above as DESTRUCTIVE via the manager.all_tools() loop. The meta-tool
