@@ -107,6 +107,14 @@ def _run_google_flow(deps: Any) -> None:
     """
     state = deps.google_oauth
     try:
+        if deps.google_credentials_path is None:
+            raise RuntimeError(
+                "google_credentials_json_path not set in secrets — drop your "
+                "OAuth client_secret JSON somewhere on disk and add the path to "
+                "~/KonaClaw/config/secrets.yaml.enc under that key"
+            )
+        if deps.google_token_path is None:
+            raise RuntimeError("google_token_path not configured on Deps")
         from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
         flow = InstalledAppFlow.from_client_secrets_file(
             str(deps.google_credentials_path),

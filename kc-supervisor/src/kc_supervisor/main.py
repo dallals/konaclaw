@@ -58,6 +58,13 @@ def main() -> None:
     except ImportError:
         pass
 
+    # Google OAuth paths — read here so they reach Deps even when kc-connectors
+    # isn't importable (the dashboard's Connect-with-Google flow only needs the
+    # paths + google-auth-oauthlib, not kc_connectors).
+    google_creds_path_str = secrets.get("google_credentials_json_path")
+    google_token_path_str = secrets.get("google_token_json_path",
+                                        str(home / "config" / "google_token.json"))
+
     # Google connectors (Gmail + Calendar) — optional. Uses secrets loaded above
     # for the OAuth credentials path. If the creds file is missing or
     # kc-connectors isn't installed, agents simply don't get Google tools;
@@ -67,9 +74,8 @@ def main() -> None:
     try:
         from kc_connectors.gmail_adapter import build_gmail_service, GMAIL_SCOPES
         from kc_connectors.gcal_adapter import build_gcal_service, GCAL_SCOPES
-        creds_path = secrets.get("google_credentials_json_path")
-        token_path = secrets.get("google_token_json_path",
-                                str(home / "config" / "google_token.json"))
+        creds_path = google_creds_path_str
+        token_path = google_token_path_str
         if creds_path and Path(creds_path).exists():
             from google.oauth2.credentials import Credentials
             from google_auth_oauthlib.flow import InstalledAppFlow
@@ -196,6 +202,8 @@ def main() -> None:
         mcp_manager=mcp_manager,
         mcp_install_store=mcp_install_store,
         secrets_store=secrets_store,
+        google_credentials_path=Path(google_creds_path_str) if google_creds_path_str else None,
+        google_token_path=Path(google_token_path_str),
     )
     # InboundRouter is created after Deps so it has access to the same
     # registry/conversations/conv_locks. Stored on Deps so service.py can
