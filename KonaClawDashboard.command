@@ -44,6 +44,16 @@ if ! curl -sf -m 1 http://127.0.0.1:11434/api/tags >/dev/null; then
     echo
 fi
 
+# Optional OpenAI-compatible chat endpoint (NVIDIA NIM, OpenRouter, etc.) —
+# much faster than local Ollama for tool-calling. Put your secrets in
+# ~/.konaclaw.env (outside this repo, gitignored by being in $HOME):
+#
+#     export KC_OLLAMA_URL="https://integrate.api.nvidia.com/v1"
+#     export KC_OLLAMA_API_KEY="nvapi-..."
+#
+# Leave the file absent to fall back to local Ollama at $KC_OLLAMA_URL.
+[ -f "$HOME/.konaclaw.env" ] && source "$HOME/.konaclaw.env"
+
 KC_HOME="$KC_HOME_DIR" "$KC_SUPERVISOR/.venv/bin/kc-supervisor" &
 SUP_PID=$!
 
