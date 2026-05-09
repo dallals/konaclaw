@@ -30,9 +30,12 @@ class UpdateConversationRequest(BaseModel):
     title: Optional[str] = None  # explicit "" clears the title
 
 
-def _message_to_dict(m) -> dict:
-    """Serialize a kc_core.messages dataclass for JSON."""
-    return {"type": m.__class__.__name__, **asdict(m)}
+def _message_to_dict(m, usage: Optional[dict] = None) -> dict:
+    """Serialize a kc_core.messages dataclass for JSON. Optionally includes usage."""
+    d = {"type": m.__class__.__name__, **asdict(m)}
+    if usage is not None:
+        d["usage"] = usage
+    return d
 
 
 def register_http_routes(app: FastAPI) -> None:
@@ -193,8 +196,8 @@ def register_http_routes(app: FastAPI) -> None:
     def list_messages(cid: int):
         if app.state.deps.storage.get_conversation(cid) is None:
             raise HTTPException(404, detail=f"unknown conversation: {cid}")
-        msgs = app.state.deps.conversations.list_messages(cid)
-        return {"messages": [_message_to_dict(m) for m in msgs]}
+        pairs = app.state.deps.conversations.list_messages_with_meta(cid)
+        return {"messages": [_message_to_dict(m, usage=u) for (m, u) in pairs]}
 
     @app.get("/audit")
     def list_audit(
