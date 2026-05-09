@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listAgents, createConversation } from "../api/agents";
@@ -10,12 +10,14 @@ import {
   deleteConversation,
 } from "../api/conversations";
 import { useChatSocket } from "../ws/useChatSocket";
+import { useLiveTokensPerSecond } from "../ws/useLiveTokensPerSecond";
 import { useWS } from "../ws/WSContext";
 import { useApprovals } from "../store/approvals";
-import { MessageBubble } from "../components/MessageBubble";
+import { MessageBubble, type BubbleUsage } from "../components/MessageBubble";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import { NewsWidget } from "../components/NewsWidget";
+import { formatTokensPerSecond, formatTokenCount, formatTtfb } from "../lib/formatUsage";
 
 const padNum = (n: number, len = 3) => String(n).padStart(len, "0");
 
@@ -115,8 +117,23 @@ export default function Chat() {
     if (last?.type === "AssistantMessage") setAwaitingReply(false);
   }, [msgsQ.data, awaitingReply]);
 
+  // Per-bubble usage map (from persisted messages query).
+  const bubbleUsageByIdx = useMemo(() => {
+    const map = new Map<number, BubbleUsage>();
+    const msgs = msgsQ.data?.messages ?? [];
+    let assistantIdx = 0;
+    for (const m of msgs as Array<{ type: string; usage?: BubbleUsage }>) {
+      if (m.type === "AssistantMessage") {
+        if (m.usage) map.set(assistantIdx, m.usage);
+        assistantIdx++;
+      }
+    }
+    return map;
+  }, [msgsQ.data]);
+
   const rendered = useMemo(() => {
-    const out: { role: "user" | "assistant"; content: string }[] = [];
+    const out: { role: "user" | "assistant"; content: string; usage?: BubbleUsage }[] = [];
+    let assistantIdx = 0;
     for (const m of msgsQ.data?.messages ?? []) {
       if (m.type === "UserMessage") out.push({ role: "user", content: m.content ?? "" });
       else if (m.type === "AssistantMessage") {
@@ -126,12 +143,17 @@ export default function Chat() {
         // model called a tool without surrounding text. Showing those as
         // "(no reply...)" placeholders during an in-flight multi-step turn
         // is misleading.
-        if (!content.trim()) continue;
-        out.push({ role: "assistant", content });
+        if (!content.trim()) { assistantIdx++; continue; }
+        out.push({
+          role: "assistant",
+          content,
+          usage: bubbleUsageByIdx.get(assistantIdx),
+        });
+        assistantIdx++;
       }
     }
     return out;
-  }, [msgsQ.data]);
+  }, [msgsQ.data, bubbleUsageByIdx]);
 
   // Tokens streamed since the most recent `assistant_complete`. Rendered as a
   // ghost assistant bubble so the user sees progress instead of dead air. The
@@ -147,6 +169,35 @@ export default function Chat() {
       if (e.type === "token") buf += e.delta;
     }
     return buf;
+  }, [events]);
+
+  const firstTokenAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    const last = events[events.length - 1];
+    if (last?.type === "token" && firstTokenAtRef.current == null) {
+      firstTokenAtRef.current = Date.now();
+    }
+    if (last?.type === "assistant_complete") {
+      firstTokenAtRef.current = null;
+    }
+  }, [events]);
+
+  // Reset first-token timestamp when the user switches conversations.
+  useEffect(() => { firstTokenAtRef.current = null; }, [activeConv]);
+
+  const liveTps = useLiveTokensPerSecond(streaming, firstTokenAtRef.current);
+
+  // Most recent {type:"usage"} event since the last assistant_complete.
+  const currentTurnUsage = useMemo(() => {
+    let resetAt = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].type === "assistant_complete") { resetAt = i + 1; break; }
+    }
+    for (let i = events.length - 1; i >= resetAt; i--) {
+      const e = events[i];
+      if (e.type === "usage") return e;
+    }
+    return null;
   }, [events]);
 
 
@@ -369,7 +420,7 @@ export default function Chat() {
                     </dd>
                   </>
                 )}
-                <dt className="text-muted2 font-normal">Turns</dt>
+                <dt className="text-muted2 font-normal">Msgs</dt>
                 <dd className="text-text font-medium">{padNum(rendered.length, 2)}</dd>
                 {activeAgentData && (
                   <>
@@ -377,6 +428,31 @@ export default function Chat() {
                     <dd className="text-text font-medium">{activeAgentData.model}</dd>
                     <dt className="text-muted2 font-normal">Status</dt>
                     <dd className="text-text font-medium">{activeAgentData.status}</dd>
+                    <dt className="text-muted2 font-normal">Last reply</dt>
+                    <dd className="text-text font-medium">
+                      {(() => {
+                        if (currentTurnUsage && currentTurnUsage.usage_reported && currentTurnUsage.output_tokens != null && currentTurnUsage.generation_ms >= 50) {
+                          const tps = (currentTurnUsage.output_tokens * 1000) / currentTurnUsage.generation_ms;
+                          return `${formatTokensPerSecond(tps)} · ${formatTokenCount(currentTurnUsage.output_tokens)}`;
+                        }
+                        if (currentTurnUsage && !currentTurnUsage.usage_reported && liveTps != null) {
+                          return `~${formatTokensPerSecond(liveTps)} · estimate`;
+                        }
+                        if (streaming && liveTps != null) {
+                          return `~${formatTokensPerSecond(liveTps)} · streaming`;
+                        }
+                        return "—";
+                      })()}
+                    </dd>
+                    {currentTurnUsage && (
+                      <>
+                        <dt className="text-muted2 font-normal">TTFB</dt>
+                        <dd className="text-muted font-medium">
+                          {formatTtfb(currentTurnUsage.ttfb_ms)}
+                          {currentTurnUsage.calls > 1 && ` · ${currentTurnUsage.calls} calls`}
+                        </dd>
+                      </>
+                    )}
                   </>
                 )}
               </dl>
@@ -402,7 +478,7 @@ export default function Chat() {
               <div className="font-body text-base text-muted">Open one from the sidebar or start a new drawing.</div>
             </div>
           )}
-          {rendered.map((m, i) => <MessageBubble key={i} role={m.role} content={m.content} />)}
+          {rendered.map((m, i) => <MessageBubble key={i} role={m.role} content={m.content} usage={m.usage} />)}
           {streaming && <MessageBubble role="assistant" content={streaming} />}
           {pendingForAgent.map((req) => (
             <ApprovalCard

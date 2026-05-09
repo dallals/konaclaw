@@ -10,8 +10,8 @@ from kc_core.messages import (
 from kc_core.tools import ToolRegistry
 from kc_core.tool_call_parser import parse_text_tool_calls
 from kc_core.stream_frames import (
-    ChatStreamFrame, TextDelta, ToolCallsBlock, Done,
-    StreamFrame, TokenDelta, ToolCallStart, ToolResult, Complete,
+    ChatStreamFrame, TextDelta, ToolCallsBlock, Done, ChatUsage,
+    StreamFrame, TokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
 )
 
 
@@ -49,6 +49,7 @@ class Agent:
         preserved (all ToolCallMessages first, then all ToolResultMessages).
         """
         self.history.append(UserMessage(content=user_text))
+        call_index = 0
         for _ in range(self.max_tool_iterations + 1):
             wire = self._build_wire_messages()
             text_parts: list[str] = []
@@ -63,6 +64,16 @@ class Agent:
                     tool_calls_block = cs_frame.calls
                 elif isinstance(cs_frame, Done):
                     pass  # finish_reason consumed via the block end
+                elif isinstance(cs_frame, ChatUsage):
+                    yield TurnUsage(
+                        call_index=call_index,
+                        input_tokens=cs_frame.input_tokens,
+                        output_tokens=cs_frame.output_tokens,
+                        ttfb_ms=cs_frame.ttfb_ms,
+                        generation_ms=cs_frame.generation_ms,
+                        usage_reported=cs_frame.usage_reported,
+                    )
+            call_index += 1
 
             # Decide next phase: native tool calls, JSON-in-text fallback, or terminate
             calls: list[dict[str, Any]] = list(tool_calls_block) if tool_calls_block else []

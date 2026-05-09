@@ -75,4 +75,55 @@ describe("Chat view", () => {
     const replies = await screen.findAllByText(/Hello back!/);
     expect(replies).toHaveLength(1);
   });
+
+  it("renders Last reply / TTFB header rows after a usage event", async () => {
+    render(wrap(<Chat />));
+    fireEvent.click(await screen.findByText(/kc/i));
+    fireEvent.click(screen.getByRole("button", { name: /new drawing/i }));
+    await waitFor(() => expect(lastFakeWS).not.toBeNull());
+
+    const input = screen.getByPlaceholderText(/reply/i);
+    fireEvent.change(input, { target: { value: "hi" } });
+    fireEvent.submit(input.closest("form")!);
+
+    // Persisted messages payload — the assistant reply WITH usage attached.
+    messagesPayload = [
+      { type: "UserMessage", content: "hi" },
+      {
+        type: "AssistantMessage",
+        content: "Hello back!",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 412,
+          ttfb_ms: 1042,
+          generation_ms: 3240,
+          calls: 2,
+          usage_reported: true,
+        },
+      },
+    ] as any;
+
+    // Stream events ordered as on the wire.
+    lastFakeWS!.push({ type: "token", delta: "Hello " });
+    lastFakeWS!.push({ type: "token", delta: "back!" });
+    lastFakeWS!.push({
+      type: "usage",
+      input_tokens: 100,
+      output_tokens: 412,
+      ttfb_ms: 1042,
+      generation_ms: 3240,
+      calls: 2,
+      usage_reported: true,
+    });
+    lastFakeWS!.push({ type: "assistant_complete", content: "Hello back!" });
+
+    // Header strip: Last reply with authoritative tok/s.
+    // 412 / 3.24 ≈ 127 t/s; output count 412 tok.
+    expect(await screen.findByText(/127 t\/s/)).toBeInTheDocument();
+    // TTFB row.
+    expect(screen.getAllByText(/1\.04 s/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/2 calls/).length).toBeGreaterThan(0);
+    // Per-bubble badge appears too (with ttfb prefix).
+    expect(screen.getByText(/ttfb 1\.04 s/)).toBeInTheDocument();
+  });
 });

@@ -49,6 +49,16 @@ def _inject_fake(deps, agent_name: str, fake):
     rt.assembled.core_agent.client = fake
 
 
+def _inject_send_stream(deps, agent_name: str, frames):
+    """Replace core_agent.send_stream so it yields the given frames once."""
+    async def _gen(_content):
+        for f in frames:
+            yield f
+    rt = deps.registry.get(agent_name)
+    assert rt.assembled is not None
+    rt.assembled.core_agent.send_stream = _gen
+
+
 def test_ws_streaming_round_trip_yields_token_then_complete(app, deps, fake_client_factory):
     fake = fake_client_factory(stream_responses=[[
         TextDelta(content="Hello "),
@@ -335,3 +345,133 @@ def test_ws_client_disconnect_mid_stream_does_not_degrade_agent(app, deps):
         f"agent should not be degraded after client disconnect, got "
         f"status={rt.status}, last_error={rt.last_error!r}"
     )
+
+
+def test_ws_chat_emits_usage_frame_aggregated_across_calls(app, deps):
+    import json
+    from kc_core.messages import AssistantMessage
+    from kc_core.stream_frames import (
+        TokenDelta, ToolCallStart, ToolResult, TurnUsage, Complete,
+    )
+
+    frames = [
+        TokenDelta(content="h"),
+        TokenDelta(content="i"),
+        TurnUsage(call_index=0, input_tokens=100, output_tokens=5,
+                  ttfb_ms=50.0, generation_ms=100.0, usage_reported=True),
+        ToolCallStart(call={"id": "c1", "name": "file.list", "arguments": {}}),
+        ToolResult(call_id="c1", content="[]"),
+        TokenDelta(content=" done"),
+        TurnUsage(call_index=1, input_tokens=120, output_tokens=3,
+                  ttfb_ms=60.0, generation_ms=80.0, usage_reported=True),
+        Complete(reply=AssistantMessage(content="hi done")),
+    ]
+    _inject_send_stream(deps, "alice", frames)
+
+    with TestClient(app) as client:
+        cid = client.post(
+            "/agents/alice/conversations", json={"channel": "dashboard"}
+        ).json()["conversation_id"]
+        seen = []
+        with client.websocket_connect(f"/ws/chat/{cid}") as ws:
+            ws.send_json({"type": "user_message", "content": "hi"})
+            while True:
+                m = ws.receive_json()
+                seen.append(m)
+                if m["type"] == "assistant_complete":
+                    break
+
+    types = [m["type"] for m in seen]
+    assert "usage" in types
+    assert types.index("usage") < types.index("assistant_complete")
+    usage = next(m for m in seen if m["type"] == "usage")
+    assert usage["input_tokens"] == 220
+    assert usage["output_tokens"] == 8
+    assert usage["ttfb_ms"] == 50.0      # first TurnUsage's ttfb_ms
+    assert usage["generation_ms"] == 180.0
+    assert usage["calls"] == 2
+    assert usage["usage_reported"] is True
+
+    rows = deps.storage.list_messages(cid)
+    asst = [r for r in rows if r["role"] == "assistant"][-1]
+    parsed = json.loads(asst["usage_json"])
+    assert parsed == {
+        "input_tokens": 220,
+        "output_tokens": 8,
+        "ttfb_ms": 50.0,
+        "generation_ms": 180.0,
+        "calls": 2,
+        "usage_reported": True,
+    }
+
+
+def test_ws_chat_no_usage_frame_when_stream_errors_mid_turn(app, deps):
+    from kc_core.stream_frames import TokenDelta, TurnUsage
+
+    async def _gen(_content):
+        yield TokenDelta(content="partial")
+        yield TurnUsage(call_index=0, input_tokens=10, output_tokens=2,
+                        ttfb_ms=20.0, generation_ms=30.0, usage_reported=True)
+        raise RuntimeError("upstream went away")
+
+    rt = deps.registry.get("alice")
+    rt.assembled.core_agent.send_stream = _gen
+
+    with TestClient(app) as client:
+        cid = client.post(
+            "/agents/alice/conversations", json={"channel": "dashboard"}
+        ).json()["conversation_id"]
+        seen = []
+        with client.websocket_connect(f"/ws/chat/{cid}") as ws:
+            ws.send_json({"type": "user_message", "content": "hi"})
+            try:
+                while True:
+                    m = ws.receive_json()
+                    seen.append(m)
+                    if m["type"] in ("assistant_complete", "error"):
+                        break
+            except Exception:
+                pass
+
+    types = [m["type"] for m in seen]
+    assert "usage" not in types
+    rows = deps.storage.list_messages(cid)
+    assert all(r["role"] != "assistant" for r in rows)
+
+
+def test_ws_chat_partial_reporting_yields_null_token_counts(app, deps):
+    from kc_core.messages import AssistantMessage
+    from kc_core.stream_frames import TokenDelta, TurnUsage, Complete
+
+    frames = [
+        TokenDelta(content="h"),
+        TurnUsage(call_index=0, input_tokens=100, output_tokens=5,
+                  ttfb_ms=40.0, generation_ms=80.0, usage_reported=True),
+        TokenDelta(content="i"),
+        TurnUsage(call_index=1, input_tokens=0, output_tokens=0,
+                  ttfb_ms=20.0, generation_ms=10.0, usage_reported=False),
+        Complete(reply=AssistantMessage(content="hi")),
+    ]
+    _inject_send_stream(deps, "alice", frames)
+
+    with TestClient(app) as client:
+        cid = client.post(
+            "/agents/alice/conversations", json={"channel": "dashboard"}
+        ).json()["conversation_id"]
+        with client.websocket_connect(f"/ws/chat/{cid}") as ws:
+            ws.send_json({"type": "user_message", "content": "hi"})
+            usage = None
+            while True:
+                m = ws.receive_json()
+                if m["type"] == "usage":
+                    usage = m
+                if m["type"] == "assistant_complete":
+                    break
+
+    assert usage is not None
+    assert usage["input_tokens"] is None
+    assert usage["output_tokens"] is None
+    assert usage["generation_ms"] == 90.0
+    assert usage["ttfb_ms"] == 40.0
+    assert usage["calls"] == 2
+    assert usage["usage_reported"] is False

@@ -322,3 +322,32 @@ def test_audit_aggregate_by_tool_prefix(tmp_path):
     assert out[0]["n"] == 2  # NOT 3 — the denied row is excluded
     assert out[1]["tool"] == "mcp.zapier.notion_create"
     assert out[1]["n"] == 1
+
+
+def test_messages_table_has_usage_json_column(tmp_path):
+    from kc_supervisor.storage import Storage
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    with s.connect() as c:
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(messages)").fetchall()}
+    assert "usage_json" in cols
+
+
+def test_append_message_accepts_usage_json(tmp_path):
+    from kc_supervisor.storage import Storage
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    s.append_message(cid, "assistant", "hello", None, usage_json='{"output_tokens":4}')
+    rows = s.list_messages(cid)
+    assert rows[0]["usage_json"] == '{"output_tokens":4}'
+
+
+def test_legacy_message_returns_none_usage_json(tmp_path):
+    from kc_supervisor.storage import Storage
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    s.append_message(cid, "user", "hi", None)  # no usage_json kw
+    rows = s.list_messages(cid)
+    assert rows[0]["usage_json"] is None

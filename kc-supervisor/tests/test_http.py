@@ -554,3 +554,33 @@ def test_patch_unknown_agent_404(app):
         r = client.patch("/agents/ghost", json={"model": "x:y"})
     assert r.status_code == 404
     assert "unknown agent" in r.json()["detail"].lower()
+
+
+def test_list_messages_route_echoes_usage(app, deps):
+    from kc_core.messages import AssistantMessage
+    cid = deps.conversations.start("alice", "dashboard")
+    deps.conversations.append(
+        cid, AssistantMessage(content="hi"),
+        usage={"output_tokens": 4, "ttfb_ms": 50.0, "generation_ms": 100.0,
+               "input_tokens": 10, "calls": 1, "usage_reported": True},
+    )
+    with TestClient(app) as client:
+        r = client.get(f"/conversations/{cid}/messages")
+    assert r.status_code == 200
+    msgs = r.json()["messages"]
+    assistant = [m for m in msgs if m["type"] == "AssistantMessage"][0]
+    assert assistant["usage"] == {
+        "output_tokens": 4, "ttfb_ms": 50.0, "generation_ms": 100.0,
+        "input_tokens": 10, "calls": 1, "usage_reported": True,
+    }
+
+
+def test_list_messages_route_omits_usage_for_legacy_rows(app, deps):
+    cid = deps.conversations.start("alice", "dashboard")
+    # Append directly via storage with no usage_json — simulates pre-migration data.
+    deps.storage.append_message(cid, "assistant", "legacy", None)
+    with TestClient(app) as client:
+        r = client.get(f"/conversations/{cid}/messages")
+    msgs = r.json()["messages"]
+    assistant = [m for m in msgs if m["type"] == "AssistantMessage"][0]
+    assert "usage" not in assistant

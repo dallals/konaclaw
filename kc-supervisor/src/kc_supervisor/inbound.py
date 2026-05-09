@@ -5,7 +5,7 @@ from kc_core.messages import (
     UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
 )
 from kc_core.stream_frames import (
-    TokenDelta, ToolCallStart, ToolResult, Complete,
+    TokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
 )
 from kc_supervisor.agents import AgentRegistry, AgentStatus
 from kc_supervisor.conversations import ConversationManager
@@ -87,6 +87,14 @@ class InboundRouter:
 
             rt.set_status(AgentStatus.THINKING)
             reply_text: Optional[str] = None
+            agg = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "generation_ms": 0.0,
+                "ttfb_ms": None,
+                "calls": 0,
+                "usage_reported": True,
+            }
             try:
                 async for frame in rt.assembled.core_agent.send_stream(env.content):
                     if isinstance(frame, TokenDelta):
@@ -102,8 +110,29 @@ class InboundRouter:
                             tool_call_id=frame.call_id,
                             content=frame.content,
                         ))
+                    elif isinstance(frame, TurnUsage):
+                        if not frame.usage_reported:
+                            agg["usage_reported"] = False
+                        if frame.usage_reported:
+                            agg["input_tokens"] += frame.input_tokens
+                            agg["output_tokens"] += frame.output_tokens
+                        agg["generation_ms"] += frame.generation_ms
+                        if agg["ttfb_ms"] is None:
+                            agg["ttfb_ms"] = frame.ttfb_ms
+                        agg["calls"] += 1
                     elif isinstance(frame, Complete):
-                        self.conversations.append(cid, frame.reply)
+                        usage_payload = {
+                            "input_tokens": agg["input_tokens"] if agg["usage_reported"] else None,
+                            "output_tokens": agg["output_tokens"] if agg["usage_reported"] else None,
+                            "ttfb_ms": agg["ttfb_ms"] if agg["ttfb_ms"] is not None else 0.0,
+                            "generation_ms": agg["generation_ms"],
+                            "calls": agg["calls"],
+                            "usage_reported": agg["usage_reported"],
+                        }
+                        self.conversations.append(
+                            cid, frame.reply,
+                            usage=(usage_payload if agg["calls"] > 0 else None),
+                        )
                         reply_text = frame.reply.content
                 rt.last_error = None
             except Exception as e:

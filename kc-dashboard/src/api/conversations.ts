@@ -8,7 +8,20 @@ export type Conversation = {
   pinned: number;
   title: string | null;
 };
-export type StoredMessage = { type: string; content?: string; tool_call_id?: string; tool_name?: string };
+export type StoredMessage = {
+  type: string;
+  content?: string;
+  tool_call_id?: string;
+  tool_name?: string;
+  usage?: {
+    input_tokens: number | null;
+    output_tokens: number | null;
+    ttfb_ms: number;
+    generation_ms: number;
+    calls: number;
+    usage_reported: boolean;
+  };
+};
 
 export const listConversations = (agent?: string) =>
   apiGet<{ conversations: Conversation[] }>(agent ? `/conversations?agent=${agent}` : "/conversations");

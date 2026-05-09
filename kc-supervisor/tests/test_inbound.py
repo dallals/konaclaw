@@ -263,3 +263,66 @@ async def test_inbound_router_conversation_persists_across_reconstruction(deps):
     assert cid_second == cid_first, (
         f"Expected same conv_id {cid_first} after restart, got {cid_second}"
     )
+
+
+@pytest.mark.asyncio
+async def test_inbound_persists_usage_on_assistant_message(deps):
+    import json as _j
+    from kc_core.stream_frames import TurnUsage
+
+    reply = AssistantMessage(content="hi back")
+    frames = [
+        TurnUsage(call_index=0, input_tokens=100, output_tokens=4,
+                  ttfb_ms=40.0, generation_ms=80.0, usage_reported=True),
+        Complete(reply=reply),
+    ]
+    rt = _build_runtime("alice", frames)
+    registry = _make_registry({"alice": rt})
+    connector = _FakeConnector("telegram")
+    conn_registry = _FakeConnectorRegistry({"telegram": connector})
+    routing = _FakeRoutingTable(default_agent="alice")
+    router = _make_router(deps, registry, conn_registry, routing)
+
+    env = _Env(channel="telegram", chat_id="C1", sender_id="u1", content="hi")
+    await router.handle_inbound(env)
+
+    cid = deps.conversations.s.get_conv_for_chat("telegram", "C1", "alice")
+    assert cid is not None
+    rows = deps.storage.list_messages(cid)
+    asst = [r for r in rows if r["role"] == "assistant"][-1]
+    assert asst["usage_json"] is not None
+    parsed = _j.loads(asst["usage_json"])
+    assert parsed == {
+        "input_tokens": 100,
+        "output_tokens": 4,
+        "ttfb_ms": 40.0,
+        "generation_ms": 80.0,
+        "calls": 1,
+        "usage_reported": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_inbound_no_usage_persisted_when_stream_errors(deps):
+    from kc_core.stream_frames import TurnUsage
+
+    async def _gen(_content):
+        yield TurnUsage(call_index=0, input_tokens=10, output_tokens=2,
+                        ttfb_ms=20.0, generation_ms=30.0, usage_reported=True)
+        raise RuntimeError("boom")
+
+    rt = _build_runtime("alice", [])
+    rt.assembled.core_agent.send_stream = _gen
+    registry = _make_registry({"alice": rt})
+    connector = _FakeConnector("telegram")
+    conn_registry = _FakeConnectorRegistry({"telegram": connector})
+    routing = _FakeRoutingTable(default_agent="alice")
+    router = _make_router(deps, registry, conn_registry, routing)
+
+    env = _Env(channel="telegram", chat_id="C2", sender_id="u1", content="hi")
+    await router.handle_inbound(env)  # must not raise
+
+    cid = deps.conversations.s.get_conv_for_chat("telegram", "C2", "alice")
+    if cid is not None:
+        rows = deps.storage.list_messages(cid)
+        assert all(r["role"] != "assistant" for r in rows)

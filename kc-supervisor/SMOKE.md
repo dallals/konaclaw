@@ -103,3 +103,9 @@ Restart the supervisor.
 - Idempotent undo (re-running undo on the same audit_id 500s today; v0.3 will return "already undone").
 - Streaming-while-tool-running (today, tool execution pauses the token stream).
 - Encrypted secrets store, launchd auto-restart, Prometheus `/metrics`.
+
+## tokens-per-second metric (added 2026-05-09)
+
+- [ ] After a successful chat turn, the SQLite messages table for the AssistantMessage row has a non-NULL `usage_json` column whose JSON parses to `{input_tokens, output_tokens, ttfb_ms, generation_ms, calls, usage_reported}`.
+- [ ] After a turn that errored mid-stream (e.g. kill the model server during reply), no AssistantMessage row is written and no `{type:"usage"}` WS frame is sent.
+- [ ] An inbound (Telegram) reply also persists `usage_json` on its AssistantMessage row.

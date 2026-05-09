@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+from typing import Optional
 from kc_core.messages import (
     UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage, Message,
 )
@@ -30,11 +31,19 @@ class ConversationManager:
     def list_all(self, limit: int = 50) -> list[dict]:
         return self.s.list_conversations(limit=limit)
 
-    def append(self, conversation_id: int, msg: Message) -> int:
+    def append(
+        self,
+        conversation_id: int,
+        msg: Message,
+        usage: Optional[dict] = None,
+    ) -> int:
         if isinstance(msg, UserMessage):
             return self.s.append_message(conversation_id, "user", msg.content, None)
         if isinstance(msg, AssistantMessage):
-            return self.s.append_message(conversation_id, "assistant", msg.content, None)
+            usage_json = json.dumps(usage) if usage is not None else None
+            return self.s.append_message(
+                conversation_id, "assistant", msg.content, None, usage_json=usage_json,
+            )
         if isinstance(msg, ToolCallMessage):
             payload = json.dumps({
                 "tool_call_id": msg.tool_call_id,
@@ -73,4 +82,39 @@ class ConversationManager:
                 ))
             else:
                 raise ValueError(f"unknown role in storage: {role!r}")
+        return out
+
+    def list_messages_with_meta(self, conversation_id: int) -> list[tuple[Message, Optional[dict]]]:
+        """Like list_messages, but also returns the parsed usage dict for AssistantMessage rows."""
+        out: list[tuple[Message, Optional[dict]]] = []
+        for row in self.s.list_messages(conversation_id):
+            role = row["role"]
+            usage: Optional[dict] = None
+            if role == "user":
+                msg: Message = UserMessage(content=row["content"] or "")
+            elif role == "assistant":
+                msg = AssistantMessage(content=row["content"] or "")
+                # sqlite3.Row supports indexing but not .get() — guard with keys()
+                uj = row["usage_json"] if "usage_json" in row.keys() else None
+                if uj:
+                    try:
+                        usage = json.loads(uj)
+                    except json.JSONDecodeError:
+                        usage = None
+            elif role == "tool_call":
+                d = json.loads(row["tool_call_json"])
+                msg = ToolCallMessage(
+                    tool_call_id=d["tool_call_id"],
+                    tool_name=d["tool_name"],
+                    arguments=d["arguments"],
+                )
+            elif role == "tool_result":
+                d = json.loads(row["tool_call_json"])
+                msg = ToolResultMessage(
+                    tool_call_id=d["tool_call_id"],
+                    content=d["content"],
+                )
+            else:
+                raise ValueError(f"unknown role in storage: {role!r}")
+            out.append((msg, usage))
         return out

@@ -6,7 +6,7 @@ from kc_core.messages import (
     UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
 )
 from kc_core.stream_frames import (
-    TokenDelta, ToolCallStart, ToolResult, Complete,
+    TokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
 )
 from kc_supervisor.agents import AgentStatus
 
@@ -133,6 +133,15 @@ def register_ws_routes(app: FastAPI) -> None:
                         except (WebSocketDisconnect, RuntimeError):
                             ws_alive = False
 
+                    # Per-turn aggregator state
+                    agg = {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "generation_ms": 0.0,
+                        "ttfb_ms": None,
+                        "calls": 0,
+                        "usage_reported": True,
+                    }
                     try:
                         async for frame in rt.assembled.core_agent.send_stream(content):
                             if isinstance(frame, TokenDelta):
@@ -154,8 +163,31 @@ def register_ws_routes(app: FastAPI) -> None:
                                     "call_id": frame.call_id,
                                     "content": frame.content,
                                 })
+                            elif isinstance(frame, TurnUsage):
+                                if not frame.usage_reported:
+                                    agg["usage_reported"] = False
+                                if frame.usage_reported:
+                                    agg["input_tokens"] += frame.input_tokens
+                                    agg["output_tokens"] += frame.output_tokens
+                                agg["generation_ms"] += frame.generation_ms
+                                if agg["ttfb_ms"] is None:
+                                    agg["ttfb_ms"] = frame.ttfb_ms
+                                agg["calls"] += 1
                             elif isinstance(frame, Complete):
-                                deps.conversations.append(conversation_id, frame.reply)
+                                usage_payload = {
+                                    "input_tokens": agg["input_tokens"] if agg["usage_reported"] else None,
+                                    "output_tokens": agg["output_tokens"] if agg["usage_reported"] else None,
+                                    "ttfb_ms": agg["ttfb_ms"] if agg["ttfb_ms"] is not None else 0.0,
+                                    "generation_ms": agg["generation_ms"],
+                                    "calls": agg["calls"],
+                                    "usage_reported": agg["usage_reported"],
+                                }
+                                if agg["calls"] > 0:
+                                    await _safe_send({"type": "usage", **usage_payload})
+                                deps.conversations.append(
+                                    conversation_id, frame.reply,
+                                    usage=(usage_payload if agg["calls"] > 0 else None),
+                                )
                                 await _safe_send({
                                     "type": "assistant_complete",
                                     "content": frame.reply.content,

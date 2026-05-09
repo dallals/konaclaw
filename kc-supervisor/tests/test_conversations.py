@@ -68,3 +68,36 @@ def test_message_order_preserved(tmp_path):
     cm.append(cid, UserMessage("third"))
     msgs = cm.list_messages(cid)
     assert [m.content for m in msgs] == ["first", "second", "third"]
+
+
+def test_append_assistant_persists_usage(tmp_path):
+    import json
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.conversations import ConversationManager
+    from kc_core.messages import AssistantMessage
+    s = Storage(tmp_path / "kc.db"); s.init()
+    cm = ConversationManager(s)
+    cid = cm.start("kona", "dashboard")
+    cm.append(cid, AssistantMessage(content="hi"), usage={"output_tokens": 4, "ttfb_ms": 80.0})
+    rows = s.list_messages(cid)
+    assert rows[0]["role"] == "assistant"
+    assert json.loads(rows[0]["usage_json"]) == {"output_tokens": 4, "ttfb_ms": 80.0}
+
+
+def test_list_messages_with_meta_returns_usage(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.conversations import ConversationManager
+    from kc_core.messages import UserMessage, AssistantMessage
+    s = Storage(tmp_path / "kc.db"); s.init()
+    cm = ConversationManager(s)
+    cid = cm.start("kona", "dashboard")
+    cm.append(cid, UserMessage(content="hi"))
+    cm.append(cid, AssistantMessage(content="hello"), usage={"output_tokens": 1})
+    pairs = cm.list_messages_with_meta(cid)
+    assert len(pairs) == 2
+    msg0, meta0 = pairs[0]
+    assert isinstance(msg0, UserMessage)
+    assert meta0 is None
+    msg1, meta1 = pairs[1]
+    assert isinstance(msg1, AssistantMessage)
+    assert meta1 == {"output_tokens": 1}
