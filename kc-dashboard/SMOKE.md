@@ -56,3 +56,11 @@ Plaintext tokens MUST NOT appear in any HTTP response. Verify by opening DevTool
 - [ ] Click ⌃ again → expands; last query/mode pre-filled.
 - [ ] If `newsapi_api_key` is unset on the supervisor → widget shows
       "News not configured" banner instead of results.
+
+## tokens-per-second metric (added 2026-05-09)
+
+- [ ] Send a single-message reply to any agent. The chat header `Last reply` row should briefly show `~NN t/s · streaming` and then snap to a stable `NN t/s · NNN tok` value. The `TTFB` row appears with `N.NN s`.
+- [ ] The completed assistant bubble has a faint mono footer reading `NN t/s · NNN tok · ttfb N.NN s`.
+- [ ] Send a message that triggers a tool call (e.g. ask Kona to use a calendar/Gmail tool). The header's `TTFB` row shows `N.NN s · 2 calls` and the bubble badge has `· 2 calls`.
+- [ ] Reload the dashboard. The historical assistant bubbles still show their tok/s badges (read from SQLite).
+- [ ] Switch the supervisor to point at a provider that does NOT support `stream_options.include_usage` (an old proxy or stub). The header row reads `~NN t/s · estimate`; the bubble shows `— ttfb only · ttfb N.NN s`.
