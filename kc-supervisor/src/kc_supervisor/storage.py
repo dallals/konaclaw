@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,
     content TEXT,
     tool_call_json TEXT,
+    usage_json TEXT,
     ts REAL NOT NULL,
     FOREIGN KEY(conversation_id) REFERENCES conversations(id)
 );
@@ -99,6 +100,9 @@ class Storage:
             link_cols = {r["name"] for r in c.execute("PRAGMA table_info(audit_undo_link)").fetchall()}
             if "undone_at" not in link_cols:
                 c.execute("ALTER TABLE audit_undo_link ADD COLUMN undone_at REAL")
+            msg_cols = {r["name"] for r in c.execute("PRAGMA table_info(messages)").fetchall()}
+            if "usage_json" not in msg_cols:
+                c.execute("ALTER TABLE messages ADD COLUMN usage_json TEXT")
 
     @contextmanager
     def connect(self):
@@ -215,12 +219,13 @@ class Storage:
         role: str,
         content: Optional[str],
         tool_call_json: Optional[str],
+        usage_json: Optional[str] = None,
     ) -> int:
         with self.connect() as c:
             cur = c.execute(
-                "INSERT INTO messages (conversation_id, role, content, tool_call_json, ts) "
-                "VALUES (?,?,?,?,?)",
-                (conversation_id, role, content, tool_call_json, time.time()),
+                "INSERT INTO messages (conversation_id, role, content, tool_call_json, usage_json, ts) "
+                "VALUES (?,?,?,?,?,?)",
+                (conversation_id, role, content, tool_call_json, usage_json, time.time()),
             )
             return int(cur.lastrowid)
 
