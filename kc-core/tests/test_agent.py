@@ -407,6 +407,45 @@ async def test_agent_send_stream_appends_history_same_as_send(fake_ollama):
 
 
 @pytest.mark.asyncio
+async def test_send_stream_forwards_turn_usage_per_call(monkeypatch):
+    from kc_core.agent import Agent
+    from kc_core.tools import ToolRegistry
+    from kc_core.stream_frames import (
+        TextDelta, ToolCallsBlock, Done, ChatUsage,
+        TurnUsage, Complete,
+    )
+
+    class FakeClient:
+        model = "fake"
+        def __init__(self):
+            self._call = 0
+        async def chat(self, messages, tools):
+            raise NotImplementedError
+        async def chat_stream(self, messages, tools):
+            self._call += 1
+            if self._call == 1:
+                yield ToolCallsBlock(calls=[{"id": "c1", "name": "echo", "arguments": {"x": 1}}])
+                yield Done(finish_reason="tool_calls")
+                yield ChatUsage(input_tokens=120, output_tokens=8, ttfb_ms=50.0, generation_ms=10.0, usage_reported=True)
+            else:
+                yield TextDelta(content="ok")
+                yield Done(finish_reason="stop")
+                yield ChatUsage(input_tokens=140, output_tokens=2, ttfb_ms=60.0, generation_ms=8.0, usage_reported=True)
+
+    from kc_core.tools import Tool
+    tools = ToolRegistry()
+    tools.register(Tool(name="echo", description="echoes x", parameters={}, impl=lambda x: x))
+
+    agent = Agent(name="t", client=FakeClient(), system_prompt="", tools=tools)
+    frames = [f async for f in agent.send_stream("hi")]
+    turn_usages = [f for f in frames if isinstance(f, TurnUsage)]
+    assert [u.call_index for u in turn_usages] == [0, 1]
+    assert turn_usages[0].input_tokens == 120
+    assert turn_usages[1].output_tokens == 2
+    assert isinstance(frames[-1], Complete)
+
+
+@pytest.mark.asyncio
 async def test_agent_send_stream_uses_json_in_text_fallback(fake_ollama):
     """If the model emits a tool call as JSON-in-text (no native tool_calls), send_stream
     detects it via parse_text_tool_calls and runs the tool, same as send."""
