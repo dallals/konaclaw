@@ -23,8 +23,8 @@ A new **News tool-provider** that mirrors the existing Gmail/GCal pattern, plus 
 | # | Subrepo | What lands |
 |---|---------|------------|
 | 1 | `kc-connectors` | `news_adapter.py` — exposes `NewsClient` (HTTP + TTL cache) and `build_news_tools()` returning two `Tool` objects |
-| 2 | `kc-connectors` | `secrets.yaml.example` adds `newsapi.api_key`; `secrets.py` unchanged (already a generic loader) |
-| 3 | `kc-supervisor` | `assembly.py` — when `newsapi.api_key` present, register `news.search_topic` and `news.from_source` as `Tier.SAFE` |
+| 2 | `kc-connectors` | `secrets.yaml.example` adds `newsapi_api_key`; `secrets.py` unchanged (already a generic loader) |
+| 3 | `kc-supervisor` | `assembly.py` — when `newsapi_api_key` present, register `news.search_topic` and `news.from_source` as `Tier.SAFE` |
 | 4 | `kc-supervisor` | `GET /api/news` route (registered in `http_routes.py`) — server-side `NewsClient` lives on `Deps`, owned by the supervisor process |
 | 5 | `kc-dashboard` | `NewsWidget.tsx` rendered inside `views/Chat.tsx` as a right-side collapsible panel |
 
@@ -141,7 +141,7 @@ Response 4xx/5xx:
   }
 ```
 
-If `newsapi.api_key` is missing from `secrets.yaml`, the route returns `503 { "error": "not_configured", "message": "News not configured. Add newsapi.api_key to secrets.yaml." }`.
+If `newsapi_api_key` is missing from `secrets.yaml`, the route returns `503 { "error": "not_configured", "message": "News not configured. Add newsapi.api_key to secrets.yaml." }`.
 
 The route reads the same `NewsClient` instance off `app.state.deps.news_client` that `assembly.py` passes into `build_news_tools()` — so cache, retry, and error mapping all live in one place, and the cache is genuinely shared.
 
@@ -172,18 +172,17 @@ The route reads the same `NewsClient` instance off `app.state.deps.news_client` 
   - `quota_reached` → "Daily news quota reached. Try again tomorrow."
   - `unknown_source` → "Unknown source. Try: bbc-news, the-verge, reuters, associated-press."
   - `upstream_error` → "Couldn't reach news service."
-  - `not_configured` → "News not configured. Add `newsapi.api_key` to secrets.yaml."
+  - `not_configured` → "News not configured. Add `newsapi_api_key` to secrets.yaml."
 - **Empty state:** "No articles. Try a broader topic or different source."
 - **Loading:** spinner inline next to the Go button; results area dims.
 
 ## Configuration
 
-- `~/KonaClaw/config/secrets.yaml` gains:
-  ```yaml
-  newsapi:
-    api_key: ""   # https://newsapi.org/register — free tier: 100 req/day
+- The encrypted secrets store (`secrets.yaml.enc`, managed by `kc_supervisor.secrets_store`) gains a new flat key:
   ```
-- `secrets.yaml.example` updated to match.
+  newsapi_api_key: "<key from https://newsapi.org/register — free tier: 100 req/day>"
+  ```
+  Set via the dashboard's secrets UI or by editing the plaintext fallback `secrets.yaml` before first encrypted-load.
 - No new env vars. No new dependencies.
 - If `api_key` is empty/missing:
   - Supervisor: tools are not registered (silent skip, matches Gmail/GCal pattern).
@@ -196,7 +195,7 @@ The route reads the same `NewsClient` instance off `app.state.deps.news_client` 
 | HTTP 429 / `rateLimited` | `quota_reached` | "(News API quota reached)" | 429 `quota_reached` | "Daily news quota reached. Try again tomorrow." |
 | `sourcesDoesntExist` | `unknown_source` | "(unknown source: '{x}'. Examples: …)" | 400 `unknown_source` | "Unknown source. Try: bbc-news, the-verge, reuters, associated-press." |
 | Network / timeout / 5xx | `upstream_error` | "(news error: {msg})" | 502 `upstream_error` | "Couldn't reach news service." |
-| Missing `api_key` | n/a (skip) | tool not registered | 503 `not_configured` | "News not configured. Add `newsapi.api_key` to secrets.yaml." |
+| Missing `api_key` | n/a (skip) | tool not registered | 503 `not_configured` | "News not configured. Add `newsapi_api_key` to secrets.yaml." |
 | Empty result set | n/a | "(no results)" | 200 with `articles: []` | "No articles. Try a broader topic or different source." |
 
 ## Testing plan
@@ -205,7 +204,7 @@ The route reads the same `NewsClient` instance off `app.state.deps.news_client` 
 |---|---|---|
 | `NewsClient` unit | cache hit/miss; TTL expiry; 4 error mappings; `max_results` cap; query normalization | `kc-connectors/tests/test_news_adapter.py` |
 | Tools unit | both tools format results correctly; error mapping → user-facing string; missing api_key → tools not registered | same file |
-| Supervisor wiring | `assemble_agent` registers `news.*` only when `newsapi.api_key` set; tier=SAFE; absent key = silent skip | `kc-supervisor/tests/test_assembly_news.py` |
+| Supervisor wiring | `assemble_agent` registers `news.*` only when `newsapi_api_key` set; tier=SAFE; absent key = silent skip | `kc-supervisor/tests/test_assembly_news.py` |
 | Supervisor route | `/api/news` happy path + 4 error responses (`quota_reached`, `unknown_source`, `upstream_error`, `not_configured`); mocked `NewsClient` on `Deps` | `kc-supervisor/tests/test_news_route.py` |
 | Widget E2E | Playwright: type topic → see results; toggle to source mode; quota error banner; collapsed state persists; localStorage rehydration | `kc-dashboard/tests/news-widget.spec.ts` |
 
