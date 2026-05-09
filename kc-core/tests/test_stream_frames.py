@@ -42,3 +42,46 @@ def test_complete_holds_assistant_message():
     msg = AssistantMessage(content="done")
     f = Complete(reply=msg)
     assert f.reply is msg
+
+
+from kc_core.stream_frames import ChatUsage, TurnUsage
+
+
+def test_chat_usage_frame_default_fields():
+    u = ChatUsage(
+        input_tokens=120,
+        output_tokens=42,
+        ttfb_ms=314.5,
+        generation_ms=1280.0,
+        usage_reported=True,
+    )
+    assert u.input_tokens == 120
+    assert u.output_tokens == 42
+    assert u.ttfb_ms == 314.5
+    assert u.generation_ms == 1280.0
+    assert u.usage_reported is True
+
+
+def test_turn_usage_frame_carries_call_index():
+    u = TurnUsage(
+        call_index=1,
+        input_tokens=300,
+        output_tokens=12,
+        ttfb_ms=80.0,
+        generation_ms=110.0,
+        usage_reported=False,
+    )
+    assert u.call_index == 1
+    assert u.usage_reported is False
+
+
+def test_chat_usage_is_chat_stream_frame():
+    from kc_core.stream_frames import ChatStreamFrame
+    f: ChatStreamFrame = ChatUsage(0, 0, 0.0, 0.0, False)
+    assert f is not None
+
+
+def test_turn_usage_is_stream_frame():
+    from kc_core.stream_frames import StreamFrame
+    f: StreamFrame = TurnUsage(0, 0, 0, 0.0, 0.0, False)
+    assert f is not None
