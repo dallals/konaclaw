@@ -182,6 +182,9 @@ export default function Chat() {
     }
   }, [events]);
 
+  // Reset first-token timestamp when the user switches conversations.
+  useEffect(() => { firstTokenAtRef.current = null; }, [activeConv]);
+
   const liveTps = useLiveTokensPerSecond(streaming, firstTokenAtRef.current);
 
   // Most recent {type:"usage"} event since the last assistant_complete.
