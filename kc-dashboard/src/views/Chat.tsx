@@ -420,7 +420,7 @@ export default function Chat() {
                     </dd>
                   </>
                 )}
-                <dt className="text-muted2 font-normal">Turns</dt>
+                <dt className="text-muted2 font-normal">Msgs</dt>
                 <dd className="text-text font-medium">{padNum(rendered.length, 2)}</dd>
                 {activeAgentData && (
                   <>
