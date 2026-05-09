@@ -55,6 +55,7 @@ class Deps:
     google_oauth: GoogleOAuthState = field(default_factory=GoogleOAuthState)
     google_token_path: Optional[Path] = None
     google_credentials_path: Optional[Path] = None
+    news_client: Optional[Any] = None
     # Captured at FastAPI startup so sync route handlers (running in the
     # threadpool) can dispatch coroutines back to the main event loop via
     # asyncio.run_coroutine_threadsafe — used by the hot-restart hooks below.

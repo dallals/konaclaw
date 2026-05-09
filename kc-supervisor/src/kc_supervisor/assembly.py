@@ -61,6 +61,7 @@ def assemble_agent(
     memory_root: Optional[Path] = None,
     gmail_service: Optional[Any] = None,
     gcal_service: Optional[Any] = None,
+    news_client: Optional[Any] = None,
     ollama_api_key: Optional[str] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
@@ -229,6 +230,14 @@ def assemble_agent(
             for tool in build_gcal_tools(service=gcal_service).values():
                 registry.register(tool)
                 tier_map[tool.name] = google_tier_map[tool.name]
+
+    # News tool-provider — registered only when supervisor.main built a NewsClient
+    # from the `newsapi_api_key` secret. Both tools are SAFE (read-only).
+    if news_client is not None:
+        from kc_connectors.news_adapter import build_news_tools
+        for tool in build_news_tools(client=news_client).values():
+            registry.register(tool)
+            tier_map[tool.name] = Tier.SAFE
 
     # 4. PermissionEngine. broker.request_approval is async; the engine's
     # check_async detects coroutines via inspect.iscoroutine and awaits them.

@@ -65,6 +65,7 @@ class AgentRegistry:
         memory_root: "Optional[Path]" = None,
         gmail_service: "Optional[Any]" = None,
         gcal_service: "Optional[Any]" = None,
+        news_client: "Optional[Any]" = None,
         ollama_api_key: "Optional[str]" = None,
     ) -> None:
         self.agents_dir = Path(agents_dir)
@@ -80,6 +81,7 @@ class AgentRegistry:
         self.memory_root = Path(memory_root) if memory_root else None
         self.gmail_service = gmail_service
         self.gcal_service = gcal_service
+        self.news_client = news_client
         self._by_name: dict[str, AgentRuntime] = {}
 
     def load_all(self) -> None:
@@ -128,6 +130,7 @@ class AgentRegistry:
                     memory_root=self.memory_root,
                     gmail_service=self.gmail_service,
                     gcal_service=self.gcal_service,
+                    news_client=self.news_client,
                     ollama_api_key=self.ollama_api_key,
                 )
                 new_by_name[cfg.name] = AgentRuntime(
