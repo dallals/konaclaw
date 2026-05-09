@@ -34,6 +34,21 @@ def main() -> None:
     secrets_store = SecretsStore(config_dir=home / "config", keychain=SecurityCliKeychain())
     secrets = secrets_store.load()
 
+    # News tool-provider — optional. Built only when secrets supplies newsapi_api_key.
+    # Lazy-imports kc_connectors so kc-supervisor doesn't take a hard dep when News
+    # isn't configured.
+    news_client = None
+    newsapi_key = secrets.get("newsapi_api_key")
+    if newsapi_key:
+        try:
+            from kc_connectors.news_adapter import NewsClient
+            news_client = NewsClient(api_key=newsapi_key)
+        except ImportError:
+            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("news client disabled: %s", e)
+
     # MCP integration is optional — if kc-mcp is installed, instantiate the
     # bookkeeping objects here so AgentRegistry sees them. The actual MCP
     # subprocess spawning happens on the FastAPI startup hook in service.py
@@ -189,6 +204,7 @@ def main() -> None:
         memory_root=memory_root,
         gmail_service=gmail_service,
         gcal_service=gcal_service,
+        news_client=news_client,
         ollama_api_key=ollama_api_key,
     )
     registry.load_all()
@@ -206,6 +222,7 @@ def main() -> None:
         secrets_store=secrets_store,
         google_credentials_path=Path(google_creds_path_str) if google_creds_path_str else None,
         google_token_path=Path(google_token_path_str),
+        news_client=news_client,
     )
     # InboundRouter is created after Deps so it has access to the same
     # registry/conversations/conv_locks. Stored on Deps so service.py can
