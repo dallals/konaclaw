@@ -330,3 +330,71 @@ async def test_chat_stream_request_body_includes_stream_options():
     async for _ in client.chat_stream(messages=[], tools=[]):
         pass
     assert captured["body"].get("stream_options") == {"include_usage": True}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_emits_chat_usage_when_provider_silent():
+    from kc_core.stream_frames import ChatUsage
+    sse = (
+        b'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n'
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=Response(200, content=sse, headers={"content-type": "text/event-stream"})
+    )
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma3:4b")
+    frames = [f async for f in client.chat_stream(messages=[], tools=[])]
+    usage = frames[-1]
+    assert isinstance(usage, ChatUsage)
+    assert usage.usage_reported is False
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 0
+    assert usage.ttfb_ms >= 0.0
+    assert usage.generation_ms >= 0.0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_treats_garbage_usage_as_unreported():
+    from kc_core.stream_frames import ChatUsage
+    sse = (
+        b'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n'
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        b'data: {"choices":[],"usage":{"prompt_tokens":-3,"completion_tokens":4}}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=Response(200, content=sse, headers={"content-type": "text/event-stream"})
+    )
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma3:4b")
+    frames = [f async for f in client.chat_stream(messages=[], tools=[])]
+    usage = frames[-1]
+    assert isinstance(usage, ChatUsage)
+    assert usage.usage_reported is False
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_emits_chat_usage_for_tool_only_turn():
+    from kc_core.stream_frames import ChatUsage
+    sse = (
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"echo","arguments":"{}"}}]}}]}\n\n'
+        b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+        b'data: {"choices":[],"usage":{"prompt_tokens":50,"completion_tokens":8}}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=Response(200, content=sse, headers={"content-type": "text/event-stream"})
+    )
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma3:4b")
+    frames = [f async for f in client.chat_stream(messages=[], tools=[])]
+    usage = [f for f in frames if isinstance(f, ChatUsage)][0]
+    assert usage.usage_reported is True
+    assert usage.input_tokens == 50
+    assert usage.output_tokens == 8
+    # tool-only turn: no text was emitted, so generation_ms should be 0.0
+    assert usage.generation_ms == 0.0
