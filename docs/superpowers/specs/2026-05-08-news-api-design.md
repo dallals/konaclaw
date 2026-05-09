@@ -18,17 +18,17 @@ Let Sammy ask Kona for news in chat ("show me AI news", "what's BBC saying?") an
 
 ## Architecture
 
-A new **News tool-provider** that mirrors the existing Gmail/GCal pattern, plus a thin dashboard widget. Five touchpoints across three subrepos:
+A new **News tool-provider** that mirrors the existing Gmail/GCal pattern, plus a thin dashboard widget. Five touchpoints across two subrepos (`kc-connectors`, `kc-supervisor`, `kc-dashboard`):
 
 | # | Subrepo | What lands |
 |---|---------|------------|
 | 1 | `kc-connectors` | `news_adapter.py` — exposes `NewsClient` (HTTP + TTL cache) and `build_news_tools()` returning two `Tool` objects |
 | 2 | `kc-connectors` | `secrets.yaml.example` adds `newsapi.api_key`; `secrets.py` unchanged (already a generic loader) |
 | 3 | `kc-supervisor` | `assembly.py` — when `newsapi.api_key` present, register `news.search_topic` and `news.from_source` as `Tier.SAFE` |
-| 4 | `kc-dashboard-server` | `GET /api/news` — server-side `NewsClient` (its own cache instance) |
+| 4 | `kc-supervisor` | `GET /api/news` route (registered in `http_routes.py`) — server-side `NewsClient` lives on `Deps`, owned by the supervisor process |
 | 5 | `kc-dashboard` | `NewsWidget.tsx` rendered inside `views/Chat.tsx` as a right-side collapsible panel |
 
-**Two cache instances, not one.** Supervisor and dashboard-server are separate processes; sharing would require disk or IPC. Each gets its own 10-minute in-memory TTL cache. Worst-case waste = a handful of duplicate queries per day, well within NewsAPI's 100/day free tier.
+**One cache instance.** Both the agent tools and the dashboard widget go through the same supervisor process (kc-dashboard-server is a static-file host, not an API server). The `NewsClient` is constructed once at supervisor startup, attached to `Deps`, and shared by both the tool-side path (via `assembly.py`) and the route-side path (via `http_routes.py`). One 10-minute in-memory TTL cache, no IPC needed.
 
 ## Tools (the agent's view)
 
@@ -110,7 +110,7 @@ The tool-side formatter in `build_news_tools` wraps `NewsResult` into the text s
 
 ## Dashboard HTTP endpoint
 
-`GET /api/news` on `kc-dashboard-server`.
+`GET /api/news` on `kc-supervisor` (registered in `kc_supervisor/http_routes.py`, served on port 8765 — the dashboard already points there via `VITE_KC_SUPERVISOR_URL`).
 
 ```
 Query params:
@@ -143,7 +143,7 @@ Response 4xx/5xx:
 
 If `newsapi.api_key` is missing from `secrets.yaml`, the route returns `503 { "error": "not_configured", "message": "News not configured. Add newsapi.api_key to secrets.yaml." }`.
 
-The server reuses the same `NewsClient` class as the supervisor (imported from `kc_connectors.news_adapter`) — so cache, retry, and error mapping live in one place. Different process, different cache instance, same code path.
+The route reads the same `NewsClient` instance off `app.state.deps.news_client` that `assembly.py` passes into `build_news_tools()` — so cache, retry, and error mapping all live in one place, and the cache is genuinely shared.
 
 ## Dashboard widget
 
@@ -206,7 +206,7 @@ The server reuses the same `NewsClient` class as the supervisor (imported from `
 | `NewsClient` unit | cache hit/miss; TTL expiry; 4 error mappings; `max_results` cap; query normalization | `kc-connectors/tests/test_news_adapter.py` |
 | Tools unit | both tools format results correctly; error mapping → user-facing string; missing api_key → tools not registered | same file |
 | Supervisor wiring | `assemble_agent` registers `news.*` only when `newsapi.api_key` set; tier=SAFE; absent key = silent skip | `kc-supervisor/tests/test_assembly_news.py` |
-| Server route | `/api/news` happy path + 4 error responses (`quota_reached`, `unknown_source`, `upstream_error`, `not_configured`); mocked `NewsClient` | `kc-dashboard-server/tests/test_news_route.py` |
+| Supervisor route | `/api/news` happy path + 4 error responses (`quota_reached`, `unknown_source`, `upstream_error`, `not_configured`); mocked `NewsClient` on `Deps` | `kc-supervisor/tests/test_news_route.py` |
 | Widget E2E | Playwright: type topic → see results; toggle to source mode; quota error banner; collapsed state persists; localStorage rehydration | `kc-dashboard/tests/news-widget.spec.ts` |
 
 Mocking strategy mirrors existing tests: Gmail uses an injected fake service object; the news layer uses an injected `http` callable on `NewsClient`.
