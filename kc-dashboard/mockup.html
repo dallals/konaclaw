@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<title>KonaClaw — Boldface</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anybody:ital,wdth,wght@0,75..125,400;0,75..125,600;0,75..125,700;0,75..125,800;0,75..125,900&family=Fragment+Mono:ital@0;1&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* ─── THEME TOKENS ───────────────────────────────────── */
+  :root[data-theme="light"] {
+    --bg:           #f4f1ea;
+    --bg-deep:      #ebe7dd;
+    --panel:        #fdfaf2;
+    --panel-2:      #ebe7dd;
+    --panel-3:      #e0dccf;
+    --line:         #d4cfbf;
+    --line-bright:  #b6b0a0;
+    --text:         #1a1813;
+    --text-strong:  #050403;
+    --muted:        #5e5a51;
+    --muted-2:      #8c8679;
+    --accent:       #e84e1f;
+    --accent-bright:#ff6938;
+    --accent-deep:  #b03b15;
+    --accent-soft:  #fde4dc;
+    --ok:           #2c6e4f;
+    --warn:         #c2410c;
+    --shadow:       rgba(60,40,20,0.10);
+    --watermark:    rgba(232, 78, 31, 0.07);
+    --grain-opacity: 0.04;
+    --grain-blend:   multiply;
+  }
+
+  :root[data-theme="dark"] {
+    --bg:           #14130f;
+    --bg-deep:      #0c0b08;
+    --panel:        #1d1c17;
+    --panel-2:      #25241e;
+    --panel-3:      #2f2d25;
+    --line:         #38362e;
+    --line-bright:  #524f44;
+    --text:         #ede9de;
+    --text-strong:  #fffbef;
+    --muted:        #948f80;
+    --muted-2:      #6b6759;
+    --accent:       #ff7847;
+    --accent-bright:#ff9670;
+    --accent-deep:  #b8512a;
+    --accent-soft:  rgba(255, 120, 71, 0.12);
+    --ok:           #5fb591;
+    --warn:         #ff8c47;
+    --shadow:       rgba(0,0,0,0.5);
+    --watermark:    rgba(255, 120, 71, 0.06);
+    --grain-opacity: 0.03;
+    --grain-blend:   screen;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    transition: background-color 400ms ease, color 400ms ease;
+  }
+
+  /* Subtle paper grain */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 999;
+    opacity: var(--grain-opacity);
+    background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>");
+    mix-blend-mode: var(--grain-blend);
+    transition: opacity 400ms ease;
+  }
+
+  .app {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+
+  /* ─── HEADER ─────────────────────────────────────────── */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 32px;
+    background: var(--panel);
+    border-bottom: 3px solid var(--text-strong);
+    position: relative;
+    transition: background 400ms ease, border-color 400ms ease;
+  }
+
+  .brand { display: flex; align-items: center; gap: 14px; }
+
+  .brand-mark {
+    width: 38px;
+    height: 38px;
+    background: var(--accent);
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-family: 'Anybody', sans-serif;
+    font-weight: 800;
+    font-size: 20px;
+    letter-spacing: -0.04em;
+    font-variation-settings: 'wdth' 110;
+    box-shadow: 4px 4px 0 var(--text-strong);
+    transition: box-shadow 400ms ease;
+  }
+
+  .wordmark {
+    font-family: 'Anybody', sans-serif;
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    color: var(--text-strong);
+    font-variation-settings: 'wdth' 95;
+  }
+  .wordmark .accent {
+    color: var(--accent);
+  }
+
+  .header-meta {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-family: 'Fragment Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .header-meta .label { color: var(--muted-2); }
+  .header-meta .value { color: var(--text); font-weight: 500; }
+  .header-meta .divider { color: var(--muted-2); }
+
+  /* Theme toggle */
+  .theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    background: var(--bg-deep);
+    border: 2px solid var(--text-strong);
+    padding: 0;
+    cursor: pointer;
+    font-family: 'Fragment Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    overflow: hidden;
+  }
+  .theme-toggle button {
+    background: transparent;
+    border: none;
+    color: var(--muted-2);
+    padding: 6px 12px;
+    cursor: pointer;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    transition: color 220ms, background 220ms;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 500;
+  }
+  .theme-toggle button + button { border-left: 2px solid var(--text-strong); }
+  .theme-toggle button:hover { color: var(--text); }
+  .theme-toggle button.active {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+  }
+  .theme-toggle button .glyph { font-size: 11px; line-height: 1; }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    font-weight: 600;
+  }
+  .status-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 25%, transparent);
+  }
+
+  /* ─── NAV ────────────────────────────────────────────── */
+  .nav {
+    display: flex;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+    padding: 0 16px;
+    position: relative;
+    transition: background 400ms ease;
+  }
+
+  .nav-tab {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 14px 22px;
+    cursor: pointer;
+    color: var(--muted);
+    transition: color 220ms;
+    position: relative;
+    font-family: 'Anybody', sans-serif;
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    font-variation-settings: 'wdth' 110;
+  }
+  .nav-tab:hover { color: var(--text); }
+  .nav-tab.active { color: var(--text-strong); }
+  .nav-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 22px;
+    right: 22px;
+    height: 4px;
+    background: var(--accent);
+  }
+
+  .nav-num {
+    font-family: 'Fragment Mono', monospace;
+    font-size: 10px;
+    color: var(--muted-2);
+    font-weight: 400;
+    letter-spacing: 0.05em;
+  }
+  .nav-tab.active .nav-num { color: var(--accent); }
+
+  .nav-badge {
+    margin-left: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-family: 'Fragment Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 6px;
+    line-height: 1;
+    letter-spacing: 0.04em;
+    border-radius: 999px;
+  }
+
+  /* ─── MAIN ───────────────────────────────────────────── */
+  .main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  /* ─── SIDEBAR ────────────────────────────────────────── */
+  .sidebar {
+    width: 308px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--line);
+    background: var(--bg);
+    overflow-y: auto;
+    padding: 24px 0 32px;
+    transition: background 400ms ease, border-color 400ms ease;
+  }
+
+  .section-header {
+    padding: 0 24px 14px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  .section-title {
+    font-family: 'Fragment Mono', monospace;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .section-count {
+    font-family: 'Anybody', sans-serif;
+    font-weight: 800;
+    font-size: 14px;
+    color: var(--text-strong);
+    font-variation-settings: 'wdth' 90;
+  }
+
+  .agent-row {
+    padding: 14px 24px;
+    cursor: pointer;
+    transition: all 220ms;
+    position: relative;
+    border-bottom: 1px solid var(--line);
+  }
+  .agent-row:hover { background: var(--panel); }
+  .agent-row.active {
+    background: var(--accent-soft);
+  }
+  .agent-row.active::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 4px;
+    background: var(--accent);
+  }
+
+  .agent-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .agent-name {
+    font-family: 'Anybody', sans-serif;
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--text-strong);
+    line-height: 1;
+    letter-spacing: -0.02em;
+    font-variation-settings: 'wdth' 100;
+  }
+  .agent-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--ok);
+    flex-shrink: 0;
+  }
+  .agent-status-dot.degraded { background: var(--warn); }
+
+  .agent-meta {
+    font-family: 'Fragment Mono', monospace;
+    font-size: 10.5px;
+    color: var(--muted);
+    margin-top: 6px;
+    text-transform: lowercase;
+  }
+  .agent-meta .sep { color: var(--muted-2); margin: 0 6px; }
+
+  .conversations {
+    margin-top: 12px;
+    border-top: 1px dashed var(--line);
+    padding-top: 8px;
+  }
+  .conv {
+    padding: 8px 0;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    cursor: pointer;
+    color: var(--muted);
+    transition: color 220ms;
+  }
+  .conv:hover { color: var(--text); }
+  .conv.active { color: var(--text-strong); }
+
+  .conv-num {
+    font-family: 'Anybody', sans-serif;
+    font-weight: 800;
+    font-size: 18px;
+    color: var(--muted-2);
+    flex-shrink: 0;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    font-variation-settings: 'wdth' 80;
+    width: 30px;
+  }
+  .conv.active .conv-num { color: var(--accent); }
+  .conv:hover .conv-num { color: var(--text); }
+
+  .conv-title {
+    font-family: 'Manrope', sans-serif;
+    font-size: 14px;
+    line-height: 1.35;
+    flex: 1;
+    font-weight: 500;
+  }
+
+  .conv .pin {
+    color: var(--accent);
+    font-size: 12px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  /* ─── CHAT ───────────────────────────────────────────── */
+  .chat {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: var(--bg);
+    transition: background 400ms ease;
+    position: relative;
+  }
+
+  .chat-header {
+    padding: 36px 48px 28px;
+    border-bottom: 3px solid var(--text-strong);
+    flex-shrink: 0;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Big watermark numeral */
+  .chat-watermark {
+    position: absolute;
+    right: 32px;
+    top: -28px;
+    font-family: 'Anybody', sans-serif;
+    font-weight: 900;
+    font-size: 240px;
+    line-height: 1;
+    color: var(--watermark);
+    pointer-events: none;
+    user-select: none;
+    letter-spacing: -0.05em;
+    font-variation-settings: 'wdth' 75;
+    z-index: 0;
+  }
+
+  .titleblock {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+  .titleblock-left { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+  .issue-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    font-family: 'Fragment Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .issue-tag .pill {
+    background: var(--accent);
+    color: #fff;
+    padding: 4px 10px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+  }
+  .issue-tag .meta { color: var(--text); }
+
+  .chat-title {
+    font-family: 'Anybody', sans-serif;
+    font-size: 96px;
+    font-weight: 800;
+    line-height: 0.85;
+    letter-spacing: -0.05em;
+    color: var(--text-strong);
+    font-variation-settings: 'wdth' 100;
+  }
+  .chat-title .dot {
+    color: var(--accent);
+  }
+
+  .titleblock-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-family: 'Fragment Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    text-align: right;
+  }
+  .titleblock-meta strong {
+    color: var(--text-strong);
+    font-weight: 500;
+    margin-left: 8px;
+  }
+
+  .new-thread-btn {
+    background: var(--text-strong);
+    color: var(--bg);
+    border: none;
+    font-family: 'Anybody', sans-serif;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 700;
+    padding: 12px 22px;
+    cursor: pointer;
+    transition: all 180ms;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: 4px 4px 0 var(--accent);
+    margin-top: 20px;
+    font-variation-settings: 'wdth' 110;
+  }
+  .new-thread-btn:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0 var(--accent);
+  }
+  .new-thread-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: 1px 1px 0 var(--accent);
+  }
+  .new-thread-btn .plus {
+    font-size: 18px;
+    font-weight: 800;
+  }
+
+  /* ─── TRANSCRIPT ─────────────────────────────────────── */
+  .transcript {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 32px 48px 32px;
+  }
+
+  .turn {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 32px;
+    padding: 22px 0;
+    align-items: start;
+    position: relative;
+  }
+  .turn + .turn,
+  .turn + .tool-call,
+  .tool-call + .turn {
+    border-top: 1px solid var(--line);
+  }
+
+  .turn-meta {
+    text-align: right;
+    padding-top: 6px;
+  }
+
+  .role-tag {
+    display: inline-block;
+    font-family: 'Anybody', sans-serif;
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 3px 9px;
+    line-height: 1.3;
+    margin-bottom: 8px;
+    font-variation-settings: 'wdth' 100;
+  }
+  .role-tag.user {
+    background: var(--accent);
+    color: #fff;
+  }
+  .role-tag.assistant {
+    background: var(--text-strong);
+    color: var(--bg);
+  }
+
+  .role-name {
+    font-family: 'Manrope', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
+
+  .timestamp {
+    font-family: 'Fragment Mono', monospace;
+    font-size: 10px;
+    color: var(--muted-2);
+  }
+
+  .turn-body {
+    font-family: 'Manrope', sans-serif;
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--text);
+    max-width: 60ch;
+    font-weight: 400;
+  }
+  .turn.user .turn-body {
+    color: var(--text-strong);
+    font-weight: 600;
+  }
+
+  /* ─── TOOL CALL ──────────────────────────────────────── */
+  .tool-call {
+    margin: 14px 0 14px 132px;
+    background: var(--panel);
+    border: 2px solid var(--text-strong);
+    box-shadow: 4px 4px 0 var(--accent);
+    font-family: 'Fragment Mono', monospace;
+    font-size: 12px;
+    line-height: 1.55;
+    max-width: 60ch;
+  }
+  .tool-call-head {
+    background: var(--accent);
+    color: #fff;
+    padding: 6px 14px;
+    font-family: 'Anybody', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-variation-settings: 'wdth' 105;
+  }
+  .tool-call-body {
+    padding: 12px 14px;
+    color: var(--text);
+  }
+  .tool-call .fn { color: var(--text-strong); font-weight: 700; }
+  .tool-call .args { color: var(--muted); }
+  .tool-call .result {
+    margin-top: 8px;
+    color: var(--muted);
+    padding-top: 8px;
+    border-top: 1px dashed var(--line);
+  }
+  .tool-call .result .ok { color: var(--ok); font-weight: 700; }
+
+  /* ─── COMPOSER ───────────────────────────────────────── */
+  .composer {
+    flex-shrink: 0;
+    padding: 22px 48px 24px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    position: relative;
+    transition: background 400ms ease, border-color 400ms ease;
+  }
+
+  .composer-prompt {
+    font-family: 'Fragment Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--muted);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 500;
+  }
+  .composer-prompt .arrow {
+    color: var(--accent);
+    font-family: 'Anybody', sans-serif;
+    font-size: 14px;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .composer-prompt .label-hot {
+    color: var(--text-strong);
+    font-weight: 600;
+  }
+  .composer-prompt .ctx {
+    margin-left: auto;
+    color: var(--muted-2);
+  }
+
+  .input-row {
+    display: flex;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .composer-input {
+    flex: 1;
+    background: var(--bg);
+    border: 2px solid var(--text-strong);
+    padding: 14px 18px;
+    color: var(--text-strong);
+    font-family: 'Manrope', sans-serif;
+    font-size: 17px;
+    font-weight: 500;
+    outline: none;
+    transition: box-shadow 180ms, background 400ms ease;
+  }
+  .composer-input:focus {
+    box-shadow: 4px 4px 0 var(--accent);
+  }
+  .composer-input::placeholder {
+    color: var(--muted-2);
+    font-weight: 400;
+  }
+
+  .send-btn {
+    background: var(--accent);
+    color: #fff;
+    border: 2px solid var(--text-strong);
+    padding: 0 28px;
+    font-family: 'Anybody', sans-serif;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 800;
+    cursor: pointer;
+    transition: all 180ms;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: 4px 4px 0 var(--text-strong);
+    font-variation-settings: 'wdth' 110;
+  }
+  .send-btn:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0 var(--text-strong);
+  }
+  .send-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: 1px 1px 0 var(--text-strong);
+  }
+  .send-btn .arrow { font-size: 15px; font-weight: 800; }
+
+  /* ─── SCROLLBARS ─────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--line-bright); border-radius: 0; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+  /* ─── PAGE LOAD STAGGER ──────────────────────────────── */
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .header { animation: slideUp 500ms 50ms both ease-out; }
+  .nav { animation: slideUp 500ms 150ms both ease-out; }
+  .sidebar { animation: slideUp 600ms 250ms both ease-out; }
+  .chat-watermark { animation: scaleIn 1000ms 400ms both cubic-bezier(.2,.6,.4,1); }
+  .issue-tag { animation: slideUp 500ms 350ms both ease-out; }
+  .chat-title { animation: slideUp 700ms 450ms both cubic-bezier(.2,.6,.4,1); }
+  .titleblock-meta { animation: slideUp 500ms 550ms both ease-out; }
+  .turn { animation: slideUp 600ms both ease-out; }
+  .turn:nth-of-type(1) { animation-delay: 600ms; }
+  .turn:nth-of-type(2) { animation-delay: 680ms; }
+  .turn:nth-of-type(3) { animation-delay: 760ms; }
+  .turn:nth-of-type(4) { animation-delay: 840ms; }
+  .turn:nth-of-type(5) { animation-delay: 920ms; }
+  .tool-call { animation: slideUp 600ms 720ms both ease-out; }
+  .composer { animation: slideUp 600ms 1050ms both ease-out; }
+
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="brand">
+      <div class="brand-mark">K</div>
+      <div class="wordmark">Konaclaw<span class="accent">.</span></div>
+    </div>
+    <div class="header-meta">
+      <div class="theme-toggle" role="tablist" aria-label="Theme">
+        <button id="theme-day"   class="active" aria-label="Day"><span class="glyph">☀</span> Day</button>
+        <button id="theme-night" aria-label="Night"><span class="glyph">☾</span> Night</button>
+      </div>
+      <span><span class="label">REL</span> <span class="value">v0.2.1</span></span>
+      <span class="divider">/</span>
+      <span><span class="label">UPTIME</span> <span class="value">4h 23m</span></span>
+      <span class="divider">/</span>
+      <span class="status-pill"><span class="status-dot"></span>3 agents · idle</span>
+    </div>
+  </header>
+
+  <!-- NAV -->
+  <nav class="nav">
+    <div class="nav-tab active">
+      <span class="nav-num">01</span>
+      <span>Chat</span>
+    </div>
+    <div class="nav-tab">
+      <span class="nav-num">02</span>
+      <span>Agents</span>
+    </div>
+    <div class="nav-tab">
+      <span class="nav-num">03</span>
+      <span>Connectors</span>
+    </div>
+    <div class="nav-tab">
+      <span class="nav-num">04</span>
+      <span>Permissions<span class="nav-badge">2</span></span>
+    </div>
+    <div class="nav-tab">
+      <span class="nav-num">05</span>
+      <span>Audit</span>
+    </div>
+    <div class="nav-tab">
+      <span class="nav-num">06</span>
+      <span>Monitor</span>
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div class="section-header">
+        <div class="section-title">— Roster</div>
+        <div class="section-count">03</div>
+      </div>
+
+      <div class="agent-row active">
+        <div class="agent-head">
+          <div class="agent-name">kona</div>
+          <div class="agent-status-dot"></div>
+        </div>
+        <div class="agent-meta">minimax-m2.7<span class="sep">·</span>idle</div>
+        <div class="conversations">
+          <div class="conv">
+            <span class="conv-num">01</span>
+            <span class="conv-title">Calendar review for next week</span>
+            <span class="pin">★</span>
+          </div>
+          <div class="conv active">
+            <span class="conv-num">02</span>
+            <span class="conv-title">Telegram drafts before sending</span>
+          </div>
+          <div class="conv">
+            <span class="conv-num">03</span>
+            <span class="conv-title">Research on the new MCP spec</span>
+          </div>
+          <div class="conv">
+            <span class="conv-num">04</span>
+            <span class="conv-title">Bug investigation in kc-supervisor</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="agent-row">
+        <div class="agent-head">
+          <div class="agent-name">scribe</div>
+          <div class="agent-status-dot"></div>
+        </div>
+        <div class="agent-meta">minimax-m2.7<span class="sep">·</span>idle</div>
+      </div>
+
+      <div class="agent-row">
+        <div class="agent-head">
+          <div class="agent-name">forager</div>
+          <div class="agent-status-dot"></div>
+        </div>
+        <div class="agent-meta">gemma-4-31b-it<span class="sep">·</span>idle</div>
+      </div>
+    </aside>
+
+    <!-- CHAT -->
+    <section class="chat">
+      <header class="chat-header">
+        <div class="chat-watermark">02</div>
+        <div class="titleblock">
+          <div class="titleblock-left">
+            <div class="issue-tag">
+              <span class="pill">Issue 02</span>
+              <span class="meta">Telegram drafts before sending</span>
+            </div>
+            <h1 class="chat-title">kona<span class="dot">.</span></h1>
+            <button class="new-thread-btn"><span class="plus">+</span><span>New thread</span></button>
+          </div>
+          <div class="titleblock-meta">
+            <div>Started <strong>19:42</strong></div>
+            <div>Turns <strong>05</strong></div>
+            <div>Auto-approve <strong>SAFE</strong></div>
+            <div>Model <strong>minimax-m2.7</strong></div>
+          </div>
+        </div>
+      </header>
+
+      <div class="transcript">
+
+        <div class="turn user">
+          <div class="turn-meta">
+            <div class="role-tag user">User</div>
+            <div class="role-name">Sammy</div>
+            <div class="timestamp">19:42:11</div>
+          </div>
+          <div class="turn-body">
+            What's on my calendar tomorrow afternoon?
+          </div>
+        </div>
+
+        <div class="turn">
+          <div class="turn-meta">
+            <div class="role-tag assistant">Kona</div>
+            <div class="role-name">assistant</div>
+            <div class="timestamp">19:42:13</div>
+          </div>
+          <div class="turn-body">
+            Let me check.
+          </div>
+        </div>
+
+        <div class="tool-call">
+          <div class="tool-call-head">
+            <span>▸ Tool call</span>
+            <span>auto-approved · SAFE</span>
+          </div>
+          <div class="tool-call-body">
+            <span class="fn">gcal.list_events</span><span class="args">(time_min: 2026-05-09T12:00, time_max: 2026-05-09T18:00)</span>
+            <div class="result"><span class="ok">→ ok</span> — 2 events returned in 312 ms</div>
+          </div>
+        </div>
+
+        <div class="turn">
+          <div class="turn-meta">
+            <div class="role-tag assistant">Kona</div>
+            <div class="role-name">assistant</div>
+            <div class="timestamp">19:42:14</div>
+          </div>
+          <div class="turn-body">
+            You have two things tomorrow afternoon: a 2:00 walk-through with the design team, and a 4:30 call with Maya about the M5 Max migration. The slot from 12:30 to 1:45 is open if you want to claim it.
+          </div>
+        </div>
+
+        <div class="turn user">
+          <div class="turn-meta">
+            <div class="role-tag user">User</div>
+            <div class="role-name">Sammy</div>
+            <div class="timestamp">19:43:02</div>
+          </div>
+          <div class="turn-body">
+            Block that 12:30 slot for "deep work" please.
+          </div>
+        </div>
+
+        <div class="turn">
+          <div class="turn-meta">
+            <div class="role-tag assistant">Kona</div>
+            <div class="role-name">assistant</div>
+            <div class="timestamp">19:43:04</div>
+          </div>
+          <div class="turn-body">
+            Drafting the event now — it'll need your approval before it lands on your calendar.
+          </div>
+        </div>
+
+      </div>
+
+      <div class="composer">
+        <div class="composer-prompt">
+          <span class="arrow">▸</span>
+          <span class="label-hot">Reply</span>
+          <span class="ctx">⌘ + ↵ to send</span>
+        </div>
+        <div class="input-row">
+          <input type="text" class="composer-input" placeholder="Type a message…" autofocus>
+          <button class="send-btn"><span>Send</span><span class="arrow">→</span></button>
+        </div>
+      </div>
+
+    </section>
+  </main>
+</div>
+
+<script>
+  (function () {
+    const root = document.documentElement;
+    const dayBtn = document.getElementById('theme-day');
+    const nightBtn = document.getElementById('theme-night');
+    const STORAGE_KEY = 'konaclaw-theme';
+
+    function apply(theme) {
+      root.setAttribute('data-theme', theme);
+      dayBtn.classList.toggle('active', theme === 'light');
+      nightBtn.classList.toggle('active', theme === 'dark');
+      try { localStorage.setItem(STORAGE_KEY, theme); } catch (_) {}
+    }
+
+    let initial = 'light';
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored === 'light' || stored === 'dark') initial = stored;
+      else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) initial = 'dark';
+    } catch (_) {}
+    apply(initial);
+
+    dayBtn.addEventListener('click', () => apply('light'));
+    nightBtn.addEventListener('click', () => apply('dark'));
+  })();
+</script>
+
+</body>
+</html>

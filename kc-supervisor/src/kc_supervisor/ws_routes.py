@@ -184,7 +184,7 @@ def register_ws_routes(app: FastAPI) -> None:
                     finally:
                         if rt.status == AgentStatus.THINKING:
                             rt.set_status(AgentStatus.IDLE)
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, RuntimeError):
             return
 
     @app.websocket("/ws/approvals")
@@ -227,7 +227,7 @@ def register_ws_routes(app: FastAPI) -> None:
                     allowed=bool(msg.get("allowed", False)),
                     reason=msg.get("reason"),
                 )
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, RuntimeError):
             return
         finally:
             sub.unsubscribe()

@@ -1,0 +1,118 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root[data-theme="light"] {
+  --bg:           232 233 235;
+  --bg-deep:      220 222 226;
+  --panel:        241 242 244;
+  --panel-2:      226 228 231;
+  --panel-3:      212 215 220;
+  --line:         184 188 196;
+  --line-bright:  139 146 156;
+  --text:         26 38 56;
+  --text-strong:  5 11 20;
+  --muted:        90 102 117;
+  --muted-2:      139 149 163;
+  --accent:       10 123 162;
+  --accent-bright:13 155 208;
+  --accent-deep:  7 77 104;
+  --ok:           46 125 58;
+  --warn:         194 65 12;
+  --bad:          194 65 12;
+  --grid-color:   rgba(10, 123, 162, 0.05);
+  --grain-opacity: 0.04;
+  --grain-blend:   multiply;
+}
+
+:root[data-theme="dark"] {
+  --bg:           13 22 34;
+  --bg-deep:      8 16 26;
+  --panel:        19 30 44;
+  --panel-2:      26 38 56;
+  --panel-3:      31 44 63;
+  --line:         42 58 82;
+  --line-bright:  61 83 117;
+  --text:         214 227 240;
+  --text-strong:  240 246 252;
+  --muted:        122 139 160;
+  --muted-2:      79 96 117;
+  --accent:       95 205 230;
+  --accent-bright:143 222 240;
+  --accent-deep:  45 143 168;
+  --ok:           127 194 138;
+  --warn:         255 122 60;
+  --bad:          255 122 60;
+  --grid-color:   rgba(95, 205, 230, 0.045);
+  --grain-opacity: 0.025;
+  --grain-blend:   screen;
+}
+
+html, body, #root {
+  height: 100%;
+  background: rgb(var(--bg));
+  color: rgb(var(--text));
+  transition: background-color 400ms ease, color 400ms ease;
+}
+
+body {
+  font-family: 'Onest', system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Hairline blueprint grid behind everything */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(to right, var(--grid-color) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-color) 1px, transparent 1px);
+  background-size: 32px 32px;
+  transition: background-image 400ms ease;
+}
+
+/* Subtle paper grain on top */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 999;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>");
+  mix-blend-mode: var(--grain-blend);
+  transition: opacity 400ms ease;
+}
+
+/* Corner registration marks */
+.reg-mark {
+  position: fixed;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+  z-index: 3;
+  color: rgb(var(--accent));
+  opacity: 0.5;
+}
+.reg-mark::before, .reg-mark::after {
+  content: '';
+  position: absolute;
+  background: currentColor;
+}
+.reg-mark::before { width: 14px; height: 1px; top: 50%; }
+.reg-mark::after  { width: 1px; height: 14px; left: 50%; }
+.reg-mark.tl { top: 8px;    left: 8px; }
+.reg-mark.tr { top: 8px;    right: 8px; }
+.reg-mark.bl { bottom: 8px; left: 8px; }
+.reg-mark.br { bottom: 8px; right: 8px; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgb(var(--line-bright)); }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--accent)); }
