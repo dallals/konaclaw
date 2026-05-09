@@ -2,8 +2,9 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import asdict
-from typing import Optional
+from typing import Literal, Optional
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 _AGENT_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
@@ -199,8 +200,11 @@ def register_http_routes(app: FastAPI) -> None:
     def list_audit(
         agent: Optional[str] = None,
         limit: int = Query(default=100, ge=1, le=1000),
+        decision: Optional[str] = Query(default=None, pattern="^(allowed|denied)$"),
     ):
-        rows = app.state.deps.storage.list_audit(agent=agent, limit=limit)
+        rows = app.state.deps.storage.list_audit(
+            agent=agent, limit=limit, decision=decision,
+        )
         return {"entries": rows}
 
     @app.post("/undo/{audit_id}")
@@ -279,4 +283,51 @@ def register_http_routes(app: FastAPI) -> None:
                 "kind": entry.reverse_kind,
                 "details": entry.reverse_payload,
             },
+        }
+
+    @app.get("/api/news")
+    def get_news(
+        mode: Literal["topic", "source"],
+        q: Optional[str] = None,
+        source: Optional[str] = None,
+        max_results: int = Query(default=5, ge=1, le=10),
+    ):
+        client = app.state.deps.news_client
+        if client is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "not_configured",
+                    "message": (
+                        "News not configured. "
+                        "Add newsapi_api_key to the supervisor's secrets store."
+                    ),
+                },
+            )
+
+        if mode == "topic":
+            if not q:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "missing_param", "message": "q is required when mode=topic"},
+                )
+            result = client.search_topic(query=q, max_results=max_results)
+        else:
+            if not source:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "missing_param", "message": "source is required when mode=source"},
+                )
+            result = client.from_source(source=source, max_results=max_results)
+
+        if result.error == "quota_reached":
+            return JSONResponse(status_code=429, content={"error": "quota_reached", "message": result.message or ""})
+        if result.error == "unknown_source":
+            return JSONResponse(status_code=400, content={"error": "unknown_source", "message": result.message or ""})
+        if result.error == "upstream_error":
+            return JSONResponse(status_code=502, content={"error": "upstream_error", "message": result.message or ""})
+
+        return {
+            "articles": [asdict(a) for a in result.articles],
+            "cached": result.cached,
         }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from kc_core.messages import (
     UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
@@ -88,13 +89,29 @@ def register_ws_routes(app: FastAPI) -> None:
 
                     # Refresh the memory prefix from disk so any updates from
                     # earlier turns (or other agents writing user.md) are
-                    # visible to the model on this turn.
-                    if rt.assembled.memory_reader is not None:
-                        prefix = rt.assembled.memory_reader.format_prefix(agent=rt.name)
-                        rt.assembled.core_agent.system_prompt = (
-                            prefix + rt.assembled.base_system_prompt if prefix
-                            else rt.assembled.base_system_prompt
-                        )
+                    # visible to the model on this turn. Also inject today's
+                    # date so the model can resolve "today / this weekend /
+                    # next week" instead of guessing from training-cutoff
+                    # dates.
+                    now = datetime.now().astimezone()
+                    tz_name = now.strftime("%Z") or "local"
+                    tz_offset = now.strftime("%z") or ""
+                    date_prefix = (
+                        f"[Current local date and time: {now.strftime('%A, %B %-d, %Y at %-I:%M %p')} "
+                        f"{tz_name} ({now.strftime('%Y-%m-%dT%H:%M:%S')}{tz_offset}). "
+                        f"The user's timezone is {tz_name}. "
+                        f"When calling tools that take time arguments (calendar, scheduling, "
+                        f"reminders), pass times in the user's LOCAL timezone, not UTC/GMT. "
+                        f"Use the current date above for any time-relative phrases like "
+                        f"'today', 'tomorrow', 'this weekend'. Do NOT rely on training-data dates.]\n\n"
+                    )
+                    memory_prefix = (
+                        rt.assembled.memory_reader.format_prefix(agent=rt.name)
+                        if rt.assembled.memory_reader is not None else ""
+                    )
+                    rt.assembled.core_agent.system_prompt = (
+                        date_prefix + memory_prefix + rt.assembled.base_system_prompt
+                    )
 
                     rt.set_status(AgentStatus.THINKING)
                     try:

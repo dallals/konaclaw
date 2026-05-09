@@ -34,6 +34,9 @@ htmlcov/
 .env
 *.env.local
 secrets.enc
+client_secret_*.json
+google_token*.json
+.konaclaw.env
 
 # Superpowers tooling scratch (brainstorm sessions, server pids, etc.)
 .superpowers/

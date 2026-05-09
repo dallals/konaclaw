@@ -239,3 +239,86 @@ def test_init_idempotent_adds_pinned_column_to_legacy_db(tmp_path):
     assert len(convs) == 1
     assert convs[0]["pinned"] == 0
     assert convs[0]["title"] is None
+
+
+def test_conv_map_put_and_get(tmp_path):
+    s = Storage(tmp_path / "db.sqlite")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="telegram")
+
+    s.put_conv_for_chat("telegram", "12345", "kona", cid)
+
+    assert s.get_conv_for_chat("telegram", "12345", "kona") == cid
+    assert s.get_conv_for_chat("telegram", "99999", "kona") is None
+
+
+def test_conv_map_persists_across_reopens(tmp_path):
+    db = tmp_path / "db.sqlite"
+    s1 = Storage(db); s1.init()
+    cid = s1.create_conversation(agent="kona", channel="telegram")
+    s1.put_conv_for_chat("telegram", "12345", "kona", cid)
+
+    s2 = Storage(db); s2.init()
+    assert s2.get_conv_for_chat("telegram", "12345", "kona") == cid
+
+
+def test_conv_map_channel_isolation(tmp_path):
+    s = Storage(tmp_path / "db.sqlite"); s.init()
+    cid_t = s.create_conversation(agent="kona", channel="telegram")
+    cid_i = s.create_conversation(agent="kona", channel="imessage")
+
+    s.put_conv_for_chat("telegram", "abc", "kona", cid_t)
+    s.put_conv_for_chat("imessage", "abc", "kona", cid_i)
+
+    assert s.get_conv_for_chat("telegram", "abc", "kona") == cid_t
+    assert s.get_conv_for_chat("imessage", "abc", "kona") == cid_i
+
+
+def test_conv_map_cascade_on_conversation_delete(tmp_path):
+    s = Storage(tmp_path / "db.sqlite"); s.init()
+    cid = s.create_conversation(agent="kona", channel="telegram")
+    s.put_conv_for_chat("telegram", "abc", "kona", cid)
+
+    s.delete_conversation(cid)
+
+    assert s.get_conv_for_chat("telegram", "abc", "kona") is None
+
+
+def test_conv_map_upsert(tmp_path):
+    s = Storage(tmp_path / "db.sqlite"); s.init()
+    cid1 = s.create_conversation(agent="kona", channel="telegram")
+    cid2 = s.create_conversation(agent="kona", channel="telegram")
+
+    s.put_conv_for_chat("telegram", "abc", "kona", cid1)
+    s.put_conv_for_chat("telegram", "abc", "kona", cid2)  # overwrite
+
+    assert s.get_conv_for_chat("telegram", "abc", "kona") == cid2
+
+
+def test_list_audit_decision_filter(tmp_path):
+    s = Storage(tmp_path / "db.sqlite"); s.init()
+    # Real-world decision values that AuditingToolRegistry actually writes:
+    s.append_audit(agent="kona", tool="t1", args_json="{}", decision="tier",     result="ok",     undoable=False)
+    s.append_audit(agent="kona", tool="t2", args_json="{}", decision="callback", result="ok",     undoable=False)
+    s.append_audit(agent="kona", tool="t3", args_json="{}", decision="denied",   result="reason", undoable=False)
+    s.append_audit(agent="kona", tool="t4", args_json="{}", decision="override", result="ok",     undoable=False)
+
+    assert len(s.list_audit(agent="kona")) == 4
+    assert len(s.list_audit(agent="kona", decision="allowed")) == 3   # tier, callback, override
+    assert len(s.list_audit(agent="kona", decision="denied")) == 1    # only the literal "denied"
+
+
+def test_audit_aggregate_by_tool_prefix(tmp_path):
+    s = Storage(tmp_path / "db.sqlite"); s.init()
+    s.append_audit(agent="a", tool="mcp.zapier.gmail_send",   args_json="{}", decision="callback", result="ok",                 undoable=False)
+    s.append_audit(agent="a", tool="mcp.zapier.gmail_send",   args_json="{}", decision="tier",     result="ok",                 undoable=False)
+    s.append_audit(agent="a", tool="mcp.zapier.notion_create", args_json="{}", decision="callback", result="ok",                undoable=False)
+    s.append_audit(agent="a", tool="other.tool",              args_json="{}", decision="callback", result="ok",                 undoable=False)
+    s.append_audit(agent="a", tool="mcp.zapier.gmail_send",   args_json="{}", decision="denied",   result="{\"reason\":\"x\"}", undoable=False)
+
+    out = sorted(s.audit_aggregate_by_tool_prefix("mcp.zapier."), key=lambda r: r["tool"])
+    assert len(out) == 2
+    assert out[0]["tool"] == "mcp.zapier.gmail_send"
+    assert out[0]["n"] == 2  # NOT 3 — the denied row is excluded
+    assert out[1]["tool"] == "mcp.zapier.notion_create"
+    assert out[1]["n"] == 1

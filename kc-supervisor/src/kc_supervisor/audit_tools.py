@@ -110,10 +110,15 @@ class AuditingToolRegistry(ToolRegistry):
         )
 
 
-def make_audit_aware_callback(engine: PermissionEngine, *, agent_name: str):
-    """Return an async permission_check that calls engine.check_async and stashes
-    the resulting Decision into _decision_contextvar so AuditingToolRegistry can
-    record it after the tool runs.
+def make_audit_aware_callback(
+    engine: PermissionEngine, *, agent_name: str, storage: Optional[Storage] = None,
+):
+    """Return an async permission_check that calls engine.check_async, stashes
+    the resulting Decision in _decision_contextvar, and writes an audit row
+    when the decision is a deny.
+
+    Storage is optional only because some test setups don't need a DB; in
+    production the supervisor always passes it.
 
     Replaces engine.to_async_agent_callback when wiring an AssembledAgent.
     """
@@ -121,6 +126,15 @@ def make_audit_aware_callback(engine: PermissionEngine, *, agent_name: str):
     async def _check(_runtime_agent_name: str, tool: str, args: dict[str, Any]) -> tuple[bool, Optional[str]]:
         d = await engine.check_async(agent=agent_name, tool=tool, arguments=args)
         _decision_contextvar.set(d)
+        if not d.allowed and storage is not None:
+            storage.append_audit(
+                agent=agent_name,
+                tool=tool,
+                args_json=json.dumps(args, default=str),
+                decision="denied",
+                result=json.dumps({"reason": d.reason, "source": d.source}),
+                undoable=False,
+            )
         return (d.allowed, d.reason)
 
     return _check

@@ -3,7 +3,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 SCHEMA = """
@@ -61,6 +61,16 @@ CREATE TABLE IF NOT EXISTS mcp_installs (
     status TEXT NOT NULL DEFAULT 'running'
 );
 CREATE INDEX IF NOT EXISTS ix_mcp_status ON mcp_installs(status);
+
+CREATE TABLE IF NOT EXISTS connector_conv_map (
+    channel    TEXT NOT NULL,
+    chat_id    TEXT NOT NULL,
+    agent      TEXT NOT NULL,
+    conv_id    INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (channel, chat_id, agent),
+    FOREIGN KEY (conv_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
 """
 
 
@@ -94,6 +104,7 @@ class Storage:
     def connect(self):
         conn = sqlite3.connect(self.db_path, isolation_level=None)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
         finally:
@@ -153,6 +164,40 @@ class Storage:
                 raise
             return cur.rowcount > 0
 
+    # ----- connector → conversation map -----
+    def put_conv_for_chat(
+        self, channel: str, chat_id: str, agent: str, conv_id: int,
+    ) -> None:
+        with self.connect() as c:
+            c.execute(
+                "INSERT INTO connector_conv_map (channel, chat_id, agent, conv_id) "
+                "VALUES (?,?,?,?) "
+                "ON CONFLICT(channel, chat_id, agent) DO UPDATE SET "
+                "conv_id=excluded.conv_id, updated_at=CURRENT_TIMESTAMP",
+                (channel, chat_id, agent, conv_id),
+            )
+
+    def get_conv_for_chat(
+        self, channel: str, chat_id: str, agent: str,
+    ) -> Optional[int]:
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT conv_id FROM connector_conv_map "
+                "WHERE channel=? AND chat_id=? AND agent=?",
+                (channel, chat_id, agent),
+            ).fetchone()
+        return row["conv_id"] if row else None
+
+    def clear_conv_for_chat(
+        self, channel: str, chat_id: str, agent: str,
+    ) -> None:
+        with self.connect() as c:
+            c.execute(
+                "DELETE FROM connector_conv_map "
+                "WHERE channel=? AND chat_id=? AND agent=?",
+                (channel, chat_id, agent),
+            )
+
     def get_conversation(self, conversation_id: int) -> Optional[dict]:
         """Look up a single conversation by id. Returns None if not found."""
         with self.connect() as c:
@@ -202,25 +247,52 @@ class Storage:
             )
             return int(cur.lastrowid)
 
-    def list_audit(self, agent: Optional[str] = None, limit: int = 100) -> list[dict]:
+    def list_audit(
+        self, agent: Optional[str] = None, limit: int = 100,
+        decision: Optional[str] = None,
+    ) -> list[dict]:
         # LEFT JOIN audit_undo_link so each row carries undone=1 if /undo
         # has already been run on this audit_id (so the dashboard can hide
         # the Undo button instead of letting the user double-fire it).
-        base = (
+        clauses: list[str] = []
+        params: list[Any] = []
+        if agent is not None:
+            clauses.append("a.agent=?"); params.append(agent)
+        if decision == "denied":
+            clauses.append("a.decision=?"); params.append("denied")
+        elif decision == "allowed":
+            # Allowed rows are written with decision=<source> (tier|callback|override|unknown);
+            # the user-facing filter is binary. Anything that is not "denied" counts as allowed.
+            clauses.append("a.decision != ?"); params.append("denied")
+        sql = (
             "SELECT a.*, "
             "CASE WHEN l.undone_at IS NOT NULL THEN 1 ELSE 0 END AS undone "
             "FROM audit a LEFT JOIN audit_undo_link l ON l.audit_id = a.id "
         )
+        if clauses:
+            sql += "WHERE " + " AND ".join(clauses) + " "
+        sql += "ORDER BY a.ts DESC LIMIT ?"
+        params.append(limit)
         with self.connect() as c:
-            if agent is not None:
-                rows = c.execute(
-                    base + "WHERE a.agent=? ORDER BY a.ts DESC LIMIT ?",
-                    (agent, limit),
-                ).fetchall()
-            else:
-                rows = c.execute(
-                    base + "ORDER BY a.ts DESC LIMIT ?", (limit,),
-                ).fetchall()
+            rows = c.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def audit_aggregate_by_tool_prefix(
+        self, prefix: str,
+    ) -> list[dict]:
+        """Per-tool MAX(ts) and COUNT(*) for tools matching prefix%.
+
+        Mirrors `list_audit(decision="allowed")`: allowed audit rows store
+        decision=<source> (tier|callback|override|unknown), not the literal
+        "allowed", so we filter `decision != 'denied'` to exclude denied rows.
+        """
+        with self.connect() as c:
+            rows = c.execute(
+                "SELECT tool, MAX(ts) AS last_ts, COUNT(*) AS n "
+                "FROM audit WHERE tool LIKE ? AND decision != 'denied' "
+                "GROUP BY tool",
+                (prefix + "%",),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def mark_audit_undone(self, audit_id: int) -> bool:

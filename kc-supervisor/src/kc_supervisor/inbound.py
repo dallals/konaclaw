@@ -21,10 +21,10 @@ class InboundRouter:
     its `supervisor` argument; calling `supervisor.handle_inbound(env)` from
     the connector starts (or continues) an agent conversation.
 
-    Per-(channel, chat_id) conversation continuity is maintained in an
-    in-memory dict for v1 — it resets on supervisor restart, in which case
-    the next inbound message creates a new conversation. Persisting this
-    mapping to SQLite is a v0.2 follow-up.
+    Per-(channel, chat_id, agent) conversation continuity is persisted in
+    the ``connector_conv_map`` SQLite table so that it survives supervisor
+    restarts — the next inbound message after a restart reuses the same
+    conversation row.
     """
 
     def __init__(
@@ -41,7 +41,6 @@ class InboundRouter:
         self.conv_locks = conv_locks
         self.routing_table = routing_table
         self.connector_registry = connector_registry
-        self._conv_by_chat: dict[tuple[str, str], int] = {}
 
     async def handle_inbound(self, env) -> None:
         """Run an agent turn for a single inbound MessageEnvelope.
@@ -63,11 +62,12 @@ class InboundRouter:
                            agent_name, rt.last_error)
             return
 
-        key = (env.channel, env.chat_id)
-        cid = self._conv_by_chat.get(key)
-        if cid is None:
+        storage = self.conversations.s
+        cid = storage.get_conv_for_chat(env.channel, env.chat_id, agent_name)
+        if cid is None or storage.get_conversation(cid) is None:
             cid = self.conversations.start(agent=agent_name, channel=env.channel)
-            self._conv_by_chat[key] = cid
+            storage.set_conversation_title(cid, f"{env.channel}:{env.chat_id}")
+            storage.put_conv_for_chat(env.channel, env.chat_id, agent_name, cid)
 
         lock = self.conv_locks.get(cid)
         async with lock:

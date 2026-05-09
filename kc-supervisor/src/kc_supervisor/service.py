@@ -1,8 +1,9 @@
 from __future__ import annotations
+import asyncio
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from kc_sandbox.shares import SharesRegistry
@@ -11,6 +12,20 @@ from kc_supervisor.approvals import ApprovalBroker
 from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.locks import ConversationLocks
 from kc_supervisor.storage import Storage
+
+
+@dataclass
+class GoogleOAuthState:
+    """Tracks the in-process state of a Google OAuth installed-app flow.
+
+    Lives on `Deps.google_oauth`. Mutated by the /connectors/google/*
+    endpoints (connect kicks off a background thread, status reads, disconnect
+    resets). Single-process only — restarting the supervisor resets to "idle"
+    even if the on-disk token still exists; the next connect will re-detect.
+    """
+    state: Literal["idle", "pending", "connected"] = "idle"
+    since: float = 0.0
+    last_error: Optional[str] = None
 
 
 @dataclass
@@ -36,6 +51,21 @@ class Deps:
     mcp_install_store: Optional[Any] = None
     inbound_router: Optional[Any] = None
     connector_registry: Optional[Any] = None
+    secrets_store: Optional[Any] = None
+    google_oauth: GoogleOAuthState = field(default_factory=GoogleOAuthState)
+    google_token_path: Optional[Path] = None
+    google_credentials_path: Optional[Path] = None
+    news_client: Optional[Any] = None
+    # Captured at FastAPI startup so sync route handlers (running in the
+    # threadpool) can dispatch coroutines back to the main event loop via
+    # asyncio.run_coroutine_threadsafe — used by the hot-restart hooks below.
+    event_loop: Optional[asyncio.AbstractEventLoop] = None
+    # Hot-restart hooks for PATCH /connectors/{name}. Wired in main.py;
+    # connectors_routes._restart_connector() invokes them via getattr.
+    # Type is Any (rather than a Protocol) because they're runtime-injected
+    # zero-arg callables and don't appear in any test fixture's Deps(...).
+    restart_telegram: Optional[Any] = None
+    restart_imessage: Optional[Any] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:
@@ -43,25 +73,29 @@ async def _maybe_register_zapier(deps: "Deps") -> None:
 
     Silent skip when:
       - kc_zapier isn't importable (soft dep), or
-      - secrets.yaml lacks `zapier_api_key`.
+      - the encrypted secrets store lacks `zapier_api_key`.
 
     On registration failure (e.g. bad API key), logs a warning and returns.
     On success, calls `deps.registry.load_all()` so agents pick up the new
     `mcp.zapier.*` tools and the `find_or_install_zap` meta-tool on the
     next turn.
+
+    Reads from `deps.secrets_store` directly (NOT `kc_zapier.config.load_config`,
+    which still hits plaintext `~/KonaClaw/config/secrets.yaml` — gone after
+    Plan 1's encrypted-store migration).
     """
-    if deps.mcp_manager is None:
+    if deps.mcp_manager is None or deps.secrets_store is None:
         return
     try:
-        from kc_zapier.config import load_config
+        from kc_zapier.config import ZapierConfig
         from kc_zapier.register import register_zapier_mcp
     except ImportError:
         return
-    try:
-        cfg = load_config()
-    except KeyError:
-        # zapier_api_key not in secrets.yaml — silent skip.
+    secrets = deps.secrets_store.load()
+    api_key = secrets.get("zapier_api_key")
+    if not api_key:
         return
+    cfg = ZapierConfig(api_key=api_key)
     try:
         await register_zapier_mcp(deps.mcp_manager, cfg)
     except Exception as e:
@@ -99,6 +133,9 @@ def create_app(deps: Deps) -> FastAPI:
 
     from kc_supervisor.ws_routes import register_ws_routes
     register_ws_routes(app)
+
+    from kc_supervisor import connectors_routes
+    connectors_routes.install(app, deps)
 
     # MCP servers are spawned on the FastAPI startup event so their lifecycle
     # tasks live inside uvicorn's event loop (anyio-scope correctness — see
@@ -138,6 +175,10 @@ def create_app(deps: Deps) -> FastAPI:
     if deps.connector_registry is not None and deps.inbound_router is not None:
         @app.on_event("startup")
         async def _startup_start_connectors() -> None:
+            # Capture the running event loop so sync PATCH handlers (run in
+            # FastAPI's threadpool, where asyncio.get_running_loop() raises)
+            # can dispatch coroutines back here via run_coroutine_threadsafe.
+            deps.event_loop = asyncio.get_running_loop()
             for c in deps.connector_registry.all():
                 try:
                     await c.start(deps.inbound_router)

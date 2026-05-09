@@ -61,6 +61,8 @@ def assemble_agent(
     memory_root: Optional[Path] = None,
     gmail_service: Optional[Any] = None,
     gcal_service: Optional[Any] = None,
+    news_client: Optional[Any] = None,
+    ollama_api_key: Optional[str] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -110,7 +112,14 @@ def assemble_agent(
     if mcp_manager is not None:
         for mcp_tool in mcp_manager.all_tools():
             registry.register(mcp_tool)
-            tier_map[mcp_tool.name] = Tier.DESTRUCTIVE
+            # Zapier MCP tools are user-authorized server-side at mcp.zapier.com
+            # (per-app OAuth + Zapier's own approval gate), so re-prompting in
+            # KonaClaw is redundant. Treat them as MUTATING (audited, no
+            # approval popup) rather than DESTRUCTIVE.
+            if mcp_tool.name.startswith("mcp.zapier."):
+                tier_map[mcp_tool.name] = Tier.MUTATING
+            else:
+                tier_map[mcp_tool.name] = Tier.DESTRUCTIVE
         # Zapier meta-tool — only when the MCP manager has a "zapier" server
         # registered. The Zapier MCP tools themselves are already registered
         # above as DESTRUCTIVE via the manager.all_tools() loop. The meta-tool
@@ -222,6 +231,14 @@ def assemble_agent(
                 registry.register(tool)
                 tier_map[tool.name] = google_tier_map[tool.name]
 
+    # News tool-provider — registered only when supervisor.main built a NewsClient
+    # from the `newsapi_api_key` secret. Both tools are SAFE (read-only).
+    if news_client is not None:
+        from kc_connectors.news_adapter import build_news_tools
+        for tool in build_news_tools(client=news_client).values():
+            registry.register(tool)
+            tier_map[tool.name] = Tier.SAFE
+
     # 4. PermissionEngine. broker.request_approval is async; the engine's
     # check_async detects coroutines via inspect.iscoroutine and awaits them.
     overrides_for_agent = {cfg.name: permission_overrides} if permission_overrides else {}
@@ -235,7 +252,7 @@ def assemble_agent(
 
     # 5. OllamaClient + kc-core Agent. cfg.model wins over default_model when present.
     model = cfg.model or default_model
-    ollama_client = OllamaClient(base_url=ollama_url, model=model)
+    ollama_client = OllamaClient(base_url=ollama_url, model=model, api_key=ollama_api_key)
 
     # If memory is wired, prepend the formatted prefix to the system prompt.
     # ws_routes.py refreshes this per-turn so updates are visible across turns
@@ -251,7 +268,7 @@ def assemble_agent(
         client=ollama_client,
         system_prompt=effective_system_prompt,
         tools=registry,
-        permission_check=make_audit_aware_callback(engine, agent_name=cfg.name),
+        permission_check=make_audit_aware_callback(engine, agent_name=cfg.name, storage=audit_storage),
     )
 
     return AssembledAgent(
