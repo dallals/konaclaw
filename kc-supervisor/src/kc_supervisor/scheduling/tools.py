@@ -15,20 +15,28 @@ def build_scheduling_tools(
     The supervisor binds this per-conversation when the agent is invoked.
     """
 
-    def _schedule_reminder(when: str, content: str) -> dict:
+    def _schedule_reminder(
+        when: str, content: str,
+        target_channel: str = "current", mode: str = "literal",
+    ) -> dict:
         ctx = current_context()
         return service.schedule_one_shot(
             when=when, content=content,
             conversation_id=ctx["conversation_id"],
             channel=ctx["channel"], chat_id=ctx["chat_id"], agent=ctx["agent"],
+            target_channel=target_channel, mode=mode,
         )
 
-    def _schedule_cron(cron: str, content: str) -> dict:
+    def _schedule_cron(
+        cron: str, content: str,
+        target_channel: str = "current", mode: str = "literal",
+    ) -> dict:
         ctx = current_context()
         return service.schedule_cron(
             cron=cron, content=content,
             conversation_id=ctx["conversation_id"],
             channel=ctx["channel"], chat_id=ctx["chat_id"], agent=ctx["agent"],
+            target_channel=target_channel, mode=mode,
         )
 
     def _list_reminders(active_only: bool = True) -> dict:
@@ -58,7 +66,19 @@ def build_scheduling_tools(
                 "type": "object",
                 "properties": {
                     "when": {"type": "string", "description": "natural-language time"},
-                    "content": {"type": "string", "description": "reminder text (1-4000 chars)"},
+                    "content": {"type": "string", "description": "reminder text (1-4000 chars). When mode='agent_phrased', interpreted as an internal trigger description for you, not the literal text the user sees."},
+                    "target_channel": {
+                        "type": "string",
+                        "enum": ["current", "telegram", "dashboard", "imessage"],
+                        "description": "Use only when the user explicitly asks to be reminded somewhere other than this conversation. Channels not in the configured allowlist will raise. Default 'current'.",
+                        "default": "current",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["literal", "agent_phrased"],
+                        "description": "If 'agent_phrased', you will be re-invoked at fire time to compose the actual message. The 'content' arg is then a trigger description for you, not user-facing text. Default 'literal'.",
+                        "default": "literal",
+                    },
                 },
                 "required": ["when", "content"],
             },
@@ -77,7 +97,19 @@ def build_scheduling_tools(
                 "type": "object",
                 "properties": {
                     "cron": {"type": "string", "description": "5-field cron expression"},
-                    "content": {"type": "string", "description": "reminder text (1-4000 chars)"},
+                    "content": {"type": "string", "description": "reminder text (1-4000 chars). When mode='agent_phrased', interpreted as an internal trigger description for you, not the literal text the user sees."},
+                    "target_channel": {
+                        "type": "string",
+                        "enum": ["current", "telegram", "dashboard", "imessage"],
+                        "description": "Use only when the user explicitly asks to be reminded somewhere other than this conversation. Channels not in the configured allowlist will raise. Default 'current'.",
+                        "default": "current",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["literal", "agent_phrased"],
+                        "description": "If 'agent_phrased', you will be re-invoked at fire time to compose the actual message. The 'content' arg is then a trigger description for you, not user-facing text. Default 'literal'.",
+                        "default": "literal",
+                    },
                 },
                 "required": ["cron", "content"],
             },
