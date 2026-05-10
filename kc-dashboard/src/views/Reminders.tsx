@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   listReminders,
   cancelReminder as cancelReminderApi,
+  snoozeReminder as snoozeReminderApi,
   type Reminder,
   type ReminderKind,
   type ReminderStatus,
@@ -18,6 +19,12 @@ const CHANNEL_LABEL: Record<ReminderChannel, string> = {
 };
 
 type KindTab = "all" | "reminder" | "cron";
+
+const QUICK_OFFSETS_SEC: Array<[string, number]> = [
+  ["+15m", 15 * 60],
+  ["+1h", 60 * 60],
+  ["+1d", 24 * 60 * 60],
+];
 
 function parseKindTab(s: string | null): KindTab {
   return s === "reminder" || s === "cron" ? s : "all";
@@ -42,9 +49,15 @@ export default function Reminders() {
   const qc = useQueryClient();
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [confirmingCancelId, setConfirmingCancelId] = useState<number | null>(null);
+  const [snoozeOpenId, setSnoozeOpenId] = useState<number | null>(null);
   const [params, setParams] = useSearchParams();
   const cancelMut = useMutation({
     mutationFn: (id: number) => cancelReminderApi(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["reminders"] }),
+  });
+  const snoozeMut = useMutation({
+    mutationFn: (vars: { id: number; when_utc: number }) =>
+      snoozeReminderApi(vars.id, vars.when_utc),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["reminders"] }),
   });
   const tab = parseKindTab(params.get("tab"));
@@ -145,6 +158,13 @@ export default function Reminders() {
                   {r.status}
                 </span>
               )}
+              {r.kind === "reminder" && r.status === "pending" && (
+                <button
+                  aria-label="snooze reminder"
+                  onClick={(e) => { e.stopPropagation(); setSnoozeOpenId(snoozeOpenId === r.id ? null : r.id); }}
+                  className="text-muted hover:text-text px-2"
+                >⏱</button>
+              )}
               {r.status === "pending" && confirmingCancelId !== r.id && (
                 <button
                   aria-label="cancel reminder"
@@ -173,6 +193,33 @@ export default function Reminders() {
                   <div>Cron <span className="text-text">{r.cron_spec}</span></div>
                 )}
                 <div>Attempts <span className="text-text">{r.attempts}</span>{r.last_fired_at && <> · last fired <span className="text-text">{new Date(r.last_fired_at * 1000).toLocaleString()}</span></>}</div>
+              </div>
+            )}
+            {snoozeOpenId === r.id && (
+              <div onClick={(e) => e.stopPropagation()}
+                   className="bg-panel2 border border-line p-3 mb-2 flex flex-wrap gap-2 items-center">
+                <span className="text-muted text-[11px] uppercase tracking-[0.1em] mr-1">Snooze</span>
+                {QUICK_OFFSETS_SEC.map(([label, secs]) => (
+                  <button
+                    key={label}
+                    onClick={() => {
+                      snoozeMut.mutate({ id: r.id, when_utc: Date.now() / 1000 + secs });
+                      setSnoozeOpenId(null);
+                    }}
+                    className="px-2 py-0.5 text-[10px] border border-line hover:border-accent"
+                  >{label}</button>
+                ))}
+                <input
+                  type="datetime-local"
+                  onChange={(e) => {
+                    const ts = new Date(e.target.value).getTime() / 1000;
+                    if (!isNaN(ts)) {
+                      snoozeMut.mutate({ id: r.id, when_utc: ts });
+                      setSnoozeOpenId(null);
+                    }
+                  }}
+                  className="bg-bg border border-line px-2 py-0.5 text-[11px]"
+                />
               </div>
             )}
           </li>

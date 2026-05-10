@@ -84,4 +84,24 @@ describe("Reminders view", () => {
     fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
     await waitFor(() => expect(cancelReminder).toHaveBeenCalledWith(1));
   });
+
+  it("snooze +15m chip calls snoozeReminder with a future when_utc", async () => {
+    const { snoozeReminder } = await import("../api/reminders");
+    renderView();
+    await waitFor(() => screen.getByText("stretch"));
+    fireEvent.click(screen.getByRole("button", { name: /snooze reminder/i }));
+    fireEvent.click(screen.getByRole("button", { name: /\+15m/i }));
+    await waitFor(() => {
+      expect(snoozeReminder).toHaveBeenCalled();
+      const [id, when] = (snoozeReminder as any).mock.calls.at(-1);
+      expect(id).toBe(1);
+      expect(when).toBeGreaterThan(Date.now() / 1000);
+    });
+  });
+
+  it("snooze button is hidden on cron rows", async () => {
+    renderView();
+    await waitFor(() => screen.getByText("standup"));
+    expect(screen.getAllByRole("button", { name: /snooze reminder/i })).toHaveLength(1);
+  });
 });
