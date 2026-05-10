@@ -279,6 +279,20 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def set_message_scheduled_job_id(
+        self, *, message_id: int, scheduled_job_id: int
+    ) -> None:
+        """Stamp a scheduled_job_id onto an existing message row.
+
+        No-op if the message row doesn't exist; raises sqlite3.IntegrityError
+        if the scheduled_job_id is unknown (FK violation).
+        """
+        with self.connect() as c:
+            c.execute(
+                "UPDATE messages SET scheduled_job_id=? WHERE id=?",
+                (scheduled_job_id, message_id),
+            )
+
     # ----- audit -----
 
     def append_audit(
