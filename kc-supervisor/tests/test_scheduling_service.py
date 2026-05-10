@@ -305,6 +305,24 @@ def test_cancel_reminder_scoped_to_conversation(tmp_path):
         svc.shutdown()
 
 
+def test_cancel_soft_deletes_marking_status_cancelled(tmp_path):
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(
+            when="in 1 hour", content="ping",
+            conversation_id=cid, channel="telegram", chat_id="C1", agent="kona",
+        )
+        job_id = res["id"]
+        svc.cancel_reminder(str(job_id), conversation_id=cid, scope="user")
+
+        row = storage.get_scheduled_job(job_id)
+        assert row is not None, "row must persist after cancel"
+        assert row["status"] == "cancelled"
+    finally:
+        svc.shutdown()
+
+
 def test_schedule_one_shot_target_channel_uses_routing(tmp_path):
     from kc_supervisor.storage import Storage
     from kc_supervisor.scheduling.service import ScheduleService

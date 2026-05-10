@@ -283,8 +283,8 @@ class ScheduleService:
             try:
                 self._scheduler.remove_job(str(r["id"]))
             except Exception:
-                logger.debug("APS job %s not found; deleting DB row anyway", r["id"])
-            self.storage.delete_scheduled_job(r["id"])
+                logger.debug("APS job %s not found; updating DB row anyway", r["id"])
+            self.storage.update_scheduled_job_status(r["id"], "cancelled")
             cancelled.append({"id": r["id"], "content": r["payload"]})
         return {"ambiguous": False, "candidates": [], "cancelled": cancelled}
 
