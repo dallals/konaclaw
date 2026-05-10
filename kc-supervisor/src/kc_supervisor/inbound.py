@@ -62,12 +62,9 @@ class InboundRouter:
                            agent_name, rt.last_error)
             return
 
-        storage = self.conversations.s
-        cid = storage.get_conv_for_chat(env.channel, env.chat_id, agent_name)
-        if cid is None or storage.get_conversation(cid) is None:
-            cid = self.conversations.start(agent=agent_name, channel=env.channel)
-            storage.set_conversation_title(cid, f"{env.channel}:{env.chat_id}")
-            storage.put_conv_for_chat(env.channel, env.chat_id, agent_name, cid)
+        cid = self.conversations.get_or_create(
+            channel=env.channel, chat_id=env.chat_id, agent=agent_name,
+        )
 
         lock = self.conv_locks.get(cid)
         async with lock:

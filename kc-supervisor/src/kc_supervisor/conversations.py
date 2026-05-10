@@ -25,6 +25,21 @@ class ConversationManager:
     def start(self, agent: str, channel: str) -> int:
         return self.s.create_conversation(agent=agent, channel=channel)
 
+    def get_or_create(self, *, channel: str, chat_id: str, agent: str) -> int:
+        """Resolve the conversation id for a (channel, chat_id, agent) triple.
+
+        If a mapping exists and the conversation still exists, returns it.
+        Otherwise creates a new conversation, sets its title to ``channel:chat_id``,
+        and writes the mapping. Mirrors the pattern used by InboundRouter.
+        """
+        existing = self.s.get_conv_for_chat(channel, chat_id, agent)
+        if existing is not None and self.s.get_conversation(existing) is not None:
+            return existing
+        new_cid = self.s.create_conversation(agent=agent, channel=channel)
+        self.s.set_conversation_title(new_cid, f"{channel}:{chat_id}")
+        self.s.put_conv_for_chat(channel, chat_id, agent, new_cid)
+        return new_cid
+
     def list_for_agent(self, agent: str) -> list[dict]:
         return self.s.list_conversations(agent=agent)
 
