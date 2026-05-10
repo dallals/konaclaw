@@ -13,6 +13,7 @@ from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.locks import ConversationLocks
 from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
 from kc_supervisor.storage import Storage
+from kc_skills import SkillIndex
 
 if TYPE_CHECKING:
     from kc_supervisor.scheduling.service import ScheduleService
@@ -74,6 +75,7 @@ class Deps:
     # startup hook below so it picks up the running event loop.
     schedule_service: Optional["ScheduleService"] = None
     reminders_broadcaster: Optional[RemindersBroadcaster] = None
+    skill_index: Optional[SkillIndex] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:
