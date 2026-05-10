@@ -43,6 +43,29 @@ class ReminderRunner:
             logger.warning("ReminderRunner.fire: job %s not found; skipping", job_id)
             return
         prefixed = PREFIX + (row["payload"] or "")
+
+        # Dashboard channel: no connector — persist directly. The user will see
+        # the bubble on next message refresh.
+        if row["channel"] == "dashboard":
+            try:
+                self.conversations.append(
+                    row["conversation_id"], AssistantMessage(content=prefixed),
+                )
+            except Exception:
+                logger.exception(
+                    "ReminderRunner.fire: dashboard persist failed for job %s", job_id,
+                )
+                self.storage.update_scheduled_job_after_fire(
+                    job_id, fired_at=time.time(), new_status="failed",
+                )
+                return
+            new_status = "done" if row["kind"] == "reminder" else "pending"
+            self.storage.update_scheduled_job_after_fire(
+                job_id, fired_at=time.time(), new_status=new_status,
+            )
+            return
+
+        # Other channels (telegram, imessage, …): connector send + persist.
         try:
             connector = self.connector_registry.get(row["channel"])
             self._run_coro(connector.send(row["chat_id"], prefixed))

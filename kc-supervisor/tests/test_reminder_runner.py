@@ -114,3 +114,43 @@ def test_fire_cron_connector_failure_marks_failed(tmp_path):
     runner.fire(job_id)
     row = s.get_scheduled_job(job_id)
     assert row["status"] == "failed"
+
+
+def test_fire_dashboard_channel_persists_without_connector(tmp_path):
+    """Dashboard reminders skip the connector and persist directly."""
+    runner, s, cm, registry = _make_runner(tmp_path)
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    job_id = s.add_scheduled_job(
+        kind="reminder", agent="kona", conversation_id=cid,
+        channel="dashboard", chat_id=f"dashboard:{cid}",
+        payload="dashboard reminder",
+        when_utc=time.time() + 60, cron_spec=None,
+    )
+    runner.fire(job_id)
+    # Connector NOT called
+    connector = registry.get.return_value
+    connector.send.assert_not_called()
+    # AssistantMessage IS persisted
+    cm.append.assert_called_once()
+    args = cm.append.call_args.args
+    assert args[1].content == "⏰ dashboard reminder"
+    # Status flipped to done
+    row = s.get_scheduled_job(job_id)
+    assert row["status"] == "done"
+
+
+def test_fire_dashboard_persist_failure_marks_failed(tmp_path):
+    """Dashboard reminders that fail to persist should be marked failed (since
+    persist IS the user-visible side effect for this channel)."""
+    runner, s, cm, registry = _make_runner(tmp_path)
+    cm.append.side_effect = Exception("DB lock")
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    job_id = s.add_scheduled_job(
+        kind="reminder", agent="kona", conversation_id=cid,
+        channel="dashboard", chat_id=f"dashboard:{cid}",
+        payload="x",
+        when_utc=time.time() + 60, cron_spec=None,
+    )
+    runner.fire(job_id)
+    row = s.get_scheduled_job(job_id)
+    assert row["status"] == "failed"
