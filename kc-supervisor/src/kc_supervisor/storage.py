@@ -72,6 +72,25 @@ CREATE TABLE IF NOT EXISTS connector_conv_map (
     PRIMARY KEY (channel, chat_id, agent),
     FOREIGN KEY (conv_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    conversation_id INTEGER NOT NULL,
+    channel TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    when_utc REAL,
+    cron_spec TEXT,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_fired_at REAL,
+    created_at REAL NOT NULL,
+    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_jobs_status ON scheduled_jobs(status);
+CREATE INDEX IF NOT EXISTS ix_jobs_conv ON scheduled_jobs(conversation_id);
 """
 
 
@@ -332,3 +351,77 @@ class Storage:
                 (audit_id,),
             ).fetchone()
         return row["undo_op_id"] if row else None
+
+    # ----- scheduled jobs -----
+
+    def add_scheduled_job(
+        self,
+        *,
+        kind: str,
+        agent: str,
+        conversation_id: int,
+        channel: str,
+        chat_id: str,
+        payload: str,
+        when_utc: Optional[float],
+        cron_spec: Optional[str],
+    ) -> int:
+        with self.connect() as c:
+            cur = c.execute(
+                "INSERT INTO scheduled_jobs "
+                "(kind, agent, conversation_id, channel, chat_id, payload, "
+                " when_utc, cron_spec, status, attempts, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?, 'pending', 0, ?)",
+                (kind, agent, conversation_id, channel, chat_id, payload,
+                 when_utc, cron_spec, time.time()),
+            )
+            return int(cur.lastrowid)
+
+    def get_scheduled_job(self, job_id: int) -> Optional[dict]:
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT * FROM scheduled_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_scheduled_jobs(
+        self,
+        conversation_id: Optional[int] = None,
+        statuses: Optional[tuple[str, ...]] = None,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if conversation_id is not None:
+            clauses.append("conversation_id=?")
+            params.append(conversation_id)
+        if statuses is not None:
+            placeholders = ",".join("?" * len(statuses))
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = f"SELECT * FROM scheduled_jobs {where} ORDER BY id ASC"
+        with self.connect() as c:
+            rows = c.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_scheduled_job_status(self, job_id: int, status: str) -> None:
+        with self.connect() as c:
+            c.execute(
+                "UPDATE scheduled_jobs SET status=? WHERE id=?",
+                (status, job_id),
+            )
+
+    def update_scheduled_job_after_fire(
+        self, job_id: int, *, fired_at: float, new_status: str,
+    ) -> None:
+        with self.connect() as c:
+            c.execute(
+                "UPDATE scheduled_jobs SET last_fired_at=?, attempts=attempts+1, status=? "
+                "WHERE id=?",
+                (fired_at, new_status, job_id),
+            )
+
+    def delete_scheduled_job(self, job_id: int) -> int:
+        with self.connect() as c:
+            cur = c.execute("DELETE FROM scheduled_jobs WHERE id=?", (job_id,))
+            return cur.rowcount

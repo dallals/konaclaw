@@ -109,3 +109,13 @@ Restart the supervisor.
 - [ ] After a successful chat turn, the SQLite messages table for the AssistantMessage row has a non-NULL `usage_json` column whose JSON parses to `{input_tokens, output_tokens, ttfb_ms, generation_ms, calls, usage_reported}`.
 - [ ] After a turn that errored mid-stream (e.g. kill the model server during reply), no AssistantMessage row is written and no `{type:"usage"}` WS frame is sent.
 - [ ] An inbound (Telegram) reply also persists `usage_json` on its AssistantMessage row.
+
+## reminders & cron — Phase 1 (added 2026-05-09)
+
+- [ ] On Telegram, ask Kona "remind me in 2 minutes to test reminder fire". 2 minutes later Telegram receives `⏰ test reminder fire`. The dashboard chat for that conversation shows the same string in an assistant bubble.
+- [ ] On the dashboard, ask Kona "remind me in 1 minute to test dashboard fire". 1 minute later the chat view shows `⏰ test dashboard fire` as a new bubble.
+- [ ] Schedule a daily cron: "every weekday at 9am remind me to check email". Confirm the agent's reply has `human_summary` like "every weekday at 09:00". The next 9am the reminder fires.
+- [ ] Schedule a reminder, restart the supervisor, confirm with `SELECT * FROM scheduled_jobs WHERE status='pending'` that the row is intact, then wait for the original due time — the reminder still fires.
+- [ ] Cancel by description: schedule "dinner reminder", say "cancel the dinner reminder". Agent confirms cancellation. `SELECT * FROM scheduled_jobs` shows the row is gone.
+- [ ] Disambiguation flow: schedule "meeting prep" and "meeting notes", say "cancel the meeting one". Agent gets `ambiguous=True` and asks which. Cancel by ID. Confirm only the chosen one is removed.
+- [ ] Confirm scheduling tools are NOT available to non-Kona agents: inspect any non-Kona agent's tool list (via the dashboard's Agents view) and verify the four scheduling tools (`schedule_reminder`, `schedule_cron`, `list_reminders`, `cancel_reminder`) are absent.

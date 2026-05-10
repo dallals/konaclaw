@@ -303,6 +303,44 @@ def main() -> None:
         deps.restart_telegram = _make_restart("telegram", _telegram_holder, _build_telegram)
         deps.restart_imessage = _make_restart("imessage", _imessage_holder, _build_imessage)
 
+    # Phase-1 scheduling. Constructed here but started inside FastAPI's startup
+    # hook (see service.py) so it picks up the running event loop. The
+    # ReminderRunner bridges from APS's worker thread back to the FastAPI event
+    # loop captured at startup.
+    import asyncio as _asyncio_sched
+    import tzlocal as _tzlocal
+    from kc_supervisor.scheduling.service import ScheduleService
+    from kc_supervisor.scheduling.runner import ReminderRunner, set_active_runner
+
+    _tz_name = str(_tzlocal.get_localzone())
+
+    def _coroutine_runner(coro):
+        if deps.event_loop is None:
+            raise RuntimeError("ScheduleService fired before FastAPI startup")
+        fut = _asyncio_sched.run_coroutine_threadsafe(coro, deps.event_loop)
+        return fut.result(timeout=30)
+
+    _reminder_runner = ReminderRunner(
+        storage=deps.storage,
+        conversations=deps.conversations,
+        connector_registry=deps.connector_registry,
+        coroutine_runner=_coroutine_runner,
+    )
+    # Register as the module-level active runner so APS's pickled module-level
+    # `fire_reminder` can dispatch to this instance. (See runner.py for why we
+    # avoid bound methods in APS jobstores.)
+    set_active_runner(_reminder_runner)
+    deps.schedule_service = ScheduleService(
+        storage=deps.storage,
+        runner=_reminder_runner,
+        db_path=home / "data" / "konaclaw.db",
+        timezone=_tz_name,
+    )
+    # Now that schedule_service exists, wire it into the AgentRegistry and
+    # reload so Kona's AssembledAgent picks up the four scheduling tools.
+    registry.schedule_service = deps.schedule_service
+    registry.load_all()
+
     app = create_app(deps)
     uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("KC_PORT", "8765")))
 

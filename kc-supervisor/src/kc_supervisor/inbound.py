@@ -95,6 +95,13 @@ class InboundRouter:
                 "calls": 0,
                 "usage_reported": True,
             }
+            from kc_supervisor.scheduling.context import set_current_context
+            set_current_context({
+                "conversation_id": cid,
+                "channel": env.channel,
+                "chat_id": env.chat_id,
+                "agent": rt.name,
+            })
             try:
                 async for frame in rt.assembled.core_agent.send_stream(env.content):
                     if isinstance(frame, TokenDelta):
