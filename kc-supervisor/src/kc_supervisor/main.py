@@ -332,6 +332,10 @@ def main() -> None:
         db_path=home / "data" / "konaclaw.db",
         timezone=_tz_name,
     )
+    # Now that schedule_service exists, wire it into the AgentRegistry and
+    # reload so Kona's AssembledAgent picks up the four scheduling tools.
+    registry.schedule_service = deps.schedule_service
+    registry.load_all()
 
     app = create_app(deps)
     uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("KC_PORT", "8765")))

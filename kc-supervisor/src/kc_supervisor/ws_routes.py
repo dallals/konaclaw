@@ -142,6 +142,13 @@ def register_ws_routes(app: FastAPI) -> None:
                         "calls": 0,
                         "usage_reported": True,
                     }
+                    from kc_supervisor.scheduling.context import set_current_context
+                    set_current_context({
+                        "conversation_id": conversation_id,
+                        "channel": "dashboard",
+                        "chat_id": f"dashboard:{conversation_id}",
+                        "agent": rt.name,
+                    })
                     try:
                         async for frame in rt.assembled.core_agent.send_stream(content):
                             if isinstance(frame, TokenDelta):

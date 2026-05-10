@@ -63,6 +63,7 @@ def assemble_agent(
     gcal_service: Optional[Any] = None,
     news_client: Optional[Any] = None,
     ollama_api_key: Optional[str] = None,
+    schedule_service: Optional[Any] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -238,6 +239,19 @@ def assemble_agent(
         for tool in build_news_tools(client=news_client).values():
             registry.register(tool)
             tier_map[tool.name] = Tier.SAFE
+
+    # Phase-1 scheduling tools — registered ONLY on Kona.
+    if cfg.name == "kona" and schedule_service is not None:
+        from kc_supervisor.scheduling import build_scheduling_tools
+        from kc_supervisor.scheduling.context import get_current_context
+
+        scheduling_tools = build_scheduling_tools(
+            service=schedule_service,
+            current_context=get_current_context,
+        )
+        for t in scheduling_tools:
+            registry.register(t)
+            tier_map[t.name] = Tier.SAFE
 
     # 4. PermissionEngine. broker.request_approval is async; the engine's
     # check_async detects coroutines via inspect.iscoroutine and awaits them.
