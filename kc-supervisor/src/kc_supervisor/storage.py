@@ -470,6 +470,13 @@ class Storage:
                 (fired_at, new_status, job_id),
             )
 
+    def update_scheduled_job_when(self, job_id: int, when_utc: float) -> None:
+        with self.connect() as c:
+            c.execute(
+                "UPDATE scheduled_jobs SET when_utc=? WHERE id=?",
+                (when_utc, job_id),
+            )
+
     def delete_scheduled_job(self, job_id: int) -> int:
         with self.connect() as c:
             cur = c.execute("DELETE FROM scheduled_jobs WHERE id=?", (job_id,))

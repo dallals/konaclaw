@@ -725,3 +725,75 @@ def test_list_all_reminders_sort_order(tmp_path):
         assert ids.index(near["id"]) < ids.index(far["id"])
     finally:
         svc.shutdown()
+
+
+def test_snooze_reschedules_pending_oneshot(tmp_path):
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(
+            when="in 1 hour", content="x", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        new_when = time.time() + 3600 * 3  # 3 hours from now
+        out = svc.snooze_reminder(reminder_id=res["id"], when_utc=new_when)
+        assert out["id"] == res["id"]
+        row = storage.get_scheduled_job(res["id"])
+        assert abs(row["when_utc"] - new_when) < 1.0
+        # APS job rescheduled to same job id
+        aps = svc._scheduler.get_job(str(res["id"]))
+        assert aps is not None
+        assert abs(aps.next_run_time.timestamp() - new_when) < 1.0
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_rejects_non_pending(tmp_path):
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        svc.cancel_reminder(str(res["id"]), conversation_id=cid, scope="user")
+        with pytest.raises(ValueError, match="already_fired|cancelled|not pending"):
+            svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() + 3600)
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_rejects_cron(tmp_path):
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_cron(cron="0 9 * * *", content="x", conversation_id=cid,
+                                channel="dashboard", chat_id="c1", agent="kona")
+        with pytest.raises(ValueError, match="cron_not_snoozable"):
+            svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() + 3600)
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_rejects_past_time(tmp_path):
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        with pytest.raises(ValueError, match="past"):
+            svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() - 60)
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_unknown_id_raises(tmp_path):
+    import time
+    svc, _ = _make_service(tmp_path)
+    try:
+        with pytest.raises(LookupError):
+            svc.snooze_reminder(reminder_id=999999, when_utc=time.time() + 3600)
+    finally:
+        svc.shutdown()

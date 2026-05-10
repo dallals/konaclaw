@@ -320,6 +320,45 @@ class ScheduleService:
             }
         return self._do_cancel(matches)
 
+    def snooze_reminder(self, *, reminder_id: int, when_utc: float) -> dict:
+        """Reschedule a pending one-shot to a new fire time. Updates the DB row
+        first, then the APS trigger; on APS failure, restores the prior when_utc
+        so DB and APS stay consistent.
+
+        Raises:
+          LookupError — id not found
+          ValueError("cron_not_snoozable: id=N") — row is a cron
+          ValueError("past_when_utc: T") — target time is not in the future
+          ValueError("not pending: <status>") — row is no longer pending
+        """
+        import time
+        row = self.storage.get_scheduled_job(reminder_id)
+        if row is None:
+            raise LookupError(f"reminder {reminder_id} not found")
+        if row["kind"] != "reminder":
+            raise ValueError(f"cron_not_snoozable: id={reminder_id}")
+        if row["status"] != "pending":
+            raise ValueError(f"not pending: {row['status']}")
+        if when_utc <= time.time():
+            raise ValueError(f"past_when_utc: {when_utc}")
+
+        # SQLite's autocommit-on-success / rollback-on-error is per-statement
+        # under isolation_level=None (see storage.connect()), so we can't wrap
+        # both writes in a transaction. Compensating-write approach: update DB
+        # first; if APS modify_job raises, restore the prior when_utc.
+        self.storage.update_scheduled_job_when(reminder_id, when_utc)
+        try:
+            new_run_dt = datetime.fromtimestamp(when_utc, tz=_tz_mod.utc)
+            self._scheduler.reschedule_job(
+                str(reminder_id),
+                trigger=DateTrigger(run_date=new_run_dt),
+            )
+        except Exception:
+            self.storage.update_scheduled_job_when(reminder_id, row["when_utc"])
+            raise
+
+        return {"id": reminder_id, "when_utc": when_utc}
+
     def _do_cancel(self, rows: list[dict]) -> dict:
         cancelled: list[dict] = []
         for r in rows:
