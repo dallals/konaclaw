@@ -116,6 +116,58 @@ def test_cancel_reminder_tool_invocation(tmp_path):
         svc.shutdown()
 
 
+def test_scheduling_tools_not_registered_on_non_kona(tmp_path):
+    """Phase 1 invariant: only Kona gets the scheduling tools."""
+    import yaml
+    from kc_core.config import AgentConfig
+    from kc_sandbox.shares import SharesRegistry
+    from kc_supervisor.approvals import ApprovalBroker
+    from kc_supervisor.assembly import assemble_agent
+
+    # Construct a real ScheduleService so the gate's `schedule_service is not None`
+    # branch CAN fire — we want to assert the cfg.name=="kona" gate, not the
+    # service-presence gate.
+    home = tmp_path / "kc-home"
+    (home / "config").mkdir(parents=True)
+    (home / "data").mkdir(parents=True)
+    (home / "shares" / "main").mkdir(parents=True)
+    (home / "config" / "shares.yaml").write_text(yaml.safe_dump({
+        "shares": [{"name": "main", "path": str(home / "shares" / "main"), "mode": "read-write"}],
+    }))
+
+    storage = Storage(home / "data" / "kc.db")
+    storage.init()
+    runner = MagicMock()
+    svc = ScheduleService(
+        storage=storage, runner=runner, db_path=home / "data" / "kc.db",
+        timezone="America/Los_Angeles",
+    )
+
+    broker = ApprovalBroker()
+    shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
+    cfg_alice = AgentConfig(name="alice", model="qwen2.5:7b", system_prompt="I am alice.")
+
+    try:
+        assembled_alice = assemble_agent(
+            cfg=cfg_alice,
+            shares=shares,
+            audit_storage=storage,
+            broker=broker,
+            ollama_url="http://localhost:11434",
+            default_model="qwen2.5:7b",
+            undo_db_path=home / "data" / "undo.db",
+            schedule_service=svc,
+        )
+        tool_names = set(assembled_alice.registry.names())
+        scheduling = {"schedule_reminder", "schedule_cron",
+                      "list_reminders", "cancel_reminder"}
+        assert scheduling.isdisjoint(tool_names), (
+            f"Non-Kona agent has scheduling tools: {tool_names & scheduling}"
+        )
+    finally:
+        svc.shutdown()
+
+
 def test_cancel_reminder_ambiguous(tmp_path):
     svc, s = _make_service(tmp_path)
     cid = _seed_conv(s)
