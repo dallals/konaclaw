@@ -10,6 +10,7 @@ const tabs = [
   { to: "/audit",       label: "Audit",       num: "05" },
   { to: "/monitor",     label: "Monitor",     num: "06" },
   { to: "/reminders",   label: "Reminders",   num: "07" },
+  { to: "/skills",      label: "Skills",      num: "08" },
 ];
 
 export default function App() {
