@@ -18,6 +18,7 @@ from cron_descriptor import get_description
 from kc_supervisor.storage import Storage
 from kc_supervisor.scheduling.runner import fire_reminder
 from kc_supervisor.scheduling.timeparse import parse_when, is_past, humanize
+from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
 
 
 logger = logging.getLogger(__name__)
@@ -43,10 +44,12 @@ class ScheduleService:
         runner: _RunnerLike,
         db_path: Path,
         timezone: str,
+        broadcaster: Optional[RemindersBroadcaster] = None,
     ) -> None:
         self.storage = storage
         self.runner = runner
         self._tz = timezone
+        self._broadcaster = broadcaster
         sqlalchemy_url = f"sqlite:///{db_path}"
         self._scheduler = AsyncIOScheduler(
             jobstores={
@@ -55,6 +58,15 @@ class ScheduleService:
             },
             timezone=timezone,
         )
+
+    def _publish(self, event_type: str, reminder_id: int) -> None:
+        if self._broadcaster is None:
+            return
+        row = self.storage.get_scheduled_job(reminder_id)
+        if row is None:
+            return  # raced with deletion (shouldn't happen post-Phase-3 since we soft-cancel)
+        enriched = self._enrich_row(row)
+        self._broadcaster.publish(event_type, enriched)
 
     def start(self) -> None:
         if not self._scheduler.running:
@@ -146,6 +158,7 @@ class ScheduleService:
             self.storage.delete_scheduled_job(job_id)
             raise
 
+        self._publish("reminder.created", job_id)
         return {
             "id": job_id,
             "fires_at": target.isoformat(),
@@ -216,6 +229,7 @@ class ScheduleService:
             self.storage.delete_scheduled_job(job_id)
             raise
 
+        self._publish("reminder.created", job_id)
         return {
             "id": job_id,
             "next_fire": next_fire.isoformat() if next_fire else None,
@@ -377,6 +391,7 @@ class ScheduleService:
                 )
             raise
 
+        self._publish("reminder.snoozed", reminder_id)
         return {"id": reminder_id, "when_utc": when_utc}
 
     def _do_cancel(self, rows: list[dict]) -> dict:
@@ -388,6 +403,8 @@ class ScheduleService:
                 logger.debug("APS job %s not found; updating DB row anyway", r["id"])
             self.storage.update_scheduled_job_status(r["id"], "cancelled")
             cancelled.append({"id": r["id"], "content": r["payload"]})
+        for c in cancelled:
+            self._publish("reminder.cancelled", c["id"])
         return {"ambiguous": False, "candidates": [], "cancelled": cancelled}
 
     def _row_to_view(self, row: dict) -> dict:

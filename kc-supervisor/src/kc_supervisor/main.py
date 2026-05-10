@@ -347,6 +347,7 @@ def main() -> None:
         runner=_reminder_runner,
         db_path=home / "data" / "konaclaw.db",
         timezone=_tz_name,
+        broadcaster=deps.reminders_broadcaster,
     )
     # Now that schedule_service exists, wire it into the AgentRegistry and
     # reload so Kona's AssembledAgent picks up the four scheduling tools.
