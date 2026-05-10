@@ -8,6 +8,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.jobstores.memory import MemoryJobStore
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.cron import CronTrigger
 
@@ -353,8 +354,27 @@ class ScheduleService:
                 str(reminder_id),
                 trigger=DateTrigger(run_date=new_run_dt),
             )
+        except JobLookupError:
+            # APS row missing for an existing DB mirror — reconcile by rolling back
+            # and surfacing as LookupError so callers handle it like "not found".
+            try:
+                self.storage.update_scheduled_job_when(reminder_id, row["when_utc"])
+            except Exception:
+                logger.exception(
+                    "snooze rollback failed for reminder %s after JobLookupError",
+                    reminder_id,
+                )
+            raise LookupError(f"reminder {reminder_id} has no APS job")
         except Exception:
-            self.storage.update_scheduled_job_when(reminder_id, row["when_utc"])
+            # Other APS failure — restore prior when_utc to keep DB+APS consistent.
+            try:
+                self.storage.update_scheduled_job_when(reminder_id, row["when_utc"])
+            except Exception:
+                logger.exception(
+                    "snooze rollback failed for reminder %s: DB has when_utc=%s, "
+                    "APS still has prior trigger; manual reconciliation needed",
+                    reminder_id, when_utc,
+                )
             raise
 
         return {"id": reminder_id, "when_utc": when_utc}

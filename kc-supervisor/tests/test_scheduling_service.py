@@ -797,3 +797,49 @@ def test_snooze_unknown_id_raises(tmp_path):
             svc.snooze_reminder(reminder_id=999999, when_utc=time.time() + 3600)
     finally:
         svc.shutdown()
+
+
+def test_snooze_aps_failure_restores_prior_when_utc(tmp_path, monkeypatch):
+    """If APS reschedule_job raises a non-JobLookupError, the DB row's when_utc
+    must be restored so DB and APS stay consistent."""
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        prior_when = storage.get_scheduled_job(res["id"])["when_utc"]
+
+        def boom(*a, **kw):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(svc._scheduler, "reschedule_job", boom)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() + 3600 * 5)
+
+        # DB should be back to the original when_utc
+        assert storage.get_scheduled_job(res["id"])["when_utc"] == prior_when
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_orphaned_aps_job_raises_lookup_error(tmp_path):
+    """If the APS job is missing but the DB row exists, snooze raises LookupError
+    (not the leaky apscheduler.jobstores.base.JobLookupError)."""
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        # Remove the APS job out from under the DB row
+        svc._scheduler.remove_job(str(res["id"]))
+        prior_when = storage.get_scheduled_job(res["id"])["when_utc"]
+
+        with pytest.raises(LookupError):
+            svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() + 3600 * 5)
+
+        # DB row's when_utc rolled back to prior value
+        assert storage.get_scheduled_job(res["id"])["when_utc"] == prior_when
+    finally:
+        svc.shutdown()
