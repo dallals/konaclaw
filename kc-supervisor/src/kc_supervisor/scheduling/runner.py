@@ -10,6 +10,31 @@ from kc_supervisor.storage import Storage
 logger = logging.getLogger(__name__)
 PREFIX = "⏰ "
 
+
+def _filter_tools(tools: Any, *, exclude: set[str]) -> Any:
+    """Return a tool registry-like view that hides tools whose names are in `exclude`.
+
+    The kc-core agent reads tools via `.to_openai_schema()`, `.names()`, and
+    `.invoke(name, args)`. The proxy delegates each, filtering by name.
+    """
+    class _Filtered:
+        def __init__(self, inner: Any, blocked: set[str]) -> None:
+            self._inner = inner
+            self._blocked = blocked
+        def names(self) -> list[str]:
+            return [n for n in self._inner.names() if n not in self._blocked]
+        def to_openai_schema(self) -> list:
+            return [
+                t for t in self._inner.to_openai_schema()
+                if (t.get("function", {}).get("name") if isinstance(t, dict) else None) not in self._blocked
+            ]
+        def invoke(self, name: str, args: dict) -> Any:
+            if name in self._blocked:
+                raise ValueError(f"tool {name!r} is unavailable in this context")
+            return self._inner.invoke(name, args)
+    return _Filtered(tools, exclude)
+
+
 CoroRunner = Callable[[Coroutine], Any]
 
 
@@ -23,6 +48,13 @@ class ReminderRunner:
     (because APS triggers run in a worker thread, not the event loop). Tests
     pass `lambda c: asyncio.run(c)` directly.
     """
+
+    _AGENT_PHRASED_ADDENDUM = (
+        "\n\nYou are responding to a scheduled reminder you set for the user. "
+        "The trigger description follows. Compose a single friendly message — "
+        "do not mention this is a reminder fire unless the trigger asks you to."
+    )
+    _STRIPPED_TOOL_NAMES = {"schedule_reminder", "schedule_cron", "cancel_reminder"}
 
     def __init__(
         self,
@@ -106,6 +138,76 @@ class ReminderRunner:
         self.storage.update_scheduled_job_after_fire(
             job_id, fired_at=time.time(), new_status=new_status,
         )
+
+    def _compose_agent_phrased(self, row: dict, *, dest_conv_id: int) -> Optional[str]:
+        """Run a fire-time agent turn for an agent_phrased row. Returns the agent's
+        final assistant text, or None on failure (caller marks the row failed)."""
+        if self.agent_registry is None:
+            logger.error(
+                "agent_phrased fire requires agent_registry (job %s)", row["id"],
+            )
+            return None
+        runtime = self.agent_registry.get(row["agent"])
+        if runtime is None or runtime.assembled is None:
+            logger.error(
+                "agent_phrased fire: agent %s not found / degraded (job %s)",
+                row["agent"], row["id"],
+            )
+            return None
+
+        core = runtime.assembled.core_agent
+        original_tools = core.tools
+        original_system_prompt = core.system_prompt
+        try:
+            history = self.conversations.list_messages(dest_conv_id)
+            core.history = list(history)
+            core.system_prompt = (
+                runtime.assembled.base_system_prompt + self._AGENT_PHRASED_ADDENDUM
+            )
+            core.tools = _filter_tools(original_tools, exclude=self._STRIPPED_TOOL_NAMES)
+
+            from kc_supervisor.scheduling.context import set_current_context
+            set_current_context({
+                "conversation_id": dest_conv_id,
+                "channel": row["channel"],
+                "chat_id": row["chat_id"],
+                "agent": row["agent"],
+            })
+
+            scheduled_iso = (
+                f"{row['when_utc']}" if row["when_utc"] else (row["cron_spec"] or "?")
+            )
+            now_iso = f"{time.time():.0f}"
+            trigger = (
+                f"[Internal trigger — scheduled at {scheduled_iso}, "
+                f"fired at {now_iso}] {row['payload']}"
+            )
+
+            async def _run() -> Optional[str]:
+                final_text: Optional[str] = None
+                async for frame in core.send_stream(trigger):
+                    reply = getattr(frame, "reply", None)
+                    if isinstance(reply, AssistantMessage):
+                        final_text = reply.content
+                return final_text
+
+            try:
+                reply_text = self._run_coro(_run())
+            except Exception:
+                logger.exception(
+                    "agent_phrased turn raised for job %s", row["id"],
+                )
+                return None
+
+            if not reply_text or not reply_text.strip():
+                logger.warning(
+                    "agent_phrased turn returned empty text for job %s", row["id"],
+                )
+                return None
+            return reply_text
+        finally:
+            core.tools = original_tools
+            core.system_prompt = original_system_prompt
 
 
 # ---- Module-level fire callable ----
