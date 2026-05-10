@@ -424,8 +424,11 @@ class Storage:
 
     def list_scheduled_jobs(
         self,
+        *,
         conversation_id: Optional[int] = None,
         statuses: Optional[tuple[str, ...]] = None,
+        kinds: Optional[tuple[str, ...]] = None,
+        channels: Optional[tuple[str, ...]] = None,
     ) -> list[dict]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -436,6 +439,14 @@ class Storage:
             placeholders = ",".join("?" * len(statuses))
             clauses.append(f"status IN ({placeholders})")
             params.extend(statuses)
+        if kinds is not None:
+            placeholders = ",".join("?" * len(kinds))
+            clauses.append(f"kind IN ({placeholders})")
+            params.extend(kinds)
+        if channels is not None:
+            placeholders = ",".join("?" * len(channels))
+            clauses.append(f"channel IN ({placeholders})")
+            params.extend(channels)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"SELECT * FROM scheduled_jobs {where} ORDER BY id ASC"
         with self.connect() as c:

@@ -240,6 +240,49 @@ class ScheduleService:
             rows = self.storage.list_scheduled_jobs(statuses=statuses)
         return {"reminders": [self._row_to_view(r) for r in rows]}
 
+    def list_all_reminders(
+        self,
+        *,
+        statuses: Optional[list[str]] = None,
+        kinds: Optional[list[str]] = None,
+        channels: Optional[list[str]] = None,
+    ) -> dict:
+        """Global list (all conversations). Returns full rows plus next_fire_at.
+
+        `next_fire_at` is `when_utc` for one-shots, the next APS trigger time
+        (epoch seconds) for crons, or None if no future fire time can be
+        computed (e.g., a misconfigured cron). Sort: next_fire_at ASC NULLS
+        LAST, then created_at DESC.
+        """
+        rows = self.storage.list_scheduled_jobs(
+            statuses=tuple(statuses) if statuses else None,
+            kinds=tuple(kinds) if kinds else None,
+            channels=tuple(channels) if channels else None,
+        )
+        enriched = [self._enrich_row(r) for r in rows]
+        enriched.sort(key=lambda r: (
+            r["next_fire_at"] is None,                     # NULLS LAST
+            r["next_fire_at"] if r["next_fire_at"] else 0,
+            -(r["created_at"] or 0),                       # created_at DESC tiebreak
+        ))
+        return {"reminders": enriched}
+
+    def _enrich_row(self, row: dict) -> dict:
+        """Add server-computed next_fire_at to a scheduled_jobs row."""
+        nfa: Optional[float]
+        if row["kind"] == "reminder":
+            nfa = row["when_utc"]
+        elif row["kind"] == "cron" and row["cron_spec"]:
+            try:
+                trigger = CronTrigger.from_crontab(row["cron_spec"], timezone=self._tz)
+                nxt = trigger.get_next_fire_time(None, datetime.now(_tz_mod.utc))
+                nfa = nxt.timestamp() if nxt is not None else None
+            except Exception:
+                nfa = None
+        else:
+            nfa = None
+        return {**row, "next_fire_at": nfa}
+
     def cancel_reminder(
         self, id_or_description: str, *, conversation_id: int,
         scope: str = "user",

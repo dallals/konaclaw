@@ -610,3 +610,90 @@ def test_cancel_reminder_invalid_scope_raises(tmp_path):
     svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
     with pytest.raises(ValueError, match="unknown scope"):
         svc.cancel_reminder("x", conversation_id=cid, scope="bogus")
+
+
+def test_list_all_reminders_returns_full_rows_with_next_fire_at(tmp_path):
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        one = svc.schedule_one_shot(
+            when="in 1 hour", content="A", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        cron = svc.schedule_cron(
+            cron="0 9 * * *", content="B", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        out = svc.list_all_reminders()
+        ids = [r["id"] for r in out["reminders"]]
+        assert one["id"] in ids and cron["id"] in ids
+        for r in out["reminders"]:
+            assert {
+                "id", "kind", "payload", "status", "channel", "chat_id",
+                "when_utc", "cron_spec", "attempts", "last_fired_at",
+                "created_at", "mode", "agent", "conversation_id",
+            } <= set(r.keys())
+            assert "next_fire_at" in r
+            if r["kind"] == "reminder":
+                assert r["next_fire_at"] == r["when_utc"]
+            else:
+                assert isinstance(r["next_fire_at"], (int, float))
+    finally:
+        svc.shutdown()
+
+
+def test_list_all_reminders_filters_by_status(tmp_path):
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        a = svc.schedule_one_shot(
+            when="in 1 hour", content="x", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        svc.cancel_reminder(str(a["id"]), conversation_id=cid, scope="user")
+        pending = svc.list_all_reminders(statuses=["pending"])
+        cancelled = svc.list_all_reminders(statuses=["cancelled"])
+        assert all(r["status"] == "pending" for r in pending["reminders"])
+        assert all(r["status"] == "cancelled" for r in cancelled["reminders"])
+        assert a["id"] in [r["id"] for r in cancelled["reminders"]]
+    finally:
+        svc.shutdown()
+
+
+def test_list_all_reminders_filters_by_kind_and_channel(tmp_path):
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        svc.schedule_one_shot(
+            when="in 1 hour", content="o", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        svc.schedule_cron(
+            cron="0 9 * * *", content="c", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        only_oneshot = svc.list_all_reminders(kinds=["reminder"])
+        assert all(r["kind"] == "reminder" for r in only_oneshot["reminders"])
+        only_cron = svc.list_all_reminders(kinds=["cron"])
+        assert all(r["kind"] == "cron" for r in only_cron["reminders"])
+    finally:
+        svc.shutdown()
+
+
+def test_list_all_reminders_sort_order(tmp_path):
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        far = svc.schedule_one_shot(
+            when="in 3 hours", content="far", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        near = svc.schedule_one_shot(
+            when="in 30 minutes", content="near", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        rows = svc.list_all_reminders(statuses=["pending"])["reminders"]
+        ids = [r["id"] for r in rows]
+        assert ids.index(near["id"]) < ids.index(far["id"])
+    finally:
+        svc.shutdown()
