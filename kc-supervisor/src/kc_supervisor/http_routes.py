@@ -31,6 +31,10 @@ class CreateConversationRequest(BaseModel):
     channel: str = "dashboard"
 
 
+class SnoozeRequest(BaseModel):
+    when_utc: float
+
+
 class UpdateConversationRequest(BaseModel):
     pinned: Optional[bool] = None
     title: Optional[str] = None  # explicit "" clears the title
@@ -387,3 +391,44 @@ def register_http_routes(app: FastAPI) -> None:
                 )
 
         return svc.list_all_reminders(statuses=status, kinds=kind, channels=channel)
+
+    @app.delete("/reminders/{reminder_id}", status_code=204)
+    def delete_reminder_endpoint(reminder_id: int):
+        deps = app.state.deps
+        svc = deps.schedule_service
+        if svc is None:
+            raise HTTPException(status_code=503, detail="schedule_service unavailable")
+
+        row = deps.storage.get_scheduled_job(reminder_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"reminder {reminder_id} not found")
+        if row["status"] != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"reminder is already in terminal state: {row['status']}",
+            )
+        # Use the existing path through cancel_reminder so APS + DB stay in sync.
+        svc.cancel_reminder(str(reminder_id), conversation_id=row["conversation_id"], scope="user")
+        return None  # 204
+
+    @app.patch("/reminders/{reminder_id}")
+    def patch_reminder_endpoint(reminder_id: int, req: SnoozeRequest):
+        deps = app.state.deps
+        svc = deps.schedule_service
+        if svc is None:
+            raise HTTPException(status_code=503, detail="schedule_service unavailable")
+        try:
+            svc.snooze_reminder(reminder_id=reminder_id, when_utc=req.when_utc)
+        except LookupError:
+            raise HTTPException(status_code=404, detail=f"reminder {reminder_id} not found")
+        except ValueError as e:
+            msg = str(e)
+            if "cron_not_snoozable" in msg:
+                raise HTTPException(status_code=409, detail={"code": "cron_not_snoozable"})
+            if "not pending" in msg:
+                raise HTTPException(status_code=409, detail={"code": "already_fired", "message": msg})
+            if "past_when_utc" in msg:
+                raise HTTPException(status_code=422, detail={"code": "past_when_utc"})
+            raise
+        row = deps.storage.get_scheduled_job(reminder_id)
+        return svc._enrich_row(dict(row))

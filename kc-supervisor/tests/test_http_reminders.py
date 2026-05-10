@@ -51,3 +51,71 @@ def test_get_reminders_503_when_no_scheduler(app):
     with TestClient(app) as client:
         r = client.get("/reminders")
         assert r.status_code == 503
+
+
+def test_delete_reminder_cancels_pending(app_with_scheduler, deps_with_scheduler):
+    svc = deps_with_scheduler.schedule_service
+    res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=1,
+                                channel="dashboard", chat_id="c1", agent="alice")
+    with TestClient(app_with_scheduler) as client:
+        r = client.delete(f"/reminders/{res['id']}")
+        assert r.status_code == 204
+    row = deps_with_scheduler.storage.get_scheduled_job(res["id"])
+    assert row["status"] == "cancelled"
+
+
+def test_delete_reminder_unknown_id_returns_404(app_with_scheduler):
+    with TestClient(app_with_scheduler) as client:
+        r = client.delete("/reminders/999999")
+        assert r.status_code == 404
+
+
+def test_delete_reminder_already_cancelled_returns_409(app_with_scheduler, deps_with_scheduler):
+    svc = deps_with_scheduler.schedule_service
+    res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=1,
+                                channel="dashboard", chat_id="c1", agent="alice")
+    with TestClient(app_with_scheduler) as client:
+        client.delete(f"/reminders/{res['id']}")
+        r = client.delete(f"/reminders/{res['id']}")
+        assert r.status_code == 409
+
+
+def test_patch_reminder_snoozes(app_with_scheduler, deps_with_scheduler):
+    import time
+    svc = deps_with_scheduler.schedule_service
+    res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=1,
+                                channel="dashboard", chat_id="c1", agent="alice")
+    new_when = time.time() + 3600 * 3
+    with TestClient(app_with_scheduler) as client:
+        r = client.patch(f"/reminders/{res['id']}", json={"when_utc": new_when})
+        assert r.status_code == 200
+        body = r.json()
+        assert abs(body["when_utc"] - new_when) < 1.0
+
+
+def test_patch_reminder_cron_returns_409(app_with_scheduler, deps_with_scheduler):
+    import time
+    svc = deps_with_scheduler.schedule_service
+    res = svc.schedule_cron(cron="0 9 * * *", content="x", conversation_id=1,
+                            channel="dashboard", chat_id="c1", agent="alice")
+    with TestClient(app_with_scheduler) as client:
+        r = client.patch(f"/reminders/{res['id']}", json={"when_utc": time.time() + 3600})
+        assert r.status_code == 409
+        assert r.json().get("detail", {}).get("code") == "cron_not_snoozable"
+
+
+def test_patch_reminder_past_time_returns_422(app_with_scheduler, deps_with_scheduler):
+    import time
+    svc = deps_with_scheduler.schedule_service
+    res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=1,
+                                channel="dashboard", chat_id="c1", agent="alice")
+    with TestClient(app_with_scheduler) as client:
+        r = client.patch(f"/reminders/{res['id']}", json={"when_utc": time.time() - 60})
+        assert r.status_code == 422
+
+
+def test_patch_reminder_unknown_returns_404(app_with_scheduler):
+    import time
+    with TestClient(app_with_scheduler) as client:
+        r = client.patch("/reminders/999999", json={"when_utc": time.time() + 3600})
+        assert r.status_code == 404
