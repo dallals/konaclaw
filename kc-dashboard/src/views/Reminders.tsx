@@ -38,6 +38,7 @@ function formatNextFire(r: Reminder): string {
 
 export default function Reminders() {
   useReminderEvents();
+  const [expandedId, setExpandedId] = useState<number | null>(null);
   const [params, setParams] = useSearchParams();
   const tab = parseKindTab(params.get("tab"));
   const statuses = (params.getAll("status") as ReminderStatus[]).filter(s => ALL_STATUSES.includes(s));
@@ -122,18 +123,30 @@ export default function Reminders() {
 
       <ul className="divide-y divide-line">
         {reminders.map(r => (
-          <li key={r.id} className="flex items-center gap-3 py-2 font-mono text-xs">
-            <span className="w-32 text-muted">{formatNextFire(r)}</span>
-            <span className={"px-1.5 py-0.5 text-[9px] tracking-[0.1em] uppercase border "
-              + (r.kind === "cron" ? "border-accent text-accent" : "border-line text-muted")}>
-              {r.kind === "cron" ? "CRON" : "ONE-SHOT"}
-            </span>
-            <span className="flex-1 text-text truncate" title={r.payload}>{r.payload}</span>
-            <span className="text-muted2">{CHANNEL_LABEL[r.channel]}</span>
-            {r.status !== "pending" && (
-              <span className="px-1.5 py-0.5 text-[9px] tracking-[0.1em] uppercase border border-line text-muted">
-                {r.status}
+          <li key={r.id} className="font-mono text-xs">
+            <div className="flex items-center gap-3 py-2 cursor-pointer"
+                 onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}>
+              <span className="w-32 text-muted">{formatNextFire(r)}</span>
+              <span className={"px-1.5 py-0.5 text-[9px] tracking-[0.1em] uppercase border "
+                + (r.kind === "cron" ? "border-accent text-accent" : "border-line text-muted")}>
+                {r.kind === "cron" ? "CRON" : "ONE-SHOT"}
               </span>
+              <span className="flex-1 text-text truncate" title={r.payload}>{r.payload}</span>
+              <span className="text-muted2">{CHANNEL_LABEL[r.channel]}</span>
+              {r.status !== "pending" && (
+                <span className="px-1.5 py-0.5 text-[9px] tracking-[0.1em] uppercase border border-line text-muted">
+                  {r.status}
+                </span>
+              )}
+            </div>
+            {expandedId === r.id && (
+              <div className="bg-panel2 border-l-2 border-accent px-4 py-3 mb-2 text-muted text-[11px] space-y-1">
+                <div>Created at <span className="text-text">{new Date(r.created_at * 1000).toLocaleString()}</span> by <span className="text-text">{r.agent}</span> via <span className="text-text">{r.channel}</span></div>
+                {r.kind === "cron" && r.cron_spec && (
+                  <div>Cron <span className="text-text">{r.cron_spec}</span></div>
+                )}
+                <div>Attempts <span className="text-text">{r.attempts}</span>{r.last_fired_at && <> · last fired <span className="text-text">{new Date(r.last_fired_at * 1000).toLocaleString()}</span></>}</div>
+              </div>
             )}
           </li>
         ))}

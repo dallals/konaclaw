@@ -65,4 +65,14 @@ describe("Reminders view", () => {
       expect(lastCall.statuses).toEqual(["pending"]);
     });
   });
+
+  it("clicking a row toggles the audit panel", async () => {
+    renderView();
+    await waitFor(() => screen.getByText("stretch"));
+    expect(screen.queryByText(/Created at/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("stretch"));
+    expect(screen.getByText(/Created at/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("stretch"));
+    expect(screen.queryByText(/Created at/)).not.toBeInTheDocument();
+  });
 });
