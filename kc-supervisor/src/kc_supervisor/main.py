@@ -229,6 +229,11 @@ def main() -> None:
         google_token_path=Path(google_token_path_str),
         news_client=news_client,
     )
+    # Always wire the registry to deps so ReminderRunner.fire() can call
+    # connector_registry.get(channel) at fire time. The InboundRouter still
+    # requires routing_table + at least one connector — only it stays gated.
+    if connector_registry is not None:
+        deps.connector_registry = connector_registry
     # InboundRouter is created after Deps so it has access to the same
     # registry/conversations/conv_locks. Stored on Deps so service.py can
     # start connectors at FastAPI startup.
@@ -241,7 +246,6 @@ def main() -> None:
             routing_table=routing_table,
             connector_registry=connector_registry,
         )
-        deps.connector_registry = connector_registry
 
     # Hot-restart hooks for PATCH /connectors/{name} (Task 7 of v0.2.1).
     # The hook is sync (called from a sync FastAPI handler in a threadpool),

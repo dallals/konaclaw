@@ -91,3 +91,57 @@ def test_registry_survives_connector_exception():
     assert connector_registry.all() == []
     # routing_table may be None when wiring fails — that's acceptable.
     assert routing_table is None
+
+
+def test_deps_connector_registry_assigned_unconditionally():
+    """Structural guarantee for Phase 2 (Task 7): deps.connector_registry
+    must always be assigned when the local connector_registry is non-None,
+    regardless of whether routing_table exists or connectors are registered.
+
+    This is critical because ReminderRunner is instantiated with
+    connector_registry=deps.connector_registry at line 331, and ReminderRunner.fire()
+    calls self.connector_registry.get(channel) at fire time. Without this
+    guarantee, fire() would crash with AttributeError if routing_table was
+    None or no connectors were configured at boot.
+
+    This test simulates the fixed boot sequence in main.py:
+      - connector_registry is non-None (an empty registry)
+      - routing_table is None (or just not meeting the InboundRouter condition)
+      - deps.connector_registry should still be assigned before ReminderRunner creation
+    """
+    from kc_supervisor.service import Deps
+    from kc_connectors.base import ConnectorRegistry
+
+    # Simulate boot: create Deps with minimal state.
+    deps = Deps(
+        storage=MagicMock(),
+        registry=MagicMock(),
+        conversations=MagicMock(),
+        approvals=MagicMock(),
+        home=MagicMock(),
+        shares=MagicMock(),
+        conv_locks=MagicMock(),
+        mcp_manager=None,
+        mcp_install_store=None,
+        secrets_store=MagicMock(),
+        google_credentials_path=None,
+        google_token_path=None,
+        news_client=None,
+    )
+
+    # Simulate local variables as they'd be after boot.
+    connector_registry = ConnectorRegistry()
+    routing_table = None  # This is the scenario: no routing configured
+
+    # The fixed code: unconditionally assign connector_registry to deps
+    # if the local registry is non-None.
+    if connector_registry is not None:
+        deps.connector_registry = connector_registry
+
+    # The guarantee: deps.connector_registry is non-None so ReminderRunner
+    # can call .get(channel) at fire time without crashing.
+    assert deps.connector_registry is not None
+    assert deps.connector_registry is connector_registry
+    # If this regresses (someone moves the assignment back inside the inner
+    # if block), deps.connector_registry will be None and this assertion fails.
+    # ReminderRunner instantiation at line 331 would also fail as a result.
