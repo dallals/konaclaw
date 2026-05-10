@@ -119,3 +119,20 @@ def test_patch_reminder_unknown_returns_404(app_with_scheduler):
     with TestClient(app_with_scheduler) as client:
         r = client.patch("/reminders/999999", json={"when_utc": time.time() + 3600})
         assert r.status_code == 404
+
+
+def test_patch_reminder_already_fired_returns_409(app_with_scheduler, deps_with_scheduler):
+    """If the reminder's status is no longer pending (e.g., done/failed/cancelled),
+    PATCH returns 409 with code=already_fired."""
+    import time
+    svc = deps_with_scheduler.schedule_service
+    res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=1,
+                                channel="dashboard", chat_id="c1", agent="alice")
+    # Mark the reminder as done out-of-band to simulate a fired-then-snoozed race.
+    deps_with_scheduler.storage.update_scheduled_job_status(res["id"], "done")
+    with TestClient(app_with_scheduler) as client:
+        r = client.patch(f"/reminders/{res['id']}", json={"when_utc": time.time() + 3600})
+        assert r.status_code == 409
+        body = r.json()
+        assert body["detail"]["code"] == "already_fired"
+        assert "message" in body["detail"]
