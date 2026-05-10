@@ -42,14 +42,29 @@ class ReminderRunner:
         if row is None:
             logger.warning("ReminderRunner.fire: job %s not found; skipping", job_id)
             return
-        prefixed = PREFIX + (row["payload"] or "")
 
-        # Dashboard channel: no connector — persist directly. The user will see
-        # the bubble on next message refresh.
+        # Resolve destination conversation. For same-channel rows this returns
+        # row["conversation_id"]; for cross-channel rows, the conversation
+        # belonging to the destination chat (created on demand).
+        try:
+            dest_conv_id = self.conversations.get_or_create(
+                channel=row["channel"], chat_id=row["chat_id"], agent=row["agent"],
+            )
+        except Exception:
+            logger.exception(
+                "ReminderRunner.fire: get_or_create destination failed for job %s", job_id,
+            )
+            self.storage.update_scheduled_job_after_fire(
+                job_id, fired_at=time.time(), new_status="failed",
+            )
+            return
+
+        text = PREFIX + (row["payload"] or "")  # mode branch added in Task 6.3
+
         if row["channel"] == "dashboard":
             try:
                 self.conversations.append(
-                    row["conversation_id"], AssistantMessage(content=prefixed),
+                    dest_conv_id, AssistantMessage(content=text),
                 )
             except Exception:
                 logger.exception(
@@ -65,10 +80,9 @@ class ReminderRunner:
             )
             return
 
-        # Other channels (telegram, imessage, …): connector send + persist.
         try:
             connector = self.connector_registry.get(row["channel"])
-            self._run_coro(connector.send(row["chat_id"], prefixed))
+            self._run_coro(connector.send(row["chat_id"], text))
         except Exception:
             logger.exception(
                 "ReminderRunner.fire: connector send failed for job %s", job_id,
@@ -79,7 +93,7 @@ class ReminderRunner:
             return
         try:
             self.conversations.append(
-                row["conversation_id"], AssistantMessage(content=prefixed),
+                dest_conv_id, AssistantMessage(content=text),
             )
         except Exception:
             logger.exception(
