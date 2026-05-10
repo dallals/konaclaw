@@ -300,7 +300,7 @@ def test_cancel_reminder_scoped_to_conversation(tmp_path):
             conversation_id=cid_a, channel="telegram", chat_id="C1", agent="kona",
         )
         with pytest.raises(ValueError):
-            svc.cancel_reminder(str(r["id"]), conversation_id=cid_b)
+            svc.cancel_reminder(str(r["id"]), conversation_id=cid_b, scope="conversation")
     finally:
         svc.shutdown()
 
@@ -542,3 +542,53 @@ def test_list_reminders_invalid_scope_raises(tmp_path):
     svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
     with pytest.raises(ValueError, match="unknown scope"):
         svc.list_reminders(conversation_id=cid, scope="bogus")
+
+
+def test_cancel_reminder_default_scope_user_finds_other_conversation(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid_a = s.create_conversation(agent="kona", channel="telegram")
+    cid_b = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    out = svc.schedule_one_shot(
+        when="in 1 hour", content="dinner",
+        conversation_id=cid_b, channel="dashboard", chat_id="ws-1", agent="kona",
+    )
+    # Cancel from conversation A — must find conversation B's reminder by description.
+    result = svc.cancel_reminder("dinner", conversation_id=cid_a)
+    assert result["ambiguous"] is False
+    assert len(result["cancelled"]) == 1
+
+
+def test_cancel_reminder_scope_conversation_only_sees_own(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    import pytest
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid_a = s.create_conversation(agent="kona", channel="telegram")
+    cid_b = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    svc.schedule_one_shot(
+        when="in 1 hour", content="dinner",
+        conversation_id=cid_b, channel="dashboard", chat_id="ws-1", agent="kona",
+    )
+    with pytest.raises(ValueError, match="no reminder matched"):
+        svc.cancel_reminder("dinner", conversation_id=cid_a, scope="conversation")
+
+
+def test_cancel_reminder_invalid_scope_raises(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    import pytest
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    with pytest.raises(ValueError, match="unknown scope"):
+        svc.cancel_reminder("x", conversation_id=cid, scope="bogus")

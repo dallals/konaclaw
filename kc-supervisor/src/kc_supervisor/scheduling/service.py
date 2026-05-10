@@ -242,13 +242,19 @@ class ScheduleService:
 
     def cancel_reminder(
         self, id_or_description: str, *, conversation_id: int,
+        scope: str = "user",
     ) -> dict:
         if not id_or_description:
             raise ValueError("id_or_description must not be empty")
+        if scope not in self._ALLOWED_SCOPES:
+            raise ValueError(f"unknown scope {scope!r}")
 
-        candidates = self.storage.list_scheduled_jobs(
-            conversation_id=conversation_id, statuses=("pending",),
-        )
+        if scope == "conversation":
+            candidates = self.storage.list_scheduled_jobs(
+                conversation_id=conversation_id, statuses=("pending",),
+            )
+        else:
+            candidates = self.storage.list_scheduled_jobs(statuses=("pending",))
 
         if id_or_description.strip().isdigit():
             target_id = int(id_or_description)
