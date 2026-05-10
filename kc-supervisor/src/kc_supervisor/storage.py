@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_call_json TEXT,
     usage_json TEXT,
     ts REAL NOT NULL,
+    scheduled_job_id INTEGER REFERENCES scheduled_jobs(id) ON DELETE SET NULL,
     FOREIGN KEY(conversation_id) REFERENCES conversations(id)
 );
 CREATE INDEX IF NOT EXISTS ix_msg_conv ON messages(conversation_id);
@@ -129,6 +130,18 @@ class Storage:
             msg_cols = {r["name"] for r in c.execute("PRAGMA table_info(messages)").fetchall()}
             if "usage_json" not in msg_cols:
                 c.execute("ALTER TABLE messages ADD COLUMN usage_json TEXT")
+            if "scheduled_job_id" not in msg_cols:
+                # SQLite requires the FK column have a NULL default when added via ALTER.
+                # PRAGMA foreign_keys = ON is set per-connection (see connect()), so
+                # ON DELETE SET NULL is enforced.
+                c.execute(
+                    "ALTER TABLE messages ADD COLUMN scheduled_job_id INTEGER "
+                    "REFERENCES scheduled_jobs(id) ON DELETE SET NULL"
+                )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_scheduled_job_id "
+                "ON messages(scheduled_job_id) WHERE scheduled_job_id IS NOT NULL"
+            )
             job_cols = {r["name"] for r in c.execute("PRAGMA table_info(scheduled_jobs)").fetchall()}
             if "mode" not in job_cols:
                 c.execute("ALTER TABLE scheduled_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'literal'")
