@@ -330,18 +330,19 @@ def main() -> None:
         fut = _asyncio_sched.run_coroutine_threadsafe(coro, deps.event_loop)
         return fut.result(timeout=30)
 
+    deps.reminders_broadcaster = RemindersBroadcaster()
     _reminder_runner = ReminderRunner(
         storage=deps.storage,
         conversations=deps.conversations,
         connector_registry=deps.connector_registry,
         coroutine_runner=_coroutine_runner,
         agent_registry=registry,
+        broadcaster=deps.reminders_broadcaster,
     )
     # Register as the module-level active runner so APS's pickled module-level
     # `fire_reminder` can dispatch to this instance. (See runner.py for why we
     # avoid bound methods in APS jobstores.)
     set_active_runner(_reminder_runner)
-    deps.reminders_broadcaster = RemindersBroadcaster()
     deps.schedule_service = ScheduleService(
         storage=deps.storage,
         runner=_reminder_runner,

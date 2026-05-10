@@ -4,6 +4,7 @@ import time
 from typing import Any, Callable, Coroutine, Optional
 
 from kc_core.messages import AssistantMessage
+from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
 from kc_supervisor.scheduling.context import set_current_context
 from kc_supervisor.storage import Storage
 
@@ -65,17 +66,34 @@ class ReminderRunner:
         connector_registry: Any,   # ConnectorRegistry
         coroutine_runner: CoroRunner,
         agent_registry: Optional[Any] = None,  # AgentRegistry; required for mode='agent_phrased'
+        broadcaster: Optional[RemindersBroadcaster] = None,
     ) -> None:
         self.storage = storage
         self.conversations = conversations
         self.connector_registry = connector_registry
         self._run_coro = coroutine_runner
         self.agent_registry = agent_registry
+        self._broadcaster = broadcaster
+
+    def _publish(self, event_type: str, job_id: int) -> None:
+        if self._broadcaster is None:
+            return
+        row = self.storage.get_scheduled_job(job_id)
+        if row is None:
+            return
+        self._broadcaster.publish(event_type, dict(row))
 
     def fire(self, job_id: int) -> None:
         row = self.storage.get_scheduled_job(job_id)
         if row is None:
             logger.warning("ReminderRunner.fire: job %s not found; skipping", job_id)
+            return
+
+        if row["status"] != "pending":
+            logger.info(
+                "ReminderRunner.fire: job %s has status=%r; skipping",
+                job_id, row["status"],
+            )
             return
 
         # Resolve destination conversation. For same-channel rows this returns
@@ -92,6 +110,7 @@ class ReminderRunner:
             self.storage.update_scheduled_job_after_fire(
                 job_id, fired_at=time.time(), new_status="failed",
             )
+            self._publish("reminder.failed", job_id)
             return
 
         if row["mode"] == "agent_phrased":
@@ -100,15 +119,20 @@ class ReminderRunner:
                 self.storage.update_scheduled_job_after_fire(
                     job_id, fired_at=time.time(), new_status="failed",
                 )
+                self._publish("reminder.failed", job_id)
                 return
         else:
             text = PREFIX + (row["payload"] or "")
 
         if row["channel"] == "dashboard":
             try:
-                self.conversations.append(
+                msg_id = self.conversations.append(
                     dest_conv_id, AssistantMessage(content=text),
                 )
+                if isinstance(msg_id, int):
+                    self.storage.set_message_scheduled_job_id(
+                        message_id=msg_id, scheduled_job_id=job_id,
+                    )
             except Exception:
                 logger.exception(
                     "ReminderRunner.fire: dashboard persist failed for job %s", job_id,
@@ -116,11 +140,13 @@ class ReminderRunner:
                 self.storage.update_scheduled_job_after_fire(
                     job_id, fired_at=time.time(), new_status="failed",
                 )
+                self._publish("reminder.failed", job_id)
                 return
             new_status = "done" if row["kind"] == "reminder" else "pending"
             self.storage.update_scheduled_job_after_fire(
                 job_id, fired_at=time.time(), new_status=new_status,
             )
+            self._publish("reminder.fired", job_id)
             return
 
         try:
@@ -133,11 +159,16 @@ class ReminderRunner:
             self.storage.update_scheduled_job_after_fire(
                 job_id, fired_at=time.time(), new_status="failed",
             )
+            self._publish("reminder.failed", job_id)
             return
         try:
-            self.conversations.append(
+            msg_id = self.conversations.append(
                 dest_conv_id, AssistantMessage(content=text),
             )
+            if isinstance(msg_id, int):
+                self.storage.set_message_scheduled_job_id(
+                    message_id=msg_id, scheduled_job_id=job_id,
+                )
         except Exception:
             logger.exception(
                 "ReminderRunner.fire: persist failed for job %s; user already received message",
@@ -147,6 +178,7 @@ class ReminderRunner:
         self.storage.update_scheduled_job_after_fire(
             job_id, fired_at=time.time(), new_status=new_status,
         )
+        self._publish("reminder.fired", job_id)
 
     def _compose_agent_phrased(self, row: dict, *, dest_conv_id: int) -> Optional[str]:
         """Run a fire-time agent turn for an agent_phrased row. Returns the agent's

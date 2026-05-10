@@ -7,7 +7,9 @@ from kc_supervisor.storage import Storage
 from kc_supervisor.scheduling.runner import ReminderRunner
 
 
-def _make_runner(tmp_path, *, agent_registry=None) -> tuple[ReminderRunner, Storage, MagicMock, MagicMock]:
+def _make_runner(
+    tmp_path, *, agent_registry=None, broadcaster=None, with_connector=True,
+) -> tuple[ReminderRunner, Storage, MagicMock, MagicMock]:
     s = Storage(tmp_path / "kc.db")
     s.init()
     cm = MagicMock()
@@ -18,14 +20,21 @@ def _make_runner(tmp_path, *, agent_registry=None) -> tuple[ReminderRunner, Stor
         s.get_conv_for_chat(channel, chat_id, agent)
         or s.create_conversation(agent=agent, channel=channel)
     )
+    # By default, append returns an int message id (mirrors real ConversationManager).
+    # Tests that override append (e.g., to raise) replace this entirely.
+    cm.append.return_value = 1
     connector_registry = MagicMock()
-    connector = MagicMock()
-    connector.send = AsyncMock()
-    connector_registry.get.return_value = connector
+    if with_connector:
+        connector = MagicMock()
+        connector.send = AsyncMock()
+        connector_registry.get.return_value = connector
+    else:
+        connector_registry.get.side_effect = KeyError("no connector for channel")
     runner = ReminderRunner(
         storage=s, conversations=cm, connector_registry=connector_registry,
         coroutine_runner=lambda c: asyncio.run(c),
         agent_registry=agent_registry,
+        broadcaster=broadcaster,
     )
     return runner, s, cm, connector_registry
 
@@ -521,3 +530,73 @@ def test_fire_agent_phrased_failure_marks_row_failed_no_dispatch(tmp_path):
     assert row["status"] == "failed"
     connector.send.assert_not_called()
     cm.append.assert_not_called()
+
+
+def test_fire_stamps_scheduled_job_id_on_assistant_message(tmp_path):
+    """fire() should stamp messages.scheduled_job_id with the job id of the
+    triggering scheduled_jobs row, so the chat-bubble badge can link back."""
+    runner, s, cm, _ = _make_runner(tmp_path)
+    # Use real ConversationManager so the message row actually persists.
+    from kc_supervisor.conversations import ConversationManager
+    real_cm = ConversationManager(s)
+    runner.conversations = real_cm
+    cid = s.create_conversation(agent="kona", channel="telegram")
+    s.put_conv_for_chat("telegram", "C1", "kona", cid)
+    job_id = s.add_scheduled_job(
+        kind="reminder", agent="kona", conversation_id=cid,
+        channel="telegram", chat_id="C1", payload="dinner",
+        when_utc=time.time() + 60, cron_spec=None,
+    )
+    runner.fire(job_id)
+    with s.connect() as c:
+        row = c.execute(
+            "SELECT id, scheduled_job_id FROM messages "
+            "WHERE conversation_id=? ORDER BY id DESC LIMIT 1",
+            (cid,),
+        ).fetchone()
+    assert row is not None, "no message persisted"
+    assert row["scheduled_job_id"] == job_id
+
+
+def test_fire_publishes_reminder_fired(tmp_path):
+    """A successful fire() should publish 'reminder.fired' through the broadcaster."""
+    from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
+    b = RemindersBroadcaster()
+    events: list[tuple[str, int]] = []
+    b.subscribe(lambda et, row: events.append((et, row["id"])))
+    runner, s, cm, _ = _make_runner(tmp_path, broadcaster=b)
+    job_id = _seed(s, cm)
+    runner.fire(job_id)
+    assert ("reminder.fired", job_id) in events
+
+
+def test_fire_failed_publishes_failed_event(tmp_path):
+    """When the connector fails (no connector for channel), fire() should publish
+    'reminder.failed' through the broadcaster."""
+    from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
+    b = RemindersBroadcaster()
+    events: list[tuple[str, int]] = []
+    b.subscribe(lambda et, row: events.append((et, row["id"])))
+    runner, s, cm, _ = _make_runner(tmp_path, broadcaster=b, with_connector=False)
+    job_id = _seed(s, cm)
+    runner.fire(job_id)
+    assert ("reminder.failed", job_id) in events
+
+
+def test_fire_skips_non_pending_row(tmp_path):
+    """If the DB row's status is not 'pending' (e.g., cancelled), fire() must
+    early-return without sending or persisting anything. Prevents firing
+    cancelled rows after Task 3's soft-cancel change."""
+    runner, s, cm, registry = _make_runner(tmp_path)
+    job_id = _seed(s, cm)
+    s.update_scheduled_job_status(job_id, "cancelled")
+    runner.fire(job_id)
+    # Connector NOT invoked.
+    connector = registry.get.return_value
+    connector.send.assert_not_called()
+    # No message persisted.
+    cm.append.assert_not_called()
+    # Status remains 'cancelled' (no update_scheduled_job_after_fire side effect).
+    row = s.get_scheduled_job(job_id)
+    assert row["status"] == "cancelled"
+    assert row["attempts"] == 0
