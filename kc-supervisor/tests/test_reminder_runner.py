@@ -128,9 +128,11 @@ def test_fire_dashboard_channel_persists_without_connector(tmp_path):
     """Dashboard reminders skip the connector and persist directly."""
     runner, s, cm, registry = _make_runner(tmp_path)
     cid = s.create_conversation(agent="kona", channel="dashboard")
+    chat_id = f"dashboard:{cid}"
+    s.put_conv_for_chat("dashboard", chat_id, "kona", cid)
     job_id = s.add_scheduled_job(
         kind="reminder", agent="kona", conversation_id=cid,
-        channel="dashboard", chat_id=f"dashboard:{cid}",
+        channel="dashboard", chat_id=chat_id,
         payload="dashboard reminder",
         when_utc=time.time() + 60, cron_spec=None,
     )
@@ -142,6 +144,9 @@ def test_fire_dashboard_channel_persists_without_connector(tmp_path):
     cm.append.assert_called_once()
     args = cm.append.call_args.args
     assert args[1].content == "⏰ dashboard reminder"
+    # Assert persisted to correct conversation
+    persisted_cid = cm.append.call_args.args[0]
+    assert persisted_cid == cid
     # Status flipped to done
     row = s.get_scheduled_job(job_id)
     assert row["status"] == "done"
