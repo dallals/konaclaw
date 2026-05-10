@@ -259,6 +259,7 @@ def main() -> None:
             conv_locks=conv_locks,
             routing_table=routing_table,
             connector_registry=connector_registry,
+            skill_index=deps.skill_index,
         )
 
     # Hot-restart hooks for PATCH /connectors/{name} (Task 7 of v0.2.1).

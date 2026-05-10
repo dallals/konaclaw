@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging
-from typing import Optional
+from typing import Any, Optional
 from kc_core.messages import (
     UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
 )
@@ -10,6 +10,7 @@ from kc_core.stream_frames import (
 from kc_supervisor.agents import AgentRegistry, AgentStatus
 from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.locks import ConversationLocks
+from kc_supervisor.skill_slash import resolve_slash_command
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +36,14 @@ class InboundRouter:
         conv_locks: ConversationLocks,
         routing_table,                  # kc_connectors.routing.RoutingTable
         connector_registry,             # kc_connectors.base.ConnectorRegistry
+        skill_index: Optional[Any] = None,
     ) -> None:
         self.registry = registry
         self.conversations = conversations
         self.conv_locks = conv_locks
         self.routing_table = routing_table
         self.connector_registry = connector_registry
+        self.skill_index = skill_index
 
     async def handle_inbound(self, env) -> None:
         """Run an agent turn for a single inbound MessageEnvelope.
@@ -68,6 +71,12 @@ class InboundRouter:
 
         lock = self.conv_locks.get(cid)
         async with lock:
+            agent_input = env.content
+            if self.skill_index is not None:
+                resolved = resolve_slash_command(env.content, skill_index=self.skill_index)
+                if resolved is not None:
+                    loaded, _ = resolved
+                    agent_input = loaded
             self.conversations.append(cid, UserMessage(content=env.content))
 
             history = self.conversations.list_messages(cid)
@@ -100,7 +109,7 @@ class InboundRouter:
                 "agent": rt.name,
             })
             try:
-                async for frame in rt.assembled.core_agent.send_stream(env.content):
+                async for frame in rt.assembled.core_agent.send_stream(agent_input):
                     if isinstance(frame, TokenDelta):
                         pass  # not bridged to channels
                     elif isinstance(frame, ToolCallStart):
