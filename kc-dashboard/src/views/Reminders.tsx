@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   listReminders,
+  cancelReminder as cancelReminderApi,
   type Reminder,
   type ReminderKind,
   type ReminderStatus,
@@ -38,8 +39,14 @@ function formatNextFire(r: Reminder): string {
 
 export default function Reminders() {
   useReminderEvents();
+  const qc = useQueryClient();
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [confirmingCancelId, setConfirmingCancelId] = useState<number | null>(null);
   const [params, setParams] = useSearchParams();
+  const cancelMut = useMutation({
+    mutationFn: (id: number) => cancelReminderApi(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["reminders"] }),
+  });
   const tab = parseKindTab(params.get("tab"));
   const statuses = (params.getAll("status") as ReminderStatus[]).filter(s => ALL_STATUSES.includes(s));
   const channels = (params.getAll("channel") as ReminderChannel[]).filter(c => ALL_CHANNELS.includes(c));
@@ -136,6 +143,26 @@ export default function Reminders() {
               {r.status !== "pending" && (
                 <span className="px-1.5 py-0.5 text-[9px] tracking-[0.1em] uppercase border border-line text-muted">
                   {r.status}
+                </span>
+              )}
+              {r.status === "pending" && confirmingCancelId !== r.id && (
+                <button
+                  aria-label="cancel reminder"
+                  onClick={(e) => { e.stopPropagation(); setConfirmingCancelId(r.id); }}
+                  className="text-muted hover:text-bad px-2"
+                >×</button>
+              )}
+              {confirmingCancelId === r.id && (
+                <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  <span className="text-muted">Cancel?</span>
+                  <button
+                    onClick={() => { cancelMut.mutate(r.id); setConfirmingCancelId(null); }}
+                    className="px-2 py-0.5 text-[10px] uppercase tracking-[0.1em] border border-bad text-bad"
+                  >Confirm</button>
+                  <button
+                    onClick={() => setConfirmingCancelId(null)}
+                    className="px-2 py-0.5 text-[10px] uppercase tracking-[0.1em] border border-line text-muted"
+                  >Keep</button>
                 </span>
               )}
             </div>

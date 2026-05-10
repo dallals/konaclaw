@@ -75,4 +75,13 @@ describe("Reminders view", () => {
     fireEvent.click(screen.getByText("stretch"));
     expect(screen.queryByText(/Created at/)).not.toBeInTheDocument();
   });
+
+  it("clicking cancel + confirm calls cancelReminder", async () => {
+    const { cancelReminder } = await import("../api/reminders");
+    renderView();
+    await waitFor(() => screen.getByText("stretch"));
+    fireEvent.click(screen.getAllByRole("button", { name: /cancel reminder/i })[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+    await waitFor(() => expect(cancelReminder).toHaveBeenCalledWith(1));
+  });
 });
