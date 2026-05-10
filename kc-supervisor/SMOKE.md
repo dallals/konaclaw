@@ -119,3 +119,24 @@ Restart the supervisor.
 - [ ] Cancel by description: schedule "dinner reminder", say "cancel the dinner reminder". Agent confirms cancellation. `SELECT * FROM scheduled_jobs` shows the row is gone.
 - [ ] Disambiguation flow: schedule "meeting prep" and "meeting notes", say "cancel the meeting one". Agent gets `ambiguous=True` and asks which. Cancel by ID. Confirm only the chosen one is removed.
 - [ ] Confirm scheduling tools are NOT available to non-Kona agents: inspect any non-Kona agent's tool list (via the dashboard's Agents view) and verify the four scheduling tools (`schedule_reminder`, `schedule_cron`, `list_reminders`, `cancel_reminder`) are absent.
+
+## Reminders Phase 2 — manual smoke gates (post-merge)
+
+Pre-req: `channel_routing` table seeded with `telegram → 8627206839 (enabled)`.
+Run via: `python -m kc_supervisor channel-routing add --db <KC_DB_PATH> telegram 8627206839`
+
+1. **Literal cross-channel dashboard → telegram.**
+   In the dashboard chat: "Kona, set a reminder on Telegram in 2 minutes saying 'phase 2 smoke 1'".
+   Wait 2 minutes. Verify: a Telegram message arrives reading "⏰ phase 2 smoke 1".
+
+2. **Agent-phrased same-channel on dashboard.**
+   In the dashboard chat: "Kona, in 2 minutes use agent-phrased mode to remind me about my standup notes".
+   Wait 2 minutes. Verify: a freshly composed message appears in the dashboard (NOT prefixed with ⏰), with text the model wrote at fire time. Run the same scenario twice — composed text should differ across runs (it's a new model call each time).
+
+3. **Agent-phrased cross-channel telegram → dashboard.**
+   In the Telegram chat: "Kona, agent-phrase a reminder to my dashboard in 2 minutes about checking the build".
+   Wait 2 minutes. Verify: a composed message appears in the dashboard chat thread (NOT in the Telegram chat), without ⏰ prefix.
+
+4. **Disabled-channel safety.**
+   Run: `python -m kc_supervisor channel-routing disable --db <KC_DB_PATH> telegram`.
+   Schedule a NEW cross-channel reminder to telegram from the dashboard. Verify: the agent surfaces an error like "channel 'telegram' is disabled". Re-enable: `python -m kc_supervisor channel-routing add --db <KC_DB_PATH> telegram 8627206839`. Verify any in-flight reminder scheduled BEFORE the disable still fires (already-scheduled rows are immune to allowlist toggles).
