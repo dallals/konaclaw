@@ -375,15 +375,16 @@ class Storage:
         payload: str,
         when_utc: Optional[float],
         cron_spec: Optional[str],
+        mode: str = "literal",
     ) -> int:
         with self.connect() as c:
             cur = c.execute(
                 "INSERT INTO scheduled_jobs "
                 "(kind, agent, conversation_id, channel, chat_id, payload, "
-                " when_utc, cron_spec, status, attempts, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?, 'pending', 0, ?)",
+                " when_utc, cron_spec, status, attempts, created_at, mode) "
+                "VALUES (?,?,?,?,?,?,?,?, 'pending', 0, ?, ?)",
                 (kind, agent, conversation_id, channel, chat_id, payload,
-                 when_utc, cron_spec, time.time()),
+                 when_utc, cron_spec, time.time(), mode),
             )
             return int(cur.lastrowid)
 

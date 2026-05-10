@@ -221,3 +221,29 @@ def test_channel_routing_list(tmp_path):
     assert by_channel["telegram"]["default_chat_id"] == "T"
     assert by_channel["telegram"]["enabled"] == 1
     assert by_channel["imessage"]["enabled"] == 0
+
+
+def test_add_scheduled_job_persists_mode(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    job_id = s.add_scheduled_job(
+        kind="reminder", agent="kona", conversation_id=cid,
+        channel="telegram", chat_id="C1", payload="x",
+        when_utc=1.0, cron_spec=None, mode="agent_phrased",
+    )
+    row = s.get_scheduled_job(job_id)
+    assert row["mode"] == "agent_phrased"
+
+
+def test_add_scheduled_job_default_mode_is_literal(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    job_id = s.add_scheduled_job(
+        kind="reminder", agent="kona", conversation_id=cid,
+        channel="telegram", chat_id="C1", payload="x",
+        when_utc=1.0, cron_spec=None,
+    )
+    row = s.get_scheduled_job(job_id)
+    assert row["mode"] == "literal"
