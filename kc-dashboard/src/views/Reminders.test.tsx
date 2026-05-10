@@ -104,4 +104,13 @@ describe("Reminders view", () => {
     await waitFor(() => screen.getByText("standup"));
     expect(screen.getAllByRole("button", { name: /snooze reminder/i })).toHaveLength(1);
   });
+
+  it("scrolls and highlights the row matching ?highlight= param", async () => {
+    const scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollSpy;
+    renderView("/reminders?highlight=1");
+    await waitFor(() => screen.getByText("stretch"));
+    await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+    expect(screen.getByText("stretch").closest("li")).toHaveClass(/pulse|highlight/);
+  });
 });

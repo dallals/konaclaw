@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -97,6 +97,24 @@ export default function Reminders() {
 
   const reminders = q.data?.reminders ?? [];
 
+  // ?highlight=N support — when the chat bubble footer link routes here,
+  // scroll the matching row into view and pulse it briefly. Effect fires
+  // when (a) the highlight param changes or (b) the matching row first
+  // appears in the rendered list (deferred-render-after-fetch case).
+  const highlightId = Number(params.get("highlight")) || null;
+  const rowRefs = useRef<Map<number, HTMLLIElement>>(new Map());
+  const [pulseId, setPulseId] = useState<number | null>(null);
+  const hasRow = highlightId != null && reminders.some((r) => r.id === highlightId);
+  useEffect(() => {
+    if (highlightId == null || !hasRow) return;
+    const el = rowRefs.current.get(highlightId);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setPulseId(highlightId);
+    const t = setTimeout(() => setPulseId(null), 2000);
+    return () => clearTimeout(t);
+  }, [highlightId, hasRow]);
+
   return (
     <div className="p-5">
       <div role="tablist" className="flex border-b border-line mb-3">
@@ -143,7 +161,14 @@ export default function Reminders() {
 
       <ul className="divide-y divide-line">
         {reminders.map(r => (
-          <li key={r.id} className="font-mono text-xs">
+          <li
+            key={r.id}
+            ref={(el) => {
+              if (el) rowRefs.current.set(r.id, el);
+              else rowRefs.current.delete(r.id);
+            }}
+            className={"font-mono text-xs" + (pulseId === r.id ? " highlight-pulse" : "")}
+          >
             <div className="flex items-center gap-3 py-2 cursor-pointer"
                  onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}>
               <span className="w-32 text-muted">{formatNextFire(r)}</span>
