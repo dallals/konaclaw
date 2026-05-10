@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listAgents, createConversation } from "../api/agents";
 import {
@@ -132,7 +132,12 @@ export default function Chat() {
   }, [msgsQ.data]);
 
   const rendered = useMemo(() => {
-    const out: { role: "user" | "assistant"; content: string; usage?: BubbleUsage }[] = [];
+    const out: {
+      role: "user" | "assistant";
+      content: string;
+      usage?: BubbleUsage;
+      scheduled_job_id?: number | null;
+    }[] = [];
     let assistantIdx = 0;
     for (const m of msgsQ.data?.messages ?? []) {
       if (m.type === "UserMessage") out.push({ role: "user", content: m.content ?? "" });
@@ -148,6 +153,7 @@ export default function Chat() {
           role: "assistant",
           content,
           usage: bubbleUsageByIdx.get(assistantIdx),
+          scheduled_job_id: m.scheduled_job_id ?? null,
         });
         assistantIdx++;
       }
@@ -478,7 +484,18 @@ export default function Chat() {
               <div className="font-body text-base text-muted">Open one from the sidebar or start a new drawing.</div>
             </div>
           )}
-          {rendered.map((m, i) => <MessageBubble key={i} role={m.role} content={m.content} usage={m.usage} />)}
+          {rendered.map((m, i) =>
+            m.role === "assistant" ? (
+              <AssistantBubble
+                key={i}
+                content={m.content}
+                usage={m.usage}
+                scheduled_job_id={m.scheduled_job_id}
+              />
+            ) : (
+              <MessageBubble key={i} role={m.role} content={m.content} usage={m.usage} />
+            ),
+          )}
           {streaming && <MessageBubble role="assistant" content={streaming} />}
           {pendingForAgent.map((req) => (
             <ApprovalCard
@@ -538,6 +555,43 @@ export default function Chat() {
         )}
       </section>
       <NewsWidget />
+    </div>
+  );
+}
+
+/**
+ * Assistant chat bubble with an optional "from reminder #N" footer.
+ *
+ * Wraps MessageBubble so all existing role/content/usage rendering is
+ * preserved verbatim. When the assistant message originated from a fired
+ * scheduled reminder (the supervisor stamps `scheduled_job_id` onto the
+ * persisted row), we append a small footer Link that navigates to the
+ * Reminders tab with `?highlight=N` so the corresponding row scrolls into
+ * view and pulses briefly.
+ */
+export function AssistantBubble({
+  content,
+  usage,
+  scheduled_job_id,
+}: {
+  content: string;
+  usage?: BubbleUsage;
+  scheduled_job_id?: number | null;
+}) {
+  return (
+    <div>
+      <MessageBubble role="assistant" content={content} usage={usage} />
+      {scheduled_job_id != null && (
+        <div className="grid grid-cols-[90px_1fr] gap-7 -mt-3 pb-3">
+          <div />
+          <Link
+            to={`/reminders?highlight=${scheduled_job_id}`}
+            className="block text-[10px] uppercase tracking-[0.12em] text-muted2 hover:text-accent font-mono"
+          >
+            ↻ from reminder #{scheduled_job_id}
+          </Link>
+        </div>
+      )}
     </div>
   );
 }

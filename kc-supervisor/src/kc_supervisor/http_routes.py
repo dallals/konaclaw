@@ -204,10 +204,23 @@ def register_http_routes(app: FastAPI) -> None:
 
     @app.get("/conversations/{cid}/messages")
     def list_messages(cid: int):
-        if app.state.deps.storage.get_conversation(cid) is None:
+        deps = app.state.deps
+        if deps.storage.get_conversation(cid) is None:
             raise HTTPException(404, detail=f"unknown conversation: {cid}")
-        pairs = app.state.deps.conversations.list_messages_with_meta(cid)
-        return {"messages": [_message_to_dict(m, usage=u) for (m, u) in pairs]}
+        pairs = deps.conversations.list_messages_with_meta(cid)
+        # Raw rows are returned in the same id-ASC order as list_messages_with_meta,
+        # which iterates over Storage.list_messages. Pair them up to surface
+        # scheduled_job_id (the FK linking assistant rows to a reminder fire) so
+        # the dashboard can render a "from reminder #N" footer on those bubbles.
+        raw_rows = deps.storage.list_messages(cid)
+        out = []
+        for (m, u), row in zip(pairs, raw_rows):
+            d = _message_to_dict(m, usage=u)
+            sjid = row.get("scheduled_job_id")
+            if sjid is not None:
+                d["scheduled_job_id"] = sjid
+            out.append(d)
+        return {"messages": out}
 
     @app.get("/audit")
     def list_audit(

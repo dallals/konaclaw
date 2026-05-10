@@ -21,6 +21,10 @@ export type StoredMessage = {
     calls: number;
     usage_reported: boolean;
   };
+  // Present on assistant messages that were produced by a fired reminder/cron.
+  // Used by the chat bubble to render a "from reminder #N" footer linking back
+  // to the Reminders tab (highlights + scrolls to that row).
+  scheduled_job_id?: number | null;
 };
 
 export const listConversations = (agent?: string) =>
