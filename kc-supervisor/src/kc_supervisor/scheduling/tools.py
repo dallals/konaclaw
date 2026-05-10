@@ -39,16 +39,16 @@ def build_scheduling_tools(
             target_channel=target_channel, mode=mode,
         )
 
-    def _list_reminders(active_only: bool = True) -> dict:
+    def _list_reminders(active_only: bool = True, scope: str = "user") -> dict:
         ctx = current_context()
         return service.list_reminders(
-            conversation_id=ctx["conversation_id"], active_only=active_only,
+            conversation_id=ctx["conversation_id"], active_only=active_only, scope=scope,
         )
 
-    def _cancel_reminder(id_or_description: str) -> dict:
+    def _cancel_reminder(id_or_description: str, scope: str = "user") -> dict:
         ctx = current_context()
         return service.cancel_reminder(
-            id_or_description, conversation_id=ctx["conversation_id"],
+            id_or_description, conversation_id=ctx["conversation_id"], scope=scope,
         )
 
     return [
@@ -131,6 +131,12 @@ def build_scheduling_tools(
                         "description": "if True, only pending reminders",
                         "default": True,
                     },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["user", "conversation"],
+                        "description": "'user' (default) lists all your reminders across channels. 'conversation' restricts to reminders scheduled in this conversation.",
+                        "default": "user",
+                    },
                 },
                 "required": [],
             },
@@ -152,6 +158,12 @@ def build_scheduling_tools(
                     "id_or_description": {
                         "type": "string",
                         "description": "integer ID or description fragment",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["user", "conversation"],
+                        "description": "'user' (default) searches all your reminders across channels. 'conversation' restricts to reminders scheduled in this conversation.",
+                        "default": "user",
                     },
                 },
                 "required": ["id_or_description"],

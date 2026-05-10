@@ -243,3 +243,41 @@ def test_schedule_cron_tool_accepts_target_channel_and_mode():
     kwargs = svc.schedule_cron.call_args.kwargs
     assert kwargs["target_channel"] == "telegram"
     assert kwargs["mode"] == "agent_phrased"
+
+
+def test_list_reminders_tool_accepts_scope():
+    from kc_supervisor.scheduling.tools import build_scheduling_tools
+    from unittest.mock import MagicMock
+    svc = MagicMock()
+    svc.list_reminders.return_value = {"reminders": []}
+    ctx = {"conversation_id": 1, "channel": "dashboard", "chat_id": "ws-1", "agent": "kona"}
+    tools = build_scheduling_tools(svc, lambda: ctx)
+    lst = next(t for t in tools if t.name == "list_reminders")
+    assert "scope" in lst.parameters["properties"]
+    lst.impl(scope="conversation")
+    assert svc.list_reminders.call_args.kwargs["scope"] == "conversation"
+
+
+def test_list_reminders_tool_default_scope_user():
+    from kc_supervisor.scheduling.tools import build_scheduling_tools
+    from unittest.mock import MagicMock
+    svc = MagicMock()
+    svc.list_reminders.return_value = {"reminders": []}
+    ctx = {"conversation_id": 1, "channel": "dashboard", "chat_id": "ws-1", "agent": "kona"}
+    tools = build_scheduling_tools(svc, lambda: ctx)
+    lst = next(t for t in tools if t.name == "list_reminders")
+    lst.impl()
+    assert svc.list_reminders.call_args.kwargs["scope"] == "user"
+
+
+def test_cancel_reminder_tool_accepts_scope():
+    from kc_supervisor.scheduling.tools import build_scheduling_tools
+    from unittest.mock import MagicMock
+    svc = MagicMock()
+    svc.cancel_reminder.return_value = {"ambiguous": False, "candidates": [], "cancelled": []}
+    ctx = {"conversation_id": 1, "channel": "dashboard", "chat_id": "ws-1", "agent": "kona"}
+    tools = build_scheduling_tools(svc, lambda: ctx)
+    can = next(t for t in tools if t.name == "cancel_reminder")
+    assert "scope" in can.parameters["properties"]
+    can.impl(id_or_description="5", scope="conversation")
+    assert svc.cancel_reminder.call_args.kwargs["scope"] == "conversation"
