@@ -7,6 +7,7 @@ from kc_supervisor.agents import AgentRegistry
 from kc_supervisor.approvals import ApprovalBroker
 from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.locks import ConversationLocks
+from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
 from kc_supervisor.secrets_store import SecretsStore, SecurityCliKeychain
 from kc_supervisor.service import Deps, create_app
 from kc_supervisor.storage import Storage
@@ -340,6 +341,7 @@ def main() -> None:
     # `fire_reminder` can dispatch to this instance. (See runner.py for why we
     # avoid bound methods in APS jobstores.)
     set_active_runner(_reminder_runner)
+    deps.reminders_broadcaster = RemindersBroadcaster()
     deps.schedule_service = ScheduleService(
         storage=deps.storage,
         runner=_reminder_runner,

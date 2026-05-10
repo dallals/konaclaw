@@ -11,6 +11,7 @@ from kc_supervisor.agents import AgentRegistry
 from kc_supervisor.approvals import ApprovalBroker
 from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.locks import ConversationLocks
+from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
 from kc_supervisor.storage import Storage
 
 if TYPE_CHECKING:
@@ -72,6 +73,7 @@ class Deps:
     # Phase-1 scheduling. Constructed in main.py and started inside FastAPI's
     # startup hook below so it picks up the running event loop.
     schedule_service: Optional["ScheduleService"] = None
+    reminders_broadcaster: Optional[RemindersBroadcaster] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:
