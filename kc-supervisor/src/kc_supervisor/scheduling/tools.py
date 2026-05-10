@@ -66,17 +66,33 @@ def build_scheduling_tools(
                 "type": "object",
                 "properties": {
                     "when": {"type": "string", "description": "natural-language time"},
-                    "content": {"type": "string", "description": "reminder text (1-4000 chars). When mode='agent_phrased', interpreted as an internal trigger description for you, not the literal text the user sees."},
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "reminder text (1-4000 chars). When mode='agent_phrased', "
+                            "interpreted as an internal trigger description for you, "
+                            "not the literal text the user sees."
+                        ),
+                    },
                     "target_channel": {
                         "type": "string",
                         "enum": ["current", "telegram", "dashboard", "imessage"],
-                        "description": "Use only when the user explicitly asks to be reminded somewhere other than this conversation. Channels not in the configured allowlist will raise. Default 'current'.",
+                        "description": (
+                            "Use only when the user explicitly asks to be reminded "
+                            "somewhere other than this conversation. Channels not in "
+                            "the configured allowlist will raise. Default 'current'."
+                        ),
                         "default": "current",
                     },
                     "mode": {
                         "type": "string",
                         "enum": ["literal", "agent_phrased"],
-                        "description": "If 'agent_phrased', you will be re-invoked at fire time to compose the actual message. The 'content' arg is then a trigger description for you, not user-facing text. Default 'literal'.",
+                        "description": (
+                            "If 'agent_phrased', you will be re-invoked at fire time "
+                            "to compose the actual message. The 'content' arg is then "
+                            "a trigger description for you, not user-facing text. "
+                            "Default 'literal'."
+                        ),
                         "default": "literal",
                     },
                 },
@@ -97,17 +113,33 @@ def build_scheduling_tools(
                 "type": "object",
                 "properties": {
                     "cron": {"type": "string", "description": "5-field cron expression"},
-                    "content": {"type": "string", "description": "reminder text (1-4000 chars). When mode='agent_phrased', interpreted as an internal trigger description for you, not the literal text the user sees."},
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "reminder text (1-4000 chars). When mode='agent_phrased', "
+                            "interpreted as an internal trigger description for you, "
+                            "not the literal text the user sees."
+                        ),
+                    },
                     "target_channel": {
                         "type": "string",
                         "enum": ["current", "telegram", "dashboard", "imessage"],
-                        "description": "Use only when the user explicitly asks to be reminded somewhere other than this conversation. Channels not in the configured allowlist will raise. Default 'current'.",
+                        "description": (
+                            "Use only when the user explicitly asks to be reminded "
+                            "somewhere other than this conversation. Channels not in "
+                            "the configured allowlist will raise. Default 'current'."
+                        ),
                         "default": "current",
                     },
                     "mode": {
                         "type": "string",
                         "enum": ["literal", "agent_phrased"],
-                        "description": "If 'agent_phrased', you will be re-invoked at fire time to compose the actual message. The 'content' arg is then a trigger description for you, not user-facing text. Default 'literal'.",
+                        "description": (
+                            "If 'agent_phrased', you will be re-invoked at fire time "
+                            "to compose the actual message. The 'content' arg is then "
+                            "a trigger description for you, not user-facing text. "
+                            "Default 'literal'."
+                        ),
                         "default": "literal",
                     },
                 },
@@ -118,7 +150,11 @@ def build_scheduling_tools(
         Tool(
             name="list_reminders",
             description=(
-                "List your reminders. By default (scope='user') returns reminders across all your conversations and channels; pass scope='conversation' to restrict to this conversation only. If active_only is True (default), returns only pending reminders; otherwise also includes done, cancelled, failed, and missed."
+                "List your reminders. By default (scope='user') returns reminders "
+                "across all your conversations and channels; pass "
+                "scope='conversation' to restrict to this conversation only. If "
+                "active_only is True (default), returns only pending reminders; "
+                "otherwise also includes done, cancelled, failed, and missed."
             ),
             parameters={
                 "type": "object",
@@ -131,7 +167,11 @@ def build_scheduling_tools(
                     "scope": {
                         "type": "string",
                         "enum": ["user", "conversation"],
-                        "description": "'user' (default) lists all your reminders across channels. 'conversation' restricts to reminders scheduled in this conversation.",
+                        "description": (
+                            "'user' (default) lists all your reminders across "
+                            "channels. 'conversation' restricts to reminders "
+                            "scheduled in this conversation."
+                        ),
                         "default": "user",
                     },
                 },
@@ -159,7 +199,11 @@ def build_scheduling_tools(
                     "scope": {
                         "type": "string",
                         "enum": ["user", "conversation"],
-                        "description": "'user' (default) searches all your reminders across channels. 'conversation' restricts to reminders scheduled in this conversation.",
+                        "description": (
+                            "'user' (default) searches all your reminders across "
+                            "channels. 'conversation' restricts to reminders "
+                            "scheduled in this conversation."
+                        ),
                         "default": "user",
                     },
                 },
