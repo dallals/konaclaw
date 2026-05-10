@@ -64,6 +64,7 @@ def assemble_agent(
     news_client: Optional[Any] = None,
     ollama_api_key: Optional[str] = None,
     schedule_service: Optional[Any] = None,
+    skill_index: Optional[Any] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -203,6 +204,18 @@ def assemble_agent(
         ).values():
             registry.register(mt)
         tier_map.update(_MEM_TIERS)
+
+    # Skills integration — if a SkillIndex was supplied, register the three
+    # skill tools on every agent. Lazy-imports kc_skills so kc-supervisor
+    # doesn't hard-depend on the package.
+    if skill_index is not None:
+        from kc_skills import build_skill_tools
+        for skill_tool in build_skill_tools(skill_index=skill_index):
+            registry.register(skill_tool)
+            if skill_tool.name == "skill_run_script":
+                tier_map[skill_tool.name] = Tier.DESTRUCTIVE
+            else:
+                tier_map[skill_tool.name] = Tier.SAFE
 
     # Google tool-providers (Gmail + Calendar) — only when the supervisor has
     # built credentialed service objects. Lazy-imports kc_connectors so

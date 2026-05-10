@@ -223,6 +223,7 @@ def main() -> None:
         gcal_service=gcal_service,
         news_client=news_client,
         ollama_api_key=ollama_api_key,
+        skill_index=skill_index,
     )
     registry.load_all()
 
