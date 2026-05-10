@@ -660,7 +660,7 @@ def test_list_all_reminders_filters_by_status(tmp_path):
         svc.shutdown()
 
 
-def test_list_all_reminders_filters_by_kind_and_channel(tmp_path):
+def test_list_all_reminders_filters_by_kind(tmp_path):
     svc, storage = _make_service(tmp_path)
     cid = _seed_conv(storage)
     try:
@@ -676,6 +676,34 @@ def test_list_all_reminders_filters_by_kind_and_channel(tmp_path):
         assert all(r["kind"] == "reminder" for r in only_oneshot["reminders"])
         only_cron = svc.list_all_reminders(kinds=["cron"])
         assert all(r["kind"] == "cron" for r in only_cron["reminders"])
+    finally:
+        svc.shutdown()
+
+
+def test_list_all_reminders_filters_by_channel(tmp_path):
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        dashboard_id = storage.add_scheduled_job(
+            kind="reminder", agent="kona", conversation_id=cid,
+            channel="dashboard", chat_id="c1", payload="A",
+            when_utc=time.time() + 3600, cron_spec=None, mode="literal",
+        )
+        telegram_id = storage.add_scheduled_job(
+            kind="reminder", agent="kona", conversation_id=cid,
+            channel="telegram", chat_id="c2", payload="B",
+            when_utc=time.time() + 3600, cron_spec=None, mode="literal",
+        )
+        dashboard_only = svc.list_all_reminders(channels=["dashboard"])
+        ids = [r["id"] for r in dashboard_only["reminders"]]
+        assert dashboard_id in ids
+        assert telegram_id not in ids
+
+        telegram_only = svc.list_all_reminders(channels=["telegram"])
+        ids2 = [r["id"] for r in telegram_only["reminders"]]
+        assert telegram_id in ids2
+        assert dashboard_id not in ids2
     finally:
         svc.shutdown()
 
