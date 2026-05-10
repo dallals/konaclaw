@@ -7,6 +7,12 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from kc_supervisor.scheduling.constants import (
+    ALLOWED_REMINDER_STATUSES,
+    ALLOWED_REMINDER_KINDS,
+    ALLOWED_REMINDER_CHANNELS,
+)
+
 _AGENT_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
 
 
@@ -346,21 +352,38 @@ def register_http_routes(app: FastAPI) -> None:
         if svc is None:
             raise HTTPException(status_code=503, detail="schedule_service unavailable")
 
-        ALLOWED_STATUSES = {"pending", "done", "cancelled", "failed", "missed"}
-        ALLOWED_KINDS = {"reminder", "cron"}
-        ALLOWED_CHANNELS = {"dashboard", "telegram", "imessage"}
-
         if status is not None:
-            bad = [s for s in status if s not in ALLOWED_STATUSES]
+            bad = [s for s in status if s not in ALLOWED_REMINDER_STATUSES]
             if bad:
-                raise HTTPException(status_code=422, detail=f"invalid status: {bad}")
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "invalid_status",
+                        "invalid": sorted(bad),
+                        "allowed": sorted(ALLOWED_REMINDER_STATUSES),
+                    },
+                )
         if kind is not None:
-            bad = [k for k in kind if k not in ALLOWED_KINDS]
+            bad = [k for k in kind if k not in ALLOWED_REMINDER_KINDS]
             if bad:
-                raise HTTPException(status_code=422, detail=f"invalid kind: {bad}")
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "invalid_kind",
+                        "invalid": sorted(bad),
+                        "allowed": sorted(ALLOWED_REMINDER_KINDS),
+                    },
+                )
         if channel is not None:
-            bad = [c for c in channel if c not in ALLOWED_CHANNELS]
+            bad = [c for c in channel if c not in ALLOWED_REMINDER_CHANNELS]
             if bad:
-                raise HTTPException(status_code=422, detail=f"invalid channel: {bad}")
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "invalid_channel",
+                        "invalid": sorted(bad),
+                        "allowed": sorted(ALLOWED_REMINDER_CHANNELS),
+                    },
+                )
 
         return svc.list_all_reminders(statuses=status, kinds=kind, channels=channel)

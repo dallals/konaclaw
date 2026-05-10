@@ -40,3 +40,14 @@ def test_get_reminders_invalid_status_returns_422(app_with_scheduler):
     with TestClient(app_with_scheduler) as client:
         r = client.get("/reminders?status=bogus")
         assert r.status_code == 422
+        body = r.json()
+        assert body["detail"]["error"] == "invalid_status"
+        assert body["detail"]["invalid"] == ["bogus"]
+        assert "pending" in body["detail"]["allowed"]
+
+
+def test_get_reminders_503_when_no_scheduler(app):
+    """The bare `app` fixture has schedule_service=None — endpoint returns 503."""
+    with TestClient(app) as client:
+        r = client.get("/reminders")
+        assert r.status_code == 503

@@ -105,8 +105,10 @@ def deps_with_scheduler(deps, tmp_path):
         broadcaster=deps.reminders_broadcaster,
     )
     deps.schedule_service.start()
-    yield deps
-    deps.schedule_service.shutdown()
+    try:
+        yield deps
+    finally:
+        deps.schedule_service.shutdown()
 
 
 @pytest.fixture
