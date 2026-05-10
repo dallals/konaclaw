@@ -6,13 +6,14 @@ from kc_supervisor.storage import Storage
 from kc_supervisor.scheduling.service import ScheduleService
 
 
-def _make_service(tmp_path) -> tuple[ScheduleService, Storage]:
+def _make_service(tmp_path, broadcaster=None) -> tuple[ScheduleService, Storage]:
     s = Storage(tmp_path / "kc.db")
     s.init()
     runner = MagicMock()
     svc = ScheduleService(
         storage=s, runner=runner, db_path=tmp_path / "kc.db",
         timezone="America/Los_Angeles",
+        broadcaster=broadcaster,
     )
     svc.start()
     return svc, s
@@ -305,6 +306,24 @@ def test_cancel_reminder_scoped_to_conversation(tmp_path):
         svc.shutdown()
 
 
+def test_cancel_soft_deletes_marking_status_cancelled(tmp_path):
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(
+            when="in 1 hour", content="ping",
+            conversation_id=cid, channel="telegram", chat_id="C1", agent="kona",
+        )
+        job_id = res["id"]
+        svc.cancel_reminder(str(job_id), conversation_id=cid, scope="user")
+
+        row = storage.get_scheduled_job(job_id)
+        assert row is not None, "row must persist after cancel"
+        assert row["status"] == "cancelled"
+    finally:
+        svc.shutdown()
+
+
 def test_schedule_one_shot_target_channel_uses_routing(tmp_path):
     from kc_supervisor.storage import Storage
     from kc_supervisor.scheduling.service import ScheduleService
@@ -592,3 +611,288 @@ def test_cancel_reminder_invalid_scope_raises(tmp_path):
     svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
     with pytest.raises(ValueError, match="unknown scope"):
         svc.cancel_reminder("x", conversation_id=cid, scope="bogus")
+
+
+def test_list_all_reminders_returns_full_rows_with_next_fire_at(tmp_path):
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        one = svc.schedule_one_shot(
+            when="in 1 hour", content="A", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        cron = svc.schedule_cron(
+            cron="0 9 * * *", content="B", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        out = svc.list_all_reminders()
+        ids = [r["id"] for r in out["reminders"]]
+        assert one["id"] in ids and cron["id"] in ids
+        for r in out["reminders"]:
+            assert {
+                "id", "kind", "payload", "status", "channel", "chat_id",
+                "when_utc", "cron_spec", "attempts", "last_fired_at",
+                "created_at", "mode", "agent", "conversation_id",
+            } <= set(r.keys())
+            assert "next_fire_at" in r
+            if r["kind"] == "reminder":
+                assert r["next_fire_at"] == r["when_utc"]
+            else:
+                assert isinstance(r["next_fire_at"], (int, float))
+    finally:
+        svc.shutdown()
+
+
+def test_list_all_reminders_filters_by_status(tmp_path):
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        a = svc.schedule_one_shot(
+            when="in 1 hour", content="x", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        svc.cancel_reminder(str(a["id"]), conversation_id=cid, scope="user")
+        pending = svc.list_all_reminders(statuses=["pending"])
+        cancelled = svc.list_all_reminders(statuses=["cancelled"])
+        assert all(r["status"] == "pending" for r in pending["reminders"])
+        assert all(r["status"] == "cancelled" for r in cancelled["reminders"])
+        assert a["id"] in [r["id"] for r in cancelled["reminders"]]
+    finally:
+        svc.shutdown()
+
+
+def test_list_all_reminders_filters_by_kind(tmp_path):
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        svc.schedule_one_shot(
+            when="in 1 hour", content="o", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        svc.schedule_cron(
+            cron="0 9 * * *", content="c", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        only_oneshot = svc.list_all_reminders(kinds=["reminder"])
+        assert all(r["kind"] == "reminder" for r in only_oneshot["reminders"])
+        only_cron = svc.list_all_reminders(kinds=["cron"])
+        assert all(r["kind"] == "cron" for r in only_cron["reminders"])
+    finally:
+        svc.shutdown()
+
+
+def test_list_all_reminders_filters_by_channel(tmp_path):
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        dashboard_id = storage.add_scheduled_job(
+            kind="reminder", agent="kona", conversation_id=cid,
+            channel="dashboard", chat_id="c1", payload="A",
+            when_utc=time.time() + 3600, cron_spec=None, mode="literal",
+        )
+        telegram_id = storage.add_scheduled_job(
+            kind="reminder", agent="kona", conversation_id=cid,
+            channel="telegram", chat_id="c2", payload="B",
+            when_utc=time.time() + 3600, cron_spec=None, mode="literal",
+        )
+        dashboard_only = svc.list_all_reminders(channels=["dashboard"])
+        ids = [r["id"] for r in dashboard_only["reminders"]]
+        assert dashboard_id in ids
+        assert telegram_id not in ids
+
+        telegram_only = svc.list_all_reminders(channels=["telegram"])
+        ids2 = [r["id"] for r in telegram_only["reminders"]]
+        assert telegram_id in ids2
+        assert dashboard_id not in ids2
+    finally:
+        svc.shutdown()
+
+
+def test_list_all_reminders_sort_order(tmp_path):
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        far = svc.schedule_one_shot(
+            when="in 3 hours", content="far", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        near = svc.schedule_one_shot(
+            when="in 30 minutes", content="near", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        rows = svc.list_all_reminders(statuses=["pending"])["reminders"]
+        ids = [r["id"] for r in rows]
+        assert ids.index(near["id"]) < ids.index(far["id"])
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_reschedules_pending_oneshot(tmp_path):
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(
+            when="in 1 hour", content="x", conversation_id=cid,
+            channel="dashboard", chat_id="c1", agent="kona",
+        )
+        new_when = time.time() + 3600 * 3  # 3 hours from now
+        out = svc.snooze_reminder(reminder_id=res["id"], when_utc=new_when)
+        assert out["id"] == res["id"]
+        row = storage.get_scheduled_job(res["id"])
+        assert abs(row["when_utc"] - new_when) < 1.0
+        # APS job rescheduled to same job id
+        aps = svc._scheduler.get_job(str(res["id"]))
+        assert aps is not None
+        assert abs(aps.next_run_time.timestamp() - new_when) < 1.0
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_rejects_non_pending(tmp_path):
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        svc.cancel_reminder(str(res["id"]), conversation_id=cid, scope="user")
+        with pytest.raises(ValueError, match="already_fired|cancelled|not pending"):
+            svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() + 3600)
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_rejects_cron(tmp_path):
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_cron(cron="0 9 * * *", content="x", conversation_id=cid,
+                                channel="dashboard", chat_id="c1", agent="kona")
+        with pytest.raises(ValueError, match="cron_not_snoozable"):
+            svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() + 3600)
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_rejects_past_time(tmp_path):
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        with pytest.raises(ValueError, match="past"):
+            svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() - 60)
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_unknown_id_raises(tmp_path):
+    import time
+    svc, _ = _make_service(tmp_path)
+    try:
+        with pytest.raises(LookupError):
+            svc.snooze_reminder(reminder_id=999999, when_utc=time.time() + 3600)
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_aps_failure_restores_prior_when_utc(tmp_path, monkeypatch):
+    """If APS reschedule_job raises a non-JobLookupError, the DB row's when_utc
+    must be restored so DB and APS stay consistent."""
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        prior_when = storage.get_scheduled_job(res["id"])["when_utc"]
+
+        def boom(*a, **kw):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(svc._scheduler, "reschedule_job", boom)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() + 3600 * 5)
+
+        # DB should be back to the original when_utc
+        assert storage.get_scheduled_job(res["id"])["when_utc"] == prior_when
+    finally:
+        svc.shutdown()
+
+
+def test_snooze_orphaned_aps_job_raises_lookup_error(tmp_path):
+    """If the APS job is missing but the DB row exists, snooze raises LookupError
+    (not the leaky apscheduler.jobstores.base.JobLookupError)."""
+    import time
+    svc, storage = _make_service(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        # Remove the APS job out from under the DB row
+        svc._scheduler.remove_job(str(res["id"]))
+        prior_when = storage.get_scheduled_job(res["id"])["when_utc"]
+
+        with pytest.raises(LookupError):
+            svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() + 3600 * 5)
+
+        # DB row's when_utc rolled back to prior value
+        assert storage.get_scheduled_job(res["id"])["when_utc"] == prior_when
+    finally:
+        svc.shutdown()
+
+
+def _make_service_with_broadcaster(tmp_path):
+    """Same as _make_service but also returns the broadcaster so tests can subscribe."""
+    from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
+    b = RemindersBroadcaster()
+    svc, storage = _make_service(tmp_path, broadcaster=b)
+    return svc, storage, b
+
+
+def test_publishes_reminder_created(tmp_path):
+    svc, storage, b = _make_service_with_broadcaster(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        events = []
+        b.subscribe(lambda et, row: events.append((et, row["id"])))
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        assert ("reminder.created", res["id"]) in events
+    finally:
+        svc.shutdown()
+
+
+def test_publishes_reminder_cancelled(tmp_path):
+    svc, storage, b = _make_service_with_broadcaster(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        events = []
+        b.subscribe(lambda et, row: events.append((et, row["id"], row.get("status"))))
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        svc.cancel_reminder(str(res["id"]), conversation_id=cid, scope="user")
+        cancelled_events = [e for e in events if e[0] == "reminder.cancelled"]
+        assert cancelled_events
+        assert cancelled_events[-1][2] == "cancelled"
+    finally:
+        svc.shutdown()
+
+
+def test_publishes_reminder_snoozed(tmp_path):
+    import time
+    svc, storage, b = _make_service_with_broadcaster(tmp_path)
+    cid = _seed_conv(storage)
+    try:
+        events = []
+        b.subscribe(lambda et, row: events.append((et, row["id"])))
+        res = svc.schedule_one_shot(when="in 1 hour", content="x", conversation_id=cid,
+                                    channel="dashboard", chat_id="c1", agent="kona")
+        svc.snooze_reminder(reminder_id=res["id"], when_utc=time.time() + 3600 * 3)
+        assert ("reminder.snoozed", res["id"]) in events
+    finally:
+        svc.shutdown()

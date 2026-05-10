@@ -79,3 +79,38 @@ def deps(tmp_path):
 @pytest.fixture
 def app(deps):
     return create_app(deps)
+
+
+@pytest.fixture
+def deps_with_scheduler(deps, tmp_path):
+    """Extends `deps` with a real ScheduleService + RemindersBroadcaster + a fake
+    runner. Tests that exercise /reminders endpoints request this fixture."""
+    from kc_supervisor.scheduling.service import ScheduleService
+    from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
+    from unittest.mock import MagicMock
+
+    # Seed at least one conversation so schedule_one_shot's FK satisfies.
+    with deps.storage.connect() as c:
+        c.execute("INSERT INTO conversations (agent, channel, started_at) VALUES (?,?,?)",
+                  ("alice", "dashboard", 0))
+
+    deps.reminders_broadcaster = RemindersBroadcaster()
+    # Use the same db path the existing `deps` fixture uses (home/data/kc.db).
+    db_path = deps.home / "data" / "kc.db"
+    deps.schedule_service = ScheduleService(
+        storage=deps.storage,
+        runner=MagicMock(),
+        db_path=db_path,
+        timezone="UTC",
+        broadcaster=deps.reminders_broadcaster,
+    )
+    deps.schedule_service.start()
+    try:
+        yield deps
+    finally:
+        deps.schedule_service.shutdown()
+
+
+@pytest.fixture
+def app_with_scheduler(deps_with_scheduler):
+    return create_app(deps_with_scheduler)

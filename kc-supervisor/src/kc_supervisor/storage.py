@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_call_json TEXT,
     usage_json TEXT,
     ts REAL NOT NULL,
+    scheduled_job_id INTEGER REFERENCES scheduled_jobs(id) ON DELETE SET NULL,
     FOREIGN KEY(conversation_id) REFERENCES conversations(id)
 );
 CREATE INDEX IF NOT EXISTS ix_msg_conv ON messages(conversation_id);
@@ -129,6 +130,18 @@ class Storage:
             msg_cols = {r["name"] for r in c.execute("PRAGMA table_info(messages)").fetchall()}
             if "usage_json" not in msg_cols:
                 c.execute("ALTER TABLE messages ADD COLUMN usage_json TEXT")
+            if "scheduled_job_id" not in msg_cols:
+                # SQLite requires the FK column have a NULL default when added via ALTER.
+                # PRAGMA foreign_keys = ON is set per-connection (see connect()), so
+                # ON DELETE SET NULL is enforced.
+                c.execute(
+                    "ALTER TABLE messages ADD COLUMN scheduled_job_id INTEGER "
+                    "REFERENCES scheduled_jobs(id) ON DELETE SET NULL"
+                )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_scheduled_job_id "
+                "ON messages(scheduled_job_id) WHERE scheduled_job_id IS NOT NULL"
+            )
             job_cols = {r["name"] for r in c.execute("PRAGMA table_info(scheduled_jobs)").fetchall()}
             if "mode" not in job_cols:
                 c.execute("ALTER TABLE scheduled_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'literal'")
@@ -266,6 +279,20 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def set_message_scheduled_job_id(
+        self, *, message_id: int, scheduled_job_id: int
+    ) -> None:
+        """Stamp a scheduled_job_id onto an existing message row.
+
+        No-op if the message row doesn't exist; raises sqlite3.IntegrityError
+        if the scheduled_job_id is unknown (FK violation).
+        """
+        with self.connect() as c:
+            c.execute(
+                "UPDATE messages SET scheduled_job_id=? WHERE id=?",
+                (scheduled_job_id, message_id),
+            )
+
     # ----- audit -----
 
     def append_audit(
@@ -397,8 +424,11 @@ class Storage:
 
     def list_scheduled_jobs(
         self,
+        *,
         conversation_id: Optional[int] = None,
         statuses: Optional[tuple[str, ...]] = None,
+        kinds: Optional[tuple[str, ...]] = None,
+        channels: Optional[tuple[str, ...]] = None,
     ) -> list[dict]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -409,6 +439,14 @@ class Storage:
             placeholders = ",".join("?" * len(statuses))
             clauses.append(f"status IN ({placeholders})")
             params.extend(statuses)
+        if kinds is not None:
+            placeholders = ",".join("?" * len(kinds))
+            clauses.append(f"kind IN ({placeholders})")
+            params.extend(kinds)
+        if channels is not None:
+            placeholders = ",".join("?" * len(channels))
+            clauses.append(f"channel IN ({placeholders})")
+            params.extend(channels)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"SELECT * FROM scheduled_jobs {where} ORDER BY id ASC"
         with self.connect() as c:
@@ -430,6 +468,13 @@ class Storage:
                 "UPDATE scheduled_jobs SET last_fired_at=?, attempts=attempts+1, status=? "
                 "WHERE id=?",
                 (fired_at, new_status, job_id),
+            )
+
+    def update_scheduled_job_when(self, job_id: int, when_utc: float) -> None:
+        with self.connect() as c:
+            c.execute(
+                "UPDATE scheduled_jobs SET when_utc=? WHERE id=?",
+                (when_utc, job_id),
             )
 
     def delete_scheduled_job(self, job_id: int) -> int:

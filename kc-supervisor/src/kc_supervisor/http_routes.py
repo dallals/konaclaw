@@ -7,6 +7,12 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from kc_supervisor.scheduling.constants import (
+    ALLOWED_REMINDER_STATUSES,
+    ALLOWED_REMINDER_KINDS,
+    ALLOWED_REMINDER_CHANNELS,
+)
+
 _AGENT_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
 
 
@@ -23,6 +29,10 @@ class UpdateAgentRequest(BaseModel):
 
 class CreateConversationRequest(BaseModel):
     channel: str = "dashboard"
+
+
+class SnoozeRequest(BaseModel):
+    when_utc: float
 
 
 class UpdateConversationRequest(BaseModel):
@@ -194,10 +204,23 @@ def register_http_routes(app: FastAPI) -> None:
 
     @app.get("/conversations/{cid}/messages")
     def list_messages(cid: int):
-        if app.state.deps.storage.get_conversation(cid) is None:
+        deps = app.state.deps
+        if deps.storage.get_conversation(cid) is None:
             raise HTTPException(404, detail=f"unknown conversation: {cid}")
-        pairs = app.state.deps.conversations.list_messages_with_meta(cid)
-        return {"messages": [_message_to_dict(m, usage=u) for (m, u) in pairs]}
+        pairs = deps.conversations.list_messages_with_meta(cid)
+        # Raw rows are returned in the same id-ASC order as list_messages_with_meta,
+        # which iterates over Storage.list_messages. Pair them up to surface
+        # scheduled_job_id (the FK linking assistant rows to a reminder fire) so
+        # the dashboard can render a "from reminder #N" footer on those bubbles.
+        raw_rows = deps.storage.list_messages(cid)
+        out = []
+        for (m, u), row in zip(pairs, raw_rows):
+            d = _message_to_dict(m, usage=u)
+            sjid = row.get("scheduled_job_id")
+            if sjid is not None:
+                d["scheduled_job_id"] = sjid
+            out.append(d)
+        return {"messages": out}
 
     @app.get("/audit")
     def list_audit(
@@ -334,3 +357,91 @@ def register_http_routes(app: FastAPI) -> None:
             "articles": [asdict(a) for a in result.articles],
             "cached": result.cached,
         }
+
+    @app.get("/reminders")
+    def list_reminders_endpoint(
+        status: Optional[list[str]] = Query(default=None),
+        kind: Optional[list[str]] = Query(default=None),
+        channel: Optional[list[str]] = Query(default=None),
+    ):
+        deps = app.state.deps
+        svc = deps.schedule_service
+        if svc is None:
+            raise HTTPException(status_code=503, detail="schedule_service unavailable")
+
+        if status is not None:
+            bad = [s for s in status if s not in ALLOWED_REMINDER_STATUSES]
+            if bad:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "invalid_status",
+                        "invalid": sorted(bad),
+                        "allowed": sorted(ALLOWED_REMINDER_STATUSES),
+                    },
+                )
+        if kind is not None:
+            bad = [k for k in kind if k not in ALLOWED_REMINDER_KINDS]
+            if bad:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "invalid_kind",
+                        "invalid": sorted(bad),
+                        "allowed": sorted(ALLOWED_REMINDER_KINDS),
+                    },
+                )
+        if channel is not None:
+            bad = [c for c in channel if c not in ALLOWED_REMINDER_CHANNELS]
+            if bad:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "invalid_channel",
+                        "invalid": sorted(bad),
+                        "allowed": sorted(ALLOWED_REMINDER_CHANNELS),
+                    },
+                )
+
+        return svc.list_all_reminders(statuses=status, kinds=kind, channels=channel)
+
+    @app.delete("/reminders/{reminder_id}", status_code=204)
+    def delete_reminder_endpoint(reminder_id: int):
+        deps = app.state.deps
+        svc = deps.schedule_service
+        if svc is None:
+            raise HTTPException(status_code=503, detail="schedule_service unavailable")
+
+        row = deps.storage.get_scheduled_job(reminder_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"reminder {reminder_id} not found")
+        if row["status"] != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"reminder is already in terminal state: {row['status']}",
+            )
+        # Use the existing path through cancel_reminder so APS + DB stay in sync.
+        svc.cancel_reminder(str(reminder_id), conversation_id=row["conversation_id"], scope="user")
+        return None  # 204
+
+    @app.patch("/reminders/{reminder_id}")
+    def patch_reminder_endpoint(reminder_id: int, req: SnoozeRequest):
+        deps = app.state.deps
+        svc = deps.schedule_service
+        if svc is None:
+            raise HTTPException(status_code=503, detail="schedule_service unavailable")
+        try:
+            svc.snooze_reminder(reminder_id=reminder_id, when_utc=req.when_utc)
+        except LookupError:
+            raise HTTPException(status_code=404, detail=f"reminder {reminder_id} not found")
+        except ValueError as e:
+            msg = str(e)
+            if "cron_not_snoozable" in msg:
+                raise HTTPException(status_code=409, detail={"code": "cron_not_snoozable"})
+            if "not pending" in msg:
+                raise HTTPException(status_code=409, detail={"code": "already_fired", "message": msg})
+            if "past_when_utc" in msg:
+                raise HTTPException(status_code=422, detail={"code": "past_when_utc"})
+            raise
+        row = deps.storage.get_scheduled_job(reminder_id)
+        return svc._enrich_row(dict(row))

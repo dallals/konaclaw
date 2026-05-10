@@ -116,3 +116,13 @@ body::after {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgb(var(--line-bright)); }
 ::-webkit-scrollbar-thumb:hover { background: rgb(var(--accent)); }
+
+/* 2s accent flash on a row that was navigated to via ?highlight=N (e.g.,
+   from a "from reminder #N" chat bubble footer link). */
+.highlight-pulse {
+  animation: kc-highlight 2s ease-out;
+}
+@keyframes kc-highlight {
+  0%   { background-color: rgb(var(--accent) / 0.30); }
+  100% { background-color: transparent; }
+}

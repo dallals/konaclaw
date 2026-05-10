@@ -8,6 +8,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.jobstores.memory import MemoryJobStore
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.cron import CronTrigger
 
@@ -17,6 +18,7 @@ from cron_descriptor import get_description
 from kc_supervisor.storage import Storage
 from kc_supervisor.scheduling.runner import fire_reminder
 from kc_supervisor.scheduling.timeparse import parse_when, is_past, humanize
+from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
 
 
 logger = logging.getLogger(__name__)
@@ -42,10 +44,12 @@ class ScheduleService:
         runner: _RunnerLike,
         db_path: Path,
         timezone: str,
+        broadcaster: Optional[RemindersBroadcaster] = None,
     ) -> None:
         self.storage = storage
         self.runner = runner
         self._tz = timezone
+        self._broadcaster = broadcaster
         sqlalchemy_url = f"sqlite:///{db_path}"
         self._scheduler = AsyncIOScheduler(
             jobstores={
@@ -54,6 +58,15 @@ class ScheduleService:
             },
             timezone=timezone,
         )
+
+    def _publish(self, event_type: str, reminder_id: int) -> None:
+        if self._broadcaster is None:
+            return
+        row = self.storage.get_scheduled_job(reminder_id)
+        if row is None:
+            return  # raced with deletion (shouldn't happen post-Phase-3 since we soft-cancel)
+        enriched = self._enrich_row(row)
+        self._broadcaster.publish(event_type, enriched)
 
     def start(self) -> None:
         if not self._scheduler.running:
@@ -145,6 +158,7 @@ class ScheduleService:
             self.storage.delete_scheduled_job(job_id)
             raise
 
+        self._publish("reminder.created", job_id)
         return {
             "id": job_id,
             "fires_at": target.isoformat(),
@@ -215,6 +229,7 @@ class ScheduleService:
             self.storage.delete_scheduled_job(job_id)
             raise
 
+        self._publish("reminder.created", job_id)
         return {
             "id": job_id,
             "next_fire": next_fire.isoformat() if next_fire else None,
@@ -239,6 +254,49 @@ class ScheduleService:
         else:
             rows = self.storage.list_scheduled_jobs(statuses=statuses)
         return {"reminders": [self._row_to_view(r) for r in rows]}
+
+    def list_all_reminders(
+        self,
+        *,
+        statuses: Optional[list[str]] = None,
+        kinds: Optional[list[str]] = None,
+        channels: Optional[list[str]] = None,
+    ) -> dict:
+        """Global list (all conversations). Returns full rows plus next_fire_at.
+
+        `next_fire_at` is `when_utc` for one-shots, the next APS trigger time
+        (epoch seconds) for crons, or None if no future fire time can be
+        computed (e.g., a misconfigured cron). Sort: next_fire_at ASC NULLS
+        LAST, then created_at DESC.
+        """
+        rows = self.storage.list_scheduled_jobs(
+            statuses=tuple(statuses) if statuses else None,
+            kinds=tuple(kinds) if kinds else None,
+            channels=tuple(channels) if channels else None,
+        )
+        enriched = [self._enrich_row(r) for r in rows]
+        enriched.sort(key=lambda r: (
+            r["next_fire_at"] is None,                     # NULLS LAST
+            r["next_fire_at"] if r["next_fire_at"] else 0,
+            -(r["created_at"] or 0),                       # created_at DESC tiebreak
+        ))
+        return {"reminders": enriched}
+
+    def _enrich_row(self, row: dict) -> dict:
+        """Add server-computed next_fire_at to a scheduled_jobs row."""
+        nfa: Optional[float]
+        if row["kind"] == "reminder":
+            nfa = row["when_utc"]
+        elif row["kind"] == "cron" and row["cron_spec"]:
+            try:
+                trigger = CronTrigger.from_crontab(row["cron_spec"], timezone=self._tz)
+                nxt = trigger.get_next_fire_time(None, datetime.now(_tz_mod.utc))
+                nfa = nxt.timestamp() if nxt is not None else None
+            except Exception:
+                nfa = None
+        else:
+            nfa = None
+        return {**row, "next_fire_at": nfa}
 
     def cancel_reminder(
         self, id_or_description: str, *, conversation_id: int,
@@ -277,15 +335,76 @@ class ScheduleService:
             }
         return self._do_cancel(matches)
 
+    def snooze_reminder(self, *, reminder_id: int, when_utc: float) -> dict:
+        """Reschedule a pending one-shot to a new fire time. Updates the DB row
+        first, then the APS trigger; on APS failure, restores the prior when_utc
+        so DB and APS stay consistent.
+
+        Raises:
+          LookupError — id not found
+          ValueError("cron_not_snoozable: id=N") — row is a cron
+          ValueError("past_when_utc: T") — target time is not in the future
+          ValueError("not pending: <status>") — row is no longer pending
+        """
+        import time
+        row = self.storage.get_scheduled_job(reminder_id)
+        if row is None:
+            raise LookupError(f"reminder {reminder_id} not found")
+        if row["kind"] != "reminder":
+            raise ValueError(f"cron_not_snoozable: id={reminder_id}")
+        if row["status"] != "pending":
+            raise ValueError(f"not pending: {row['status']}")
+        if when_utc <= time.time():
+            raise ValueError(f"past_when_utc: {when_utc}")
+
+        # SQLite's autocommit-on-success / rollback-on-error is per-statement
+        # under isolation_level=None (see storage.connect()), so we can't wrap
+        # both writes in a transaction. Compensating-write approach: update DB
+        # first; if APS modify_job raises, restore the prior when_utc.
+        self.storage.update_scheduled_job_when(reminder_id, when_utc)
+        try:
+            new_run_dt = datetime.fromtimestamp(when_utc, tz=_tz_mod.utc)
+            self._scheduler.reschedule_job(
+                str(reminder_id),
+                trigger=DateTrigger(run_date=new_run_dt),
+            )
+        except JobLookupError:
+            # APS row missing for an existing DB mirror — reconcile by rolling back
+            # and surfacing as LookupError so callers handle it like "not found".
+            try:
+                self.storage.update_scheduled_job_when(reminder_id, row["when_utc"])
+            except Exception:
+                logger.exception(
+                    "snooze rollback failed for reminder %s after JobLookupError",
+                    reminder_id,
+                )
+            raise LookupError(f"reminder {reminder_id} has no APS job")
+        except Exception:
+            # Other APS failure — restore prior when_utc to keep DB+APS consistent.
+            try:
+                self.storage.update_scheduled_job_when(reminder_id, row["when_utc"])
+            except Exception:
+                logger.exception(
+                    "snooze rollback failed for reminder %s: DB has when_utc=%s, "
+                    "APS still has prior trigger; manual reconciliation needed",
+                    reminder_id, when_utc,
+                )
+            raise
+
+        self._publish("reminder.snoozed", reminder_id)
+        return {"id": reminder_id, "when_utc": when_utc}
+
     def _do_cancel(self, rows: list[dict]) -> dict:
         cancelled: list[dict] = []
         for r in rows:
             try:
                 self._scheduler.remove_job(str(r["id"]))
             except Exception:
-                logger.debug("APS job %s not found; deleting DB row anyway", r["id"])
-            self.storage.delete_scheduled_job(r["id"])
+                logger.debug("APS job %s not found; updating DB row anyway", r["id"])
+            self.storage.update_scheduled_job_status(r["id"], "cancelled")
             cancelled.append({"id": r["id"], "content": r["payload"]})
+        for c in cancelled:
+            self._publish("reminder.cancelled", c["id"])
         return {"ambiguous": False, "candidates": [], "cancelled": cancelled}
 
     def _row_to_view(self, row: dict) -> dict:

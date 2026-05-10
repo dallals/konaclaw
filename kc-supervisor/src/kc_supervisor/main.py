@@ -7,6 +7,7 @@ from kc_supervisor.agents import AgentRegistry
 from kc_supervisor.approvals import ApprovalBroker
 from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.locks import ConversationLocks
+from kc_supervisor.reminders_broadcaster import RemindersBroadcaster
 from kc_supervisor.secrets_store import SecretsStore, SecurityCliKeychain
 from kc_supervisor.service import Deps, create_app
 from kc_supervisor.storage import Storage
@@ -329,12 +330,14 @@ def main() -> None:
         fut = _asyncio_sched.run_coroutine_threadsafe(coro, deps.event_loop)
         return fut.result(timeout=30)
 
+    deps.reminders_broadcaster = RemindersBroadcaster()
     _reminder_runner = ReminderRunner(
         storage=deps.storage,
         conversations=deps.conversations,
         connector_registry=deps.connector_registry,
         coroutine_runner=_coroutine_runner,
         agent_registry=registry,
+        broadcaster=deps.reminders_broadcaster,
     )
     # Register as the module-level active runner so APS's pickled module-level
     # `fire_reminder` can dispatch to this instance. (See runner.py for why we
@@ -345,6 +348,7 @@ def main() -> None:
         runner=_reminder_runner,
         db_path=home / "data" / "konaclaw.db",
         timezone=_tz_name,
+        broadcaster=deps.reminders_broadcaster,
     )
     # Now that schedule_service exists, wire it into the AgentRegistry and
     # reload so Kona's AssembledAgent picks up the four scheduling tools.

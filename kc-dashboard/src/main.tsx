@@ -11,6 +11,7 @@ import Shares from "./views/Shares";
 import Monitor from "./views/Monitor";
 import Connectors from "./views/Connectors";
 import Zaps from "./views/Zaps";
+import Reminders from "./views/Reminders";
 import { WSProvider } from "./ws/WSContext";
 import "./index.css";
 
@@ -32,6 +33,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="permissions" element={<Permissions />} />
             <Route path="monitor" element={<Monitor />} />
             <Route path="audit" element={<Audit />} />
+            <Route path="reminders" element={<Reminders />} />
           </Route>
         </Routes>
       </BrowserRouter>

@@ -1,0 +1,255 @@
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  listReminders,
+  cancelReminder as cancelReminderApi,
+  snoozeReminder as snoozeReminderApi,
+  type Reminder,
+  type ReminderKind,
+  type ReminderStatus,
+  type ReminderChannel,
+} from "../api/reminders";
+import { useReminderEvents } from "../ws/useReminderEvents";
+
+const ALL_STATUSES: ReminderStatus[] = ["pending", "done", "cancelled", "failed", "missed"];
+const ALL_CHANNELS: ReminderChannel[] = ["dashboard", "telegram", "imessage"];
+const CHANNEL_LABEL: Record<ReminderChannel, string> = {
+  dashboard: "DASH", telegram: "TG", imessage: "IMSG",
+};
+
+type KindTab = "all" | "reminder" | "cron";
+
+const QUICK_OFFSETS_SEC: Array<[string, number]> = [
+  ["+15m", 15 * 60],
+  ["+1h", 60 * 60],
+  ["+1d", 24 * 60 * 60],
+];
+
+function parseKindTab(s: string | null): KindTab {
+  return s === "reminder" || s === "cron" ? s : "all";
+}
+
+function formatNextFire(r: Reminder): string {
+  if (r.next_fire_at == null) return "—";
+  if (r.kind === "cron" && r.cron_spec) {
+    // crude; the audit panel will show a friendly version
+    return r.cron_spec;
+  }
+  const delta = r.next_fire_at - Date.now() / 1000;
+  if (delta < 0) return "overdue";
+  if (delta < 60) return `in ${Math.round(delta)}s`;
+  if (delta < 3600) return `in ${Math.round(delta / 60)}m`;
+  if (delta < 86400) return `in ${Math.round(delta / 3600)}h`;
+  return `in ${Math.round(delta / 86400)}d`;
+}
+
+export default function Reminders() {
+  useReminderEvents();
+  const qc = useQueryClient();
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [confirmingCancelId, setConfirmingCancelId] = useState<number | null>(null);
+  const [snoozeOpenId, setSnoozeOpenId] = useState<number | null>(null);
+  const [params, setParams] = useSearchParams();
+  const cancelMut = useMutation({
+    mutationFn: (id: number) => cancelReminderApi(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["reminders"] }),
+  });
+  const snoozeMut = useMutation({
+    mutationFn: (vars: { id: number; when_utc: number }) =>
+      snoozeReminderApi(vars.id, vars.when_utc),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["reminders"] }),
+  });
+  const tab = parseKindTab(params.get("tab"));
+  const statuses = (params.getAll("status") as ReminderStatus[]).filter(s => ALL_STATUSES.includes(s));
+  const channels = (params.getAll("channel") as ReminderChannel[]).filter(c => ALL_CHANNELS.includes(c));
+
+  const filters = {
+    statuses: statuses.length ? statuses : undefined,
+    channels: channels.length ? channels : undefined,
+    kinds: tab === "all" ? undefined : ([tab] as ReminderKind[]),
+  };
+
+  const q = useQuery({
+    queryKey: ["reminders", filters],
+    queryFn: () => listReminders(filters),
+    refetchInterval: 30_000,
+  });
+
+  const setTab = (next: KindTab) => {
+    if (next === "all") params.delete("tab"); else params.set("tab", next);
+    setParams(params, { replace: true });
+  };
+  const toggleStatus = (s: ReminderStatus) => {
+    const cur = params.getAll("status");
+    params.delete("status");
+    const next = cur.includes(s) ? cur.filter(x => x !== s) : [...cur, s];
+    next.forEach(v => params.append("status", v));
+    setParams(params, { replace: true });
+  };
+  const toggleChannel = (c: ReminderChannel) => {
+    const cur = params.getAll("channel");
+    params.delete("channel");
+    const next = cur.includes(c) ? cur.filter(x => x !== c) : [...cur, c];
+    next.forEach(v => params.append("channel", v));
+    setParams(params, { replace: true });
+  };
+
+  const reminders = q.data?.reminders ?? [];
+
+  // ?highlight=N support — when the chat bubble footer link routes here,
+  // scroll the matching row into view and pulse it briefly. Effect fires
+  // when (a) the highlight param changes or (b) the matching row first
+  // appears in the rendered list (deferred-render-after-fetch case).
+  const highlightId = Number(params.get("highlight")) || null;
+  const rowRefs = useRef<Map<number, HTMLLIElement>>(new Map());
+  const [pulseId, setPulseId] = useState<number | null>(null);
+  const hasRow = highlightId != null && reminders.some((r) => r.id === highlightId);
+  useEffect(() => {
+    if (highlightId == null || !hasRow) return;
+    const el = rowRefs.current.get(highlightId);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setPulseId(highlightId);
+    const t = setTimeout(() => setPulseId(null), 2000);
+    return () => clearTimeout(t);
+  }, [highlightId, hasRow]);
+
+  return (
+    <div className="p-5">
+      <div role="tablist" className="flex border-b border-line mb-3">
+        {(["all", "reminder", "cron"] as KindTab[]).map(t => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            className={"px-4 py-2 text-xs uppercase tracking-[0.12em] font-mono border-r border-line "
+              + (tab === t ? "text-textStrong border-b-2 border-b-accent" : "text-muted hover:text-text")}
+          >
+            {t === "all" ? "All" : t === "reminder" ? "One-shot" : "Recurring"}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-3">
+        <span className="text-xs uppercase tracking-[0.12em] text-muted2 self-center mr-1">Status</span>
+        {ALL_STATUSES.map(s => (
+          <button
+            key={s}
+            onClick={() => toggleStatus(s)}
+            className={"px-3 py-1 text-xs border "
+              + (statuses.includes(s) ? "border-accent text-text" : "border-line text-muted hover:text-text")}
+          >{s}</button>
+        ))}
+        <span className="text-xs uppercase tracking-[0.12em] text-muted2 self-center mx-2">Channel</span>
+        {ALL_CHANNELS.map(c => (
+          <button
+            key={c}
+            onClick={() => toggleChannel(c)}
+            className={"px-3 py-1 text-xs border font-mono "
+              + (channels.includes(c) ? "border-accent text-text" : "border-line text-muted hover:text-text")}
+          >{CHANNEL_LABEL[c]}</button>
+        ))}
+      </div>
+
+      {q.isLoading && <div className="text-muted text-sm">Loading…</div>}
+      {q.isError && <div className="text-bad text-sm">Failed to load reminders.</div>}
+      {!q.isLoading && reminders.length === 0 && (
+        <div className="text-muted text-sm py-8 text-center">No reminders match these filters.</div>
+      )}
+
+      <ul className="divide-y divide-line">
+        {reminders.map(r => (
+          <li
+            key={r.id}
+            ref={(el) => {
+              if (el) rowRefs.current.set(r.id, el);
+              else rowRefs.current.delete(r.id);
+            }}
+            className={"font-mono text-xs" + (pulseId === r.id ? " highlight-pulse" : "")}
+          >
+            <div className="flex items-center gap-3 py-2 cursor-pointer"
+                 onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}>
+              <span className="w-32 text-muted">{formatNextFire(r)}</span>
+              <span className={"px-1.5 py-0.5 text-[9px] tracking-[0.1em] uppercase border "
+                + (r.kind === "cron" ? "border-accent text-accent" : "border-line text-muted")}>
+                {r.kind === "cron" ? "CRON" : "ONE-SHOT"}
+              </span>
+              <span className="flex-1 text-text truncate" title={r.payload}>{r.payload}</span>
+              <span className="text-muted2">{CHANNEL_LABEL[r.channel]}</span>
+              {r.status !== "pending" && (
+                <span className="px-1.5 py-0.5 text-[9px] tracking-[0.1em] uppercase border border-line text-muted">
+                  {r.status}
+                </span>
+              )}
+              {r.kind === "reminder" && r.status === "pending" && (
+                <button
+                  aria-label="snooze reminder"
+                  onClick={(e) => { e.stopPropagation(); setSnoozeOpenId(snoozeOpenId === r.id ? null : r.id); }}
+                  className="text-muted hover:text-text px-2"
+                >⏱</button>
+              )}
+              {r.status === "pending" && confirmingCancelId !== r.id && (
+                <button
+                  aria-label="cancel reminder"
+                  onClick={(e) => { e.stopPropagation(); setConfirmingCancelId(r.id); }}
+                  className="text-muted hover:text-bad px-2"
+                >×</button>
+              )}
+              {confirmingCancelId === r.id && (
+                <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  <span className="text-muted">Cancel?</span>
+                  <button
+                    onClick={() => { cancelMut.mutate(r.id); setConfirmingCancelId(null); }}
+                    className="px-2 py-0.5 text-[10px] uppercase tracking-[0.1em] border border-bad text-bad"
+                  >Confirm</button>
+                  <button
+                    onClick={() => setConfirmingCancelId(null)}
+                    className="px-2 py-0.5 text-[10px] uppercase tracking-[0.1em] border border-line text-muted"
+                  >Keep</button>
+                </span>
+              )}
+            </div>
+            {expandedId === r.id && (
+              <div className="bg-panel2 border-l-2 border-accent px-4 py-3 mb-2 text-muted text-[11px] space-y-1">
+                <div>Created at <span className="text-text">{new Date(r.created_at * 1000).toLocaleString()}</span> by <span className="text-text">{r.agent}</span> via <span className="text-text">{r.channel}</span></div>
+                {r.kind === "cron" && r.cron_spec && (
+                  <div>Cron <span className="text-text">{r.cron_spec}</span></div>
+                )}
+                <div>Attempts <span className="text-text">{r.attempts}</span>{r.last_fired_at && <> · last fired <span className="text-text">{new Date(r.last_fired_at * 1000).toLocaleString()}</span></>}</div>
+              </div>
+            )}
+            {snoozeOpenId === r.id && (
+              <div onClick={(e) => e.stopPropagation()}
+                   className="bg-panel2 border border-line p-3 mb-2 flex flex-wrap gap-2 items-center">
+                <span className="text-muted text-[11px] uppercase tracking-[0.1em] mr-1">Snooze</span>
+                {QUICK_OFFSETS_SEC.map(([label, secs]) => (
+                  <button
+                    key={label}
+                    onClick={() => {
+                      snoozeMut.mutate({ id: r.id, when_utc: Date.now() / 1000 + secs });
+                      setSnoozeOpenId(null);
+                    }}
+                    className="px-2 py-0.5 text-[10px] border border-line hover:border-accent"
+                  >{label}</button>
+                ))}
+                <input
+                  type="datetime-local"
+                  onChange={(e) => {
+                    const ts = new Date(e.target.value).getTime() / 1000;
+                    if (!isNaN(ts)) {
+                      snoozeMut.mutate({ id: r.id, when_utc: ts });
+                      setSnoozeOpenId(null);
+                    }
+                  }}
+                  className="bg-bg border border-line px-2 py-0.5 text-[11px]"
+                />
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
