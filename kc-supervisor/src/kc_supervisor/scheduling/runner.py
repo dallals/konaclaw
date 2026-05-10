@@ -31,11 +31,13 @@ class ReminderRunner:
         conversations: Any,        # ConversationManager
         connector_registry: Any,   # ConnectorRegistry
         coroutine_runner: CoroRunner,
+        agent_registry: Optional[Any] = None,  # AgentRegistry; required for mode='agent_phrased'
     ) -> None:
         self.storage = storage
         self.conversations = conversations
         self.connector_registry = connector_registry
         self._run_coro = coroutine_runner
+        self.agent_registry = agent_registry
 
     def fire(self, job_id: int) -> None:
         row = self.storage.get_scheduled_job(job_id)

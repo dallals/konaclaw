@@ -325,6 +325,7 @@ def main() -> None:
         conversations=deps.conversations,
         connector_registry=deps.connector_registry,
         coroutine_runner=_coroutine_runner,
+        agent_registry=registry,
     )
     # Register as the module-level active runner so APS's pickled module-level
     # `fire_reminder` can dispatch to this instance. (See runner.py for why we

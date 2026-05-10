@@ -7,7 +7,7 @@ from kc_supervisor.storage import Storage
 from kc_supervisor.scheduling.runner import ReminderRunner
 
 
-def _make_runner(tmp_path) -> tuple[ReminderRunner, Storage, MagicMock, MagicMock]:
+def _make_runner(tmp_path, *, agent_registry=None) -> tuple[ReminderRunner, Storage, MagicMock, MagicMock]:
     s = Storage(tmp_path / "kc.db")
     s.init()
     cm = MagicMock()
@@ -25,6 +25,7 @@ def _make_runner(tmp_path) -> tuple[ReminderRunner, Storage, MagicMock, MagicMoc
     runner = ReminderRunner(
         storage=s, conversations=cm, connector_registry=connector_registry,
         coroutine_runner=lambda c: asyncio.run(c),
+        agent_registry=agent_registry,
     )
     return runner, s, cm, connector_registry
 
@@ -232,3 +233,18 @@ def test_fire_dashboard_destination_takes_dashboard_branch(tmp_path):
     cm.append.assert_called_once()
     persisted_cid = cm.append.call_args.args[0]
     assert persisted_cid == dest_cid
+
+
+def test_runner_accepts_agent_registry(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.runner import ReminderRunner
+    from unittest.mock import MagicMock
+    import asyncio
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    runner = ReminderRunner(
+        storage=s, conversations=MagicMock(), connector_registry=MagicMock(),
+        coroutine_runner=lambda c: asyncio.run(c),
+        agent_registry=MagicMock(),
+    )
+    assert runner.agent_registry is not None
