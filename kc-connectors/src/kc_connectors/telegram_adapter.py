@@ -1,7 +1,12 @@
 from __future__ import annotations
+import logging
 from pathlib import Path
 from typing import Optional
 from kc_connectors.base import Connector, InboundCallback, MessageEnvelope
+from kc_connectors._telegram_format import md_to_telegram_html
+
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramConnector(Connector):
@@ -56,4 +61,19 @@ class TelegramConnector(Connector):
     async def send(self, chat_id: str, content: str, attachments=None) -> None:
         if chat_id not in self.allowlist:
             raise PermissionError(f"chat {chat_id} not allowlisted")
-        await self._app.bot.send_message(chat_id=int(chat_id), text=content)
+        # Render markdown → Telegram HTML so **bold** and tables come through
+        # as formatted text instead of literal asterisks. If the rendered HTML
+        # trips Telegram's strict parser (rare — usually a stray `<` in code
+        # the converter missed), retry once as plain text so the user still
+        # gets the message.
+        html = md_to_telegram_html(content)
+        try:
+            await self._app.bot.send_message(
+                chat_id=int(chat_id), text=html, parse_mode="HTML",
+            )
+        except Exception:
+            logger.warning(
+                "telegram send failed with parse_mode=HTML; retrying as plain text",
+                exc_info=True,
+            )
+            await self._app.bot.send_message(chat_id=int(chat_id), text=content)

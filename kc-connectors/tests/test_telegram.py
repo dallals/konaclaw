@@ -13,6 +13,34 @@ async def test_send_calls_bot_send_message():
     kwargs = c._app.bot.send_message.call_args.kwargs
     assert kwargs["chat_id"] == 42
     assert kwargs["text"] == "hello"
+    assert kwargs["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_send_renders_markdown_to_html():
+    c = TelegramConnector(token="T0K", allowlist={"42"})
+    c._app = MagicMock()
+    c._app.bot.send_message = AsyncMock()
+    await c.send(chat_id="42", content="**bold** message", attachments=None)
+    kwargs = c._app.bot.send_message.call_args.kwargs
+    assert kwargs["text"] == "<b>bold</b> message"
+    assert kwargs["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_send_falls_back_to_plain_text_on_html_error():
+    """If Telegram rejects the HTML (e.g., a stray tag the converter missed),
+    the connector retries with plain text so the user still gets the message."""
+    c = TelegramConnector(token="T0K", allowlist={"42"})
+    c._app = MagicMock()
+    # First call (with parse_mode=HTML) raises; second (plain text) succeeds.
+    c._app.bot.send_message = AsyncMock(side_effect=[Exception("Bad Request: can't parse entities"), None])
+    await c.send(chat_id="42", content="**oops**", attachments=None)
+    assert c._app.bot.send_message.await_count == 2
+    # Second call has no parse_mode and uses raw content.
+    second = c._app.bot.send_message.call_args_list[1].kwargs
+    assert second["text"] == "**oops**"
+    assert "parse_mode" not in second
 
 
 @pytest.mark.asyncio
