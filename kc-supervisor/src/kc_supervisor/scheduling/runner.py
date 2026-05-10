@@ -4,6 +4,7 @@ import time
 from typing import Any, Callable, Coroutine, Optional
 
 from kc_core.messages import AssistantMessage
+from kc_supervisor.scheduling.context import set_current_context
 from kc_supervisor.storage import Storage
 
 
@@ -141,7 +142,18 @@ class ReminderRunner:
 
     def _compose_agent_phrased(self, row: dict, *, dest_conv_id: int) -> Optional[str]:
         """Run a fire-time agent turn for an agent_phrased row. Returns the agent's
-        final assistant text, or None on failure (caller marks the row failed)."""
+        final assistant text, or None on failure (caller marks the row failed).
+
+        NOTE on concurrency: this method mutates `core.tools` and `core.system_prompt`
+        on the shared AssembledAgent.core_agent instance for the duration of the turn,
+        and restores them in `finally`. The supervisor serializes per-conversation
+        agent turns via conv_locks (see ws_routes / inbound), but the APScheduler
+        worker thread that calls this method does NOT participate in that lock. If
+        a normal user turn for the same agent is in-flight when this fires, the
+        tool/prompt mutations could race. Acceptable risk for Phase 2 (single user,
+        rare overlap); revisit if the agent registry grows or concurrency becomes
+        observable.
+        """
         if self.agent_registry is None:
             logger.error(
                 "agent_phrased fire requires agent_registry (job %s)", row["id"],
@@ -166,7 +178,6 @@ class ReminderRunner:
             )
             core.tools = _filter_tools(original_tools, exclude=self._STRIPPED_TOOL_NAMES)
 
-            from kc_supervisor.scheduling.context import set_current_context
             set_current_context({
                 "conversation_id": dest_conv_id,
                 "channel": row["channel"],
