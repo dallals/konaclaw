@@ -186,3 +186,38 @@ def test_existing_rows_get_default_literal_mode(tmp_path):
         )
     rows = s.list_scheduled_jobs()
     assert rows[0]["mode"] == "literal"
+
+
+def test_channel_routing_get_returns_none_when_missing(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    assert s.get_channel_routing("telegram") is None
+
+
+def test_channel_routing_upsert_then_get(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.upsert_channel_routing("telegram", "8627206839", enabled=1)
+    routing = s.get_channel_routing("telegram")
+    assert routing == {"default_chat_id": "8627206839", "enabled": 1}
+
+
+def test_channel_routing_upsert_overwrites(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.upsert_channel_routing("telegram", "old", enabled=1)
+    s.upsert_channel_routing("telegram", "new", enabled=0)
+    routing = s.get_channel_routing("telegram")
+    assert routing == {"default_chat_id": "new", "enabled": 0}
+
+
+def test_channel_routing_list(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.upsert_channel_routing("telegram", "T", enabled=1)
+    s.upsert_channel_routing("imessage", "I", enabled=0)
+    rows = s.list_channel_routing()
+    by_channel = {r["channel"]: r for r in rows}
+    assert by_channel["telegram"]["default_chat_id"] == "T"
+    assert by_channel["telegram"]["enabled"] == 1
+    assert by_channel["imessage"]["enabled"] == 0

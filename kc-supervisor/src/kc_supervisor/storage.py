@@ -92,6 +92,12 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_status ON scheduled_jobs(status);
 CREATE INDEX IF NOT EXISTS ix_jobs_conv ON scheduled_jobs(conversation_id);
+
+CREATE TABLE IF NOT EXISTS channel_routing (
+    channel          TEXT PRIMARY KEY,
+    default_chat_id  TEXT NOT NULL,
+    enabled          INTEGER NOT NULL DEFAULT 1
+);
 """
 
 
@@ -429,3 +435,30 @@ class Storage:
         with self.connect() as c:
             cur = c.execute("DELETE FROM scheduled_jobs WHERE id=?", (job_id,))
             return cur.rowcount
+
+    # ----- channel routing (cross-channel allowlist) -----
+
+    def get_channel_routing(self, channel: str) -> Optional[dict]:
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT default_chat_id, enabled FROM channel_routing WHERE channel=?",
+                (channel,),
+            ).fetchone()
+        return {"default_chat_id": row["default_chat_id"], "enabled": row["enabled"]} if row else None
+
+    def upsert_channel_routing(self, channel: str, default_chat_id: str, enabled: int) -> None:
+        with self.connect() as c:
+            c.execute(
+                "INSERT INTO channel_routing (channel, default_chat_id, enabled) "
+                "VALUES (?,?,?) "
+                "ON CONFLICT(channel) DO UPDATE SET "
+                "default_chat_id=excluded.default_chat_id, enabled=excluded.enabled",
+                (channel, default_chat_id, enabled),
+            )
+
+    def list_channel_routing(self) -> list[dict]:
+        with self.connect() as c:
+            rows = c.execute(
+                "SELECT channel, default_chat_id, enabled FROM channel_routing ORDER BY channel ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
