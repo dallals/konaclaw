@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     attempts INTEGER NOT NULL DEFAULT 0,
     last_fired_at REAL,
     created_at REAL NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'literal',
     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_status ON scheduled_jobs(status);
@@ -122,6 +123,9 @@ class Storage:
             msg_cols = {r["name"] for r in c.execute("PRAGMA table_info(messages)").fetchall()}
             if "usage_json" not in msg_cols:
                 c.execute("ALTER TABLE messages ADD COLUMN usage_json TEXT")
+            job_cols = {r["name"] for r in c.execute("PRAGMA table_info(scheduled_jobs)").fetchall()}
+            if "mode" not in job_cols:
+                c.execute("ALTER TABLE scheduled_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'literal'")
 
     @contextmanager
     def connect(self):

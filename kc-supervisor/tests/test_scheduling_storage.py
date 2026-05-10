@@ -159,3 +159,30 @@ def test_conversation_delete_cascades_jobs(tmp_path):
         c.execute("PRAGMA foreign_keys = ON")
         c.execute("DELETE FROM conversations WHERE id=?", (cid,))
     assert s.list_scheduled_jobs(conversation_id=cid) == []
+
+
+def test_init_adds_mode_column_idempotently(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.init()  # second call must not fail
+    with s.connect() as c:
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(scheduled_jobs)").fetchall()}
+    assert "mode" in cols
+
+
+def test_existing_rows_get_default_literal_mode(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="telegram")
+    # Insert via raw SQL to simulate a Phase 1 row that pre-dates the mode column.
+    with s.connect() as c:
+        c.execute(
+            "INSERT INTO scheduled_jobs "
+            "(kind, agent, conversation_id, channel, chat_id, payload, "
+            " when_utc, cron_spec, status, attempts, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("reminder", "kona", cid, "telegram", "C1", "x",
+             1.0, None, "pending", 0, 1.0),
+        )
+    rows = s.list_scheduled_jobs()
+    assert rows[0]["mode"] == "literal"
