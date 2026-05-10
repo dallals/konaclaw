@@ -3,7 +3,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, TYPE_CHECKING
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from kc_sandbox.shares import SharesRegistry
@@ -12,6 +12,9 @@ from kc_supervisor.approvals import ApprovalBroker
 from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.locks import ConversationLocks
 from kc_supervisor.storage import Storage
+
+if TYPE_CHECKING:
+    from kc_supervisor.scheduling.service import ScheduleService
 
 
 @dataclass
@@ -66,6 +69,9 @@ class Deps:
     # zero-arg callables and don't appear in any test fixture's Deps(...).
     restart_telegram: Optional[Any] = None
     restart_imessage: Optional[Any] = None
+    # Phase-1 scheduling. Constructed in main.py and started inside FastAPI's
+    # startup hook below so it picks up the running event loop.
+    schedule_service: Optional["ScheduleService"] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:
@@ -196,5 +202,26 @@ def create_app(deps: Deps) -> FastAPI:
                     import logging
                     logging.getLogger(__name__).exception(
                         "connector %s failed to stop", c.name)
+
+    # Reminder/cron scheduler. Started after connectors so deps.event_loop is
+    # captured first (the connectors startup hook sets it).
+    if deps.schedule_service is not None:
+        @app.on_event("startup")
+        async def _startup_schedule_service() -> None:
+            try:
+                deps.schedule_service.start()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "ScheduleService failed to start")
+
+        @app.on_event("shutdown")
+        async def _shutdown_schedule_service() -> None:
+            try:
+                deps.schedule_service.shutdown()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "ScheduleService failed to shut down")
 
     return app

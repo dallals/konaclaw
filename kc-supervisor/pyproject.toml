@@ -20,6 +20,7 @@ dependencies = [
     "dateparser>=1.2",
     "croniter>=2.0",
     "cron-descriptor>=1.4",
+    "tzlocal>=5.0",
 ]
 
 [project.optional-dependencies]
