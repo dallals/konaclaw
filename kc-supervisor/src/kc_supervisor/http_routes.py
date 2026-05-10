@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from kc_skills import PathOutsideSkillDir
 from kc_supervisor.scheduling.constants import (
     ALLOWED_REMINDER_STATUSES,
     ALLOWED_REMINDER_KINDS,
@@ -46,6 +47,27 @@ def _message_to_dict(m, usage: Optional[dict] = None) -> dict:
     if usage is not None:
         d["usage"] = usage
     return d
+
+
+def _skill_summary_to_dict(s) -> dict:
+    return {
+        "name": s.name,
+        "category": s.category,
+        "description": s.description,
+        "version": s.version,
+        "platforms": s.platforms,
+        "tags": s.tags,
+        "related_skills": s.related_skills,
+        "skill_dir": str(s.skill_dir),
+    }
+
+
+def _skill_detail_to_dict(skill) -> dict:
+    return {
+        **_skill_summary_to_dict(skill.summary),
+        "body": skill.body,
+        "supporting_files": skill.supporting_files,
+    }
 
 
 def register_http_routes(app: FastAPI) -> None:
@@ -445,3 +467,42 @@ def register_http_routes(app: FastAPI) -> None:
             raise
         row = deps.storage.get_scheduled_job(reminder_id)
         return svc._enrich_row(dict(row))
+
+    @app.get("/skills")
+    def list_skills_endpoint():
+        deps = app.state.deps
+        idx = deps.skill_index
+        if idx is None:
+            raise HTTPException(503, detail={"code": "skill_index_unavailable"})
+        return {"skills": [_skill_summary_to_dict(s) for s in idx.list()]}
+
+    @app.get("/skills/{name}")
+    def get_skill_endpoint(name: str):
+        deps = app.state.deps
+        idx = deps.skill_index
+        if idx is None:
+            raise HTTPException(503, detail={"code": "skill_index_unavailable"})
+        skill = idx.get(name)
+        if skill is None:
+            raise HTTPException(404, detail={"code": "skill_not_found", "name": name})
+        return _skill_detail_to_dict(skill)
+
+    @app.get("/skills/{name}/files/{file_path:path}")
+    def get_skill_file_endpoint(name: str, file_path: str):
+        deps = app.state.deps
+        idx = deps.skill_index
+        if idx is None:
+            raise HTTPException(503, detail={"code": "skill_index_unavailable"})
+        if idx.get(name) is None:
+            raise HTTPException(404, detail={"code": "skill_not_found", "name": name})
+        try:
+            content = idx.read_supporting_file(name, file_path)
+        except PathOutsideSkillDir:
+            raise HTTPException(
+                422, detail={"code": "path_outside_skill_dir", "file_path": file_path},
+            )
+        if content is None:
+            raise HTTPException(
+                404, detail={"code": "file_not_found", "file_path": file_path},
+            )
+        return {"name": name, "file_path": file_path, "content": content}
