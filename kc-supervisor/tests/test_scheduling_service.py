@@ -465,3 +465,80 @@ def test_schedule_cron_invalid_mode_raises(tmp_path):
             conversation_id=cid, channel="dashboard", chat_id="ws-1", agent="kona",
             mode="bogus",
         )
+
+
+def test_list_reminders_default_scope_user_returns_all(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid_a = s.create_conversation(agent="kona", channel="telegram")
+    cid_b = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    svc.schedule_one_shot(
+        when="in 1 hour", content="A",
+        conversation_id=cid_a, channel="telegram", chat_id="C1", agent="kona",
+    )
+    svc.schedule_one_shot(
+        when="in 1 hour", content="B",
+        conversation_id=cid_b, channel="dashboard", chat_id="ws-1", agent="kona",
+    )
+    out = svc.list_reminders(conversation_id=cid_a)  # default scope="user"
+    contents = [r["content"] for r in out["reminders"]]
+    assert "A" in contents and "B" in contents
+
+
+def test_list_reminders_scope_conversation_filters(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid_a = s.create_conversation(agent="kona", channel="telegram")
+    cid_b = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    svc.schedule_one_shot(
+        when="in 1 hour", content="A",
+        conversation_id=cid_a, channel="telegram", chat_id="C1", agent="kona",
+    )
+    svc.schedule_one_shot(
+        when="in 1 hour", content="B",
+        conversation_id=cid_b, channel="dashboard", chat_id="ws-1", agent="kona",
+    )
+    out = svc.list_reminders(conversation_id=cid_a, scope="conversation")
+    contents = [r["content"] for r in out["reminders"]]
+    assert contents == ["A"]
+
+
+def test_list_reminders_view_includes_channel_and_mode(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.upsert_channel_routing("telegram", "T", enabled=1)
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    svc.schedule_one_shot(
+        when="in 1 hour", content="X",
+        conversation_id=cid, channel="dashboard", chat_id="ws-1", agent="kona",
+        target_channel="telegram", mode="agent_phrased",
+    )
+    out = svc.list_reminders(conversation_id=cid)
+    r = out["reminders"][0]
+    assert r["channel"] == "telegram"
+    assert r["mode"] == "agent_phrased"
+
+
+def test_list_reminders_invalid_scope_raises(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    import pytest
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    with pytest.raises(ValueError, match="unknown scope"):
+        svc.list_reminders(conversation_id=cid, scope="bogus")

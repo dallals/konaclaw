@@ -90,6 +90,7 @@ class ScheduleService:
 
     _ALLOWED_TARGET_CHANNELS = {"current", "telegram", "dashboard", "imessage"}
     _ALLOWED_MODES = {"literal", "agent_phrased"}
+    _ALLOWED_SCOPES = {"user", "conversation"}
 
     def schedule_one_shot(
         self,
@@ -226,11 +227,17 @@ class ScheduleService:
 
     def list_reminders(
         self, *, conversation_id: int, active_only: bool = True,
+        scope: str = "user",
     ) -> dict:
+        if scope not in self._ALLOWED_SCOPES:
+            raise ValueError(f"unknown scope {scope!r}")
         statuses = ("pending",) if active_only else None
-        rows = self.storage.list_scheduled_jobs(
-            conversation_id=conversation_id, statuses=statuses,
-        )
+        if scope == "conversation":
+            rows = self.storage.list_scheduled_jobs(
+                conversation_id=conversation_id, statuses=statuses,
+            )
+        else:
+            rows = self.storage.list_scheduled_jobs(statuses=statuses)
         return {"reminders": [self._row_to_view(r) for r in rows]}
 
     def cancel_reminder(
@@ -305,6 +312,8 @@ class ScheduleService:
             "content": row["payload"],
             "status": row["status"],
             "human_summary": human_summary,
+            "channel": row["channel"],
+            "mode": row["mode"],
         }
 
     # ---- reconcile ----
