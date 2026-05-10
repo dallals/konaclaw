@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kc-skills"
+version = "0.1.0"
+description = "KonaClaw skills layer (~/KonaClaw/skills/ + agent tools)"
+requires-python = ">=3.11"
+dependencies = ["kc-core", "pyyaml>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kc_skills"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"

@@ -9,6 +9,7 @@ from kc_core.stream_frames import (
     TokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
 )
 from kc_supervisor.agents import AgentStatus
+from kc_supervisor.skill_slash import resolve_slash_command
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,19 @@ def register_ws_routes(app: FastAPI) -> None:
                         "message": "user_message must include non-empty content",
                     })
                     continue
+
+                # Slash command resolution: if the message starts with
+                # /<known-skill-name>, prepend the loaded skill body to the
+                # text the model sees, but persist the user's *original*
+                # text so the chat transcript stays clean.
+                agent_input = content
+                if deps.skill_index is not None:
+                    resolved = resolve_slash_command(
+                        content, skill_index=deps.skill_index,
+                    )
+                    if resolved is not None:
+                        loaded, instruction = resolved
+                        agent_input = loaded
 
                 async with lock:
                     # Persist user message FIRST so /conversations/{cid}/messages
@@ -150,7 +164,7 @@ def register_ws_routes(app: FastAPI) -> None:
                         "agent": rt.name,
                     })
                     try:
-                        async for frame in rt.assembled.core_agent.send_stream(content):
+                        async for frame in rt.assembled.core_agent.send_stream(agent_input):
                             if isinstance(frame, TokenDelta):
                                 await _safe_send({"type": "token", "delta": frame.content})
                             elif isinstance(frame, ToolCallStart):

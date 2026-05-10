@@ -75,6 +75,17 @@ def main() -> None:
     except ImportError:
         pass
 
+    # Skills layer — if kc-skills is installed, point assembly at
+    # ~/KonaClaw/skills/. Each agent gets skills_list/skill_view/skill_run_script.
+    skill_index = None
+    try:
+        from kc_skills import SkillIndex
+        skills_root = home / "skills"
+        skills_root.mkdir(parents=True, exist_ok=True)
+        skill_index = SkillIndex(skills_root)
+    except ImportError:
+        pass
+
     # Google OAuth paths — read here so they reach Deps even when kc-connectors
     # isn't importable (the dashboard's Connect-with-Google flow only needs the
     # paths + google-auth-oauthlib, not kc_connectors).
@@ -212,6 +223,7 @@ def main() -> None:
         gcal_service=gcal_service,
         news_client=news_client,
         ollama_api_key=ollama_api_key,
+        skill_index=skill_index,
     )
     registry.load_all()
 
@@ -229,6 +241,7 @@ def main() -> None:
         google_credentials_path=Path(google_creds_path_str) if google_creds_path_str else None,
         google_token_path=Path(google_token_path_str),
         news_client=news_client,
+        skill_index=skill_index,
     )
     # Always wire the registry to deps so ReminderRunner.fire() can call
     # connector_registry.get(channel) at fire time. The InboundRouter still
@@ -246,6 +259,7 @@ def main() -> None:
             conv_locks=conv_locks,
             routing_table=routing_table,
             connector_registry=connector_registry,
+            skill_index=deps.skill_index,
         )
 
     # Hot-restart hooks for PATCH /connectors/{name} (Task 7 of v0.2.1).

@@ -68,6 +68,7 @@ class AgentRegistry:
         news_client: "Optional[Any]" = None,
         ollama_api_key: "Optional[str]" = None,
         schedule_service: "Optional[Any]" = None,
+        skill_index: "Optional[Any]" = None,
     ) -> None:
         self.agents_dir = Path(agents_dir)
         self.shares = shares
@@ -84,6 +85,7 @@ class AgentRegistry:
         self.gcal_service = gcal_service
         self.news_client = news_client
         self.schedule_service = schedule_service
+        self.skill_index = skill_index
         self._by_name: dict[str, AgentRuntime] = {}
 
     def load_all(self) -> None:
@@ -135,6 +137,7 @@ class AgentRegistry:
                     news_client=self.news_client,
                     ollama_api_key=self.ollama_api_key,
                     schedule_service=self.schedule_service,
+                    skill_index=self.skill_index,
                 )
                 new_by_name[cfg.name] = AgentRuntime(
                     name=cfg.name,

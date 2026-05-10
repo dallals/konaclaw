@@ -306,6 +306,58 @@ def test_assemble_without_zapier_no_meta_tool(home):
     assert "find_or_install_zap" not in names
 
 
+def test_skill_tools_registered_when_skill_index_provided(home, tmp_path):
+    """If skill_index is passed to assemble_agent, the three skill tools
+    are registered on the agent's tool registry."""
+    from kc_skills import SkillIndex
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    idx = SkillIndex(skills_root)
+
+    storage = Storage(home / "data" / "kc.db"); storage.init()
+    broker = ApprovalBroker()
+    shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
+    cfg = AgentConfig(name="alice", model="qwen2.5:7b", system_prompt="hi")
+
+    a = assemble_agent(
+        cfg=cfg,
+        shares=shares,
+        audit_storage=storage,
+        broker=broker,
+        ollama_url="http://localhost:11434",
+        default_model="qwen2.5:7b",
+        undo_db_path=home / "data" / "undo.db",
+        skill_index=idx,
+    )
+    names = set(a.registry.names())
+    assert {"skills_list", "skill_view", "skill_run_script"} <= names
+    assert a.engine.tier_map["skills_list"] == Tier.SAFE
+    assert a.engine.tier_map["skill_view"] == Tier.SAFE
+    assert a.engine.tier_map["skill_run_script"] == Tier.DESTRUCTIVE
+
+
+def test_skill_tools_absent_when_skill_index_none(home):
+    """Without skill_index the three tools are not registered."""
+    storage = Storage(home / "data" / "kc.db"); storage.init()
+    broker = ApprovalBroker()
+    shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
+    cfg = AgentConfig(name="alice", model="qwen2.5:7b", system_prompt="hi")
+
+    a = assemble_agent(
+        cfg=cfg,
+        shares=shares,
+        audit_storage=storage,
+        broker=broker,
+        ollama_url="http://localhost:11434",
+        default_model="qwen2.5:7b",
+        undo_db_path=home / "data" / "undo.db",
+    )
+    names = set(a.registry.names())
+    assert "skills_list" not in names
+    assert "skill_view" not in names
+    assert "skill_run_script" not in names
+
+
 def test_zapier_mcp_tools_are_mutating_not_destructive(home):
     """Zapier MCP tools are user-authorized at mcp.zapier.com (per-app OAuth),
     so KonaClaw treats them as MUTATING (audited, no popup) rather than
