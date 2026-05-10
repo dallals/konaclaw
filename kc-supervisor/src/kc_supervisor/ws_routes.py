@@ -270,3 +270,41 @@ def register_ws_routes(app: FastAPI) -> None:
             return
         finally:
             sub.unsubscribe()
+
+    @app.websocket("/ws/reminders")
+    async def ws_reminders(ws: WebSocket):
+        await ws.accept()
+        deps = app.state.deps
+        broadcaster = deps.reminders_broadcaster
+        if broadcaster is None:
+            await ws.send_json({"type": "error", "message": "broadcaster unavailable"})
+            await ws.close()
+            return
+
+        import asyncio as _asyncio
+        import time as _time
+        loop = _asyncio.get_running_loop()
+
+        async def _send(event_type: str, reminder_row: dict) -> None:
+            try:
+                await ws.send_json({
+                    "type": event_type,
+                    "reminder": reminder_row,
+                    "ts": int(_time.time()),
+                })
+            except Exception:
+                logger.warning("ws_reminders failed to send %s", event_type, exc_info=True)
+
+        sub = broadcaster.subscribe(
+            lambda et, row: loop.call_soon_threadsafe(_asyncio.create_task, _send(et, row))
+        )
+
+        try:
+            # Keep the connection open. We don't expect inbound messages, but a
+            # blocking receive lets us notice client disconnects.
+            while True:
+                await ws.receive_text()
+        except (WebSocketDisconnect, RuntimeError):
+            return
+        finally:
+            sub.unsubscribe()
