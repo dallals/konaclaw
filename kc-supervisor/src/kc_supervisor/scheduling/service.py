@@ -7,6 +7,7 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.cron import CronTrigger
 
@@ -46,7 +47,10 @@ class ScheduleService:
         self._tz = timezone
         sqlalchemy_url = f"sqlite:///{db_path}"
         self._scheduler = AsyncIOScheduler(
-            jobstores={"default": SQLAlchemyJobStore(url=sqlalchemy_url)},
+            jobstores={
+                "default": SQLAlchemyJobStore(url=sqlalchemy_url),
+                "_internal": MemoryJobStore(),
+            },
             timezone=timezone,
         )
 
@@ -64,9 +68,21 @@ class ScheduleService:
                     asyncio.set_event_loop(loop)
                 self._scheduler._eventloop = loop
             self._scheduler.start()
+        # Initial reconcile + 60-second background tick (memory jobstore so
+        # the bound method isn't pickled into the SQLAlchemy jobstore).
+        self.reconcile()
+        self._scheduler.add_job(
+            self.reconcile, trigger="interval", seconds=60,
+            id="__reconcile__", replace_existing=True,
+            jobstore="_internal",
+        )
 
     def shutdown(self) -> None:
         if self._scheduler.running:
+            try:
+                self._scheduler.remove_job("__reconcile__")
+            except Exception:
+                pass
             self._scheduler.shutdown(wait=False)
 
     # ---- one-shot ----
@@ -251,3 +267,50 @@ class ScheduleService:
             "status": row["status"],
             "human_summary": human_summary,
         }
+
+    # ---- reconcile ----
+
+    def reconcile(self) -> None:
+        """Reconcile APS jobs against the scheduled_jobs table.
+
+        - APS jobs whose mirror DB row is missing → drop the APS job.
+        - DB rows with status='pending' whose APS job is missing → re-create
+          the APS job from the row.
+
+        The internal '__reconcile__' job (the 60s tick) is always preserved.
+        """
+        pending_rows = self.storage.list_scheduled_jobs(statuses=("pending",))
+        pending_by_id = {str(r["id"]): r for r in pending_rows}
+
+        for job in list(self._scheduler.get_jobs()):
+            if job.id == "__reconcile__":
+                continue
+            if job.id not in pending_by_id:
+                try:
+                    self._scheduler.remove_job(job.id)
+                except Exception:
+                    pass
+
+        for row_id, row in pending_by_id.items():
+            if self._scheduler.get_job(row_id) is not None:
+                continue
+            try:
+                trigger = self._build_trigger_for_row(row)
+            except Exception:
+                logger.exception("reconcile: bad trigger for row %s", row_id)
+                continue
+            kwargs = {"misfire_grace_time": 86400} if row["kind"] == "reminder" else {"coalesce": True}
+            self._scheduler.add_job(
+                self.runner.fire, trigger=trigger,
+                kwargs={"job_id": row["id"]}, id=row_id,
+                replace_existing=True, **kwargs,
+            )
+
+    def _build_trigger_for_row(self, row: dict):
+        if row["kind"] == "reminder":
+            dt = datetime.fromtimestamp(row["when_utc"], tz=_tz_mod.utc)
+            return DateTrigger(run_date=dt)
+        elif row["kind"] == "cron":
+            return CronTrigger.from_crontab(row["cron_spec"], timezone=self._tz)
+        else:
+            raise ValueError(f"unknown kind: {row['kind']!r}")
