@@ -80,3 +80,37 @@ def test_fire_unknown_job_id_is_noop(tmp_path):
     connector = registry.get.return_value
     connector.send.assert_not_called()
     cm.append.assert_not_called()
+
+
+def test_fire_connector_failure_marks_failed(tmp_path):
+    runner, s, cm, registry = _make_runner(tmp_path)
+    connector = registry.get.return_value
+    connector.send.side_effect = RuntimeError("network down")
+    job_id = _seed(s, cm)
+    runner.fire(job_id)
+    row = s.get_scheduled_job(job_id)
+    assert row["status"] == "failed"
+    assert row["attempts"] == 1
+    cm.append.assert_not_called()
+
+
+def test_fire_persist_failure_still_marks_done(tmp_path):
+    runner, s, cm, registry = _make_runner(tmp_path)
+    cm.append.side_effect = Exception("DB lock")
+    job_id = _seed(s, cm)
+    runner.fire(job_id)
+    connector = registry.get.return_value
+    connector.send.assert_called_once()  # User got the message
+    row = s.get_scheduled_job(job_id)
+    assert row["status"] == "done"
+    assert row["attempts"] == 1
+
+
+def test_fire_cron_connector_failure_marks_failed(tmp_path):
+    runner, s, cm, registry = _make_runner(tmp_path)
+    connector = registry.get.return_value
+    connector.send.side_effect = RuntimeError("403")
+    job_id = _seed(s, cm, kind="cron")
+    runner.fire(job_id)
+    row = s.get_scheduled_job(job_id)
+    assert row["status"] == "failed"
