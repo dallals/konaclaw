@@ -188,7 +188,12 @@ def main() -> None:
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning("connectors disabled: %s", e)
-        connector_registry = None
+        # Do NOT reset connector_registry here — it was successfully constructed
+        # as an empty ConnectorRegistry() before the exception. Always having a
+        # non-None registry is required for Phase 2 cross-channel reminders:
+        # ReminderRunner.fire() calls connector_registry.get(channel) at fire
+        # time, so missing connectors fail the individual row (logged + marked
+        # failed) rather than crashing the supervisor at boot.
         routing_table = None
 
     registry = AgentRegistry(
