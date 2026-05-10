@@ -10,6 +10,9 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.cron import CronTrigger
 
+from croniter import croniter
+from cron_descriptor import get_description
+
 from kc_supervisor.storage import Storage
 from kc_supervisor.scheduling.timeparse import parse_when, is_past, humanize
 
@@ -108,4 +111,58 @@ class ScheduleService:
             "fires_at": target.isoformat(),
             "fires_at_human": humanize(target),
             "kind": "reminder",
+        }
+
+    # ---- cron ----
+
+    def schedule_cron(
+        self,
+        *,
+        cron: str,
+        content: str,
+        conversation_id: int,
+        channel: str,
+        chat_id: str,
+        agent: str,
+    ) -> dict:
+        if not content or not content.strip():
+            raise ValueError("content must be 1-4000 chars")
+        if len(content) > MAX_PAYLOAD_CHARS:
+            raise ValueError(f"content must be 1-{MAX_PAYLOAD_CHARS} chars")
+        if not croniter.is_valid(cron):
+            raise ValueError(f"invalid cron: {cron!r}")
+
+        try:
+            trigger = CronTrigger.from_crontab(cron, timezone=self._tz)
+        except ValueError as e:
+            raise ValueError(f"invalid cron: {cron!r} ({e})")
+
+        next_fire = trigger.get_next_fire_time(None, datetime.now(_tz_mod.utc))
+        try:
+            human_summary = get_description(cron)
+        except Exception:
+            human_summary = cron
+
+        job_id = self.storage.add_scheduled_job(
+            kind="cron", agent=agent, conversation_id=conversation_id,
+            channel=channel, chat_id=chat_id, payload=content,
+            when_utc=None, cron_spec=cron,
+        )
+        try:
+            self._scheduler.add_job(
+                self.runner.fire, trigger=trigger,
+                kwargs={"job_id": job_id}, id=str(job_id),
+                coalesce=True,
+                replace_existing=True,
+            )
+        except Exception:
+            self.storage.delete_scheduled_job(job_id)
+            raise
+
+        return {
+            "id": job_id,
+            "next_fire": next_fire.isoformat() if next_fire else None,
+            "next_fire_human": humanize(next_fire) if next_fire else None,
+            "human_summary": human_summary,
+            "kind": "cron",
         }

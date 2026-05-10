@@ -109,3 +109,48 @@ def test_schedule_one_shot_oversized_content_raises(tmp_path):
             )
     finally:
         svc.shutdown()
+
+
+def test_schedule_cron_valid_spec(tmp_path):
+    svc, s = _make_service(tmp_path)
+    cid = _seed_conv(s)
+    try:
+        result = svc.schedule_cron(
+            cron="0 9 * * 1-5", content="standup",
+            conversation_id=cid, channel="telegram", chat_id="C1", agent="kona",
+        )
+        assert "id" in result
+        assert "next_fire" in result
+        assert "next_fire_human" in result
+        assert "weekday" in result["human_summary"].lower() or "Monday" in result["human_summary"]
+        rows = s.list_scheduled_jobs(conversation_id=cid)
+        assert rows[0]["kind"] == "cron"
+        assert rows[0]["cron_spec"] == "0 9 * * 1-5"
+    finally:
+        svc.shutdown()
+
+
+def test_schedule_cron_invalid_spec_raises(tmp_path):
+    svc, s = _make_service(tmp_path)
+    cid = _seed_conv(s)
+    try:
+        with pytest.raises(ValueError, match="invalid cron"):
+            svc.schedule_cron(
+                cron="not a real cron", content="x",
+                conversation_id=cid, channel="telegram", chat_id="C1", agent="kona",
+            )
+    finally:
+        svc.shutdown()
+
+
+def test_schedule_cron_empty_content_raises(tmp_path):
+    svc, s = _make_service(tmp_path)
+    cid = _seed_conv(s)
+    try:
+        with pytest.raises(ValueError, match="content"):
+            svc.schedule_cron(
+                cron="0 9 * * *", content="",
+                conversation_id=cid, channel="telegram", chat_id="C1", agent="kona",
+            )
+    finally:
+        svc.shutdown()
