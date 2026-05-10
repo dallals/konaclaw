@@ -15,6 +15,7 @@ from croniter import croniter
 from cron_descriptor import get_description
 
 from kc_supervisor.storage import Storage
+from kc_supervisor.scheduling.runner import fire_reminder
 from kc_supervisor.scheduling.timeparse import parse_when, is_past, humanize
 
 
@@ -113,7 +114,7 @@ class ScheduleService:
         )
         try:
             self._scheduler.add_job(
-                self.runner.fire, trigger=DateTrigger(run_date=target),
+                fire_reminder, trigger=DateTrigger(run_date=target),
                 kwargs={"job_id": job_id}, id=str(job_id),
                 misfire_grace_time=86400,
                 replace_existing=True,
@@ -166,7 +167,7 @@ class ScheduleService:
         )
         try:
             self._scheduler.add_job(
-                self.runner.fire, trigger=trigger,
+                fire_reminder, trigger=trigger,
                 kwargs={"job_id": job_id}, id=str(job_id),
                 coalesce=True,
                 replace_existing=True,
@@ -301,7 +302,7 @@ class ScheduleService:
                 continue
             kwargs = {"misfire_grace_time": 86400} if row["kind"] == "reminder" else {"coalesce": True}
             self._scheduler.add_job(
-                self.runner.fire, trigger=trigger,
+                fire_reminder, trigger=trigger,
                 kwargs={"job_id": row["id"]}, id=row_id,
                 replace_existing=True, **kwargs,
             )

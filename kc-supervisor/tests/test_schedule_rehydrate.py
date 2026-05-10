@@ -111,6 +111,52 @@ def test_cron_coalesce_is_set(tmp_path):
         svc.shutdown()
 
 
+def test_real_runner_persists_to_jobstore_without_pickle_error(tmp_path):
+    """A real ReminderRunner with a non-picklable attribute must still be
+    schedulable through SQLAlchemyJobStore (because we use a module-level fire
+    function, not a bound method)."""
+    from unittest.mock import MagicMock
+    from kc_supervisor.scheduling.runner import ReminderRunner, set_active_runner, clear_active_runner
+
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+
+    # A fake "non-picklable" object — nested closures over local state
+    # (bound methods of locally-defined classes are unpicklable).
+    class _UnpicklableConnectorRegistry:
+        def __init__(self):
+            self._cb = lambda x: x  # closures aren't picklable
+        def get(self, name):
+            raise KeyError(name)
+
+    runner = ReminderRunner(
+        storage=s,
+        conversations=MagicMock(),
+        connector_registry=_UnpicklableConnectorRegistry(),
+        coroutine_runner=lambda c: None,
+    )
+    set_active_runner(runner)
+    svc = ScheduleService(
+        storage=s, runner=runner, db_path=tmp_path / "kc.db",
+        timezone="America/Los_Angeles",
+    )
+    svc.start()
+    cid = s.create_conversation(agent="kona", channel="telegram")
+    try:
+        # This must NOT raise PicklingError.
+        result = svc.schedule_one_shot(
+            when="in 1 hour", content="x",
+            conversation_id=cid, channel="telegram", chat_id="C1", agent="kona",
+        )
+        assert result["id"] is not None
+        # Verify the APS job is persisted (i.e., readable back from the jobstore).
+        job = svc._scheduler.get_job(str(result["id"]))
+        assert job is not None
+    finally:
+        svc.shutdown()
+        clear_active_runner()
+
+
 def test_aps_and_app_tables_coexist(tmp_path):
     """APScheduler creates its own tables in the same DB; our migration must
     not collide.

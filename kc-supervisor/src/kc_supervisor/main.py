@@ -310,7 +310,7 @@ def main() -> None:
     import asyncio as _asyncio_sched
     import tzlocal as _tzlocal
     from kc_supervisor.scheduling.service import ScheduleService
-    from kc_supervisor.scheduling.runner import ReminderRunner
+    from kc_supervisor.scheduling.runner import ReminderRunner, set_active_runner
 
     _tz_name = str(_tzlocal.get_localzone())
 
@@ -326,6 +326,10 @@ def main() -> None:
         connector_registry=deps.connector_registry,
         coroutine_runner=_coroutine_runner,
     )
+    # Register as the module-level active runner so APS's pickled module-level
+    # `fire_reminder` can dispatch to this instance. (See runner.py for why we
+    # avoid bound methods in APS jobstores.)
+    set_active_runner(_reminder_runner)
     deps.schedule_service = ScheduleService(
         storage=deps.storage,
         runner=_reminder_runner,

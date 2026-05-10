@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import time
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, Optional
 
 from kc_core.messages import AssistantMessage
 from kc_supervisor.storage import Storage
@@ -67,3 +67,50 @@ class ReminderRunner:
         self.storage.update_scheduled_job_after_fire(
             job_id, fired_at=time.time(), new_status=new_status,
         )
+
+
+# ---- Module-level fire callable ----
+#
+# APScheduler's SQLAlchemyJobStore pickles each job's trigger callable. A bound
+# method like `runner.fire` packs the runner instance into the job's args so
+# rehydration can re-invoke `getattr(args[0], 'fire')(...)`. That breaks in
+# production because the runner holds a TelegramConnector with a running
+# aiohttp ClientSession (not picklable).
+#
+# Workaround: store the active runner on a module global and pass APS a
+# module-level function reference. APS then only pickles the function name
+# (`kc_supervisor.scheduling.runner:fire_reminder`) — the runner instance
+# stays in-process.
+
+_runner: Optional[ReminderRunner] = None
+
+
+def set_active_runner(runner: ReminderRunner) -> None:
+    """Register the process-wide active ReminderRunner. Called from the
+    supervisor entrypoint after the runner is constructed, and from tests
+    that need the module-level `fire_reminder` to dispatch to a specific
+    runner instance.
+    """
+    global _runner
+    _runner = runner
+
+
+def clear_active_runner() -> None:
+    """Clear the module-level active runner. Used by test teardown."""
+    global _runner
+    _runner = None
+
+
+def fire_reminder(job_id: int) -> None:
+    """Module-level fire callable for APScheduler. Dispatches to the active
+    ReminderRunner registered via `set_active_runner`. If no runner is
+    registered (e.g., a job fires after shutdown), logs a warning and
+    returns.
+    """
+    if _runner is None:
+        logger.warning(
+            "fire_reminder: no active ReminderRunner registered; job %s skipped",
+            job_id,
+        )
+        return
+    _runner.fire(job_id)
