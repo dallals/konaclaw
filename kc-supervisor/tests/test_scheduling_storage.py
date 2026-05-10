@@ -159,3 +159,91 @@ def test_conversation_delete_cascades_jobs(tmp_path):
         c.execute("PRAGMA foreign_keys = ON")
         c.execute("DELETE FROM conversations WHERE id=?", (cid,))
     assert s.list_scheduled_jobs(conversation_id=cid) == []
+
+
+def test_init_adds_mode_column_idempotently(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.init()  # second call must not fail
+    with s.connect() as c:
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(scheduled_jobs)").fetchall()}
+    assert "mode" in cols
+
+
+def test_existing_rows_get_default_literal_mode(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="telegram")
+    # Insert via raw SQL to simulate a Phase 1 row that pre-dates the mode column.
+    with s.connect() as c:
+        c.execute(
+            "INSERT INTO scheduled_jobs "
+            "(kind, agent, conversation_id, channel, chat_id, payload, "
+            " when_utc, cron_spec, status, attempts, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("reminder", "kona", cid, "telegram", "C1", "x",
+             1.0, None, "pending", 0, 1.0),
+        )
+    rows = s.list_scheduled_jobs()
+    assert rows[0]["mode"] == "literal"
+
+
+def test_channel_routing_get_returns_none_when_missing(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    assert s.get_channel_routing("telegram") is None
+
+
+def test_channel_routing_upsert_then_get(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.upsert_channel_routing("telegram", "8627206839", enabled=1)
+    routing = s.get_channel_routing("telegram")
+    assert routing == {"default_chat_id": "8627206839", "enabled": 1}
+
+
+def test_channel_routing_upsert_overwrites(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.upsert_channel_routing("telegram", "old", enabled=1)
+    s.upsert_channel_routing("telegram", "new", enabled=0)
+    routing = s.get_channel_routing("telegram")
+    assert routing == {"default_chat_id": "new", "enabled": 0}
+
+
+def test_channel_routing_list(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.upsert_channel_routing("telegram", "T", enabled=1)
+    s.upsert_channel_routing("imessage", "I", enabled=0)
+    rows = s.list_channel_routing()
+    by_channel = {r["channel"]: r for r in rows}
+    assert by_channel["telegram"]["default_chat_id"] == "T"
+    assert by_channel["telegram"]["enabled"] == 1
+    assert by_channel["imessage"]["enabled"] == 0
+
+
+def test_add_scheduled_job_persists_mode(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    job_id = s.add_scheduled_job(
+        kind="reminder", agent="kona", conversation_id=cid,
+        channel="telegram", chat_id="C1", payload="x",
+        when_utc=1.0, cron_spec=None, mode="agent_phrased",
+    )
+    row = s.get_scheduled_job(job_id)
+    assert row["mode"] == "agent_phrased"
+
+
+def test_add_scheduled_job_default_mode_is_literal(tmp_path):
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    job_id = s.add_scheduled_job(
+        kind="reminder", agent="kona", conversation_id=cid,
+        channel="telegram", chat_id="C1", payload="x",
+        when_utc=1.0, cron_spec=None,
+    )
+    row = s.get_scheduled_job(job_id)
+    assert row["mode"] == "literal"

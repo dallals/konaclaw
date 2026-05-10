@@ -101,3 +101,43 @@ def test_list_messages_with_meta_returns_usage(tmp_path):
     msg1, meta1 = pairs[1]
     assert isinstance(msg1, AssistantMessage)
     assert meta1 == {"output_tokens": 1}
+
+
+def test_get_or_create_returns_existing(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.conversations import ConversationManager
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cm = ConversationManager(s)
+    cid = cm.start(agent="kona", channel="telegram")
+    s.put_conv_for_chat("telegram", "C1", "kona", cid)
+    assert cm.get_or_create(channel="telegram", chat_id="C1", agent="kona") == cid
+
+
+def test_get_or_create_creates_when_missing(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.conversations import ConversationManager
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cm = ConversationManager(s)
+    new_cid = cm.get_or_create(channel="telegram", chat_id="C1", agent="kona")
+    assert new_cid is not None
+    # Mapping is now persisted.
+    assert s.get_conv_for_chat("telegram", "C1", "kona") == new_cid
+    # Title was set.
+    conv = s.get_conversation(new_cid)
+    assert conv["title"] == "telegram:C1"
+
+
+def test_get_or_create_creates_when_mapping_points_to_deleted_conversation(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.conversations import ConversationManager
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cm = ConversationManager(s)
+    stale_cid = cm.start(agent="kona", channel="telegram")
+    s.put_conv_for_chat("telegram", "C1", "kona", stale_cid)
+    s.delete_conversation(stale_cid)
+    new_cid = cm.get_or_create(channel="telegram", chat_id="C1", agent="kona")
+    assert new_cid != stale_cid
+    assert s.get_conv_for_chat("telegram", "C1", "kona") == new_cid

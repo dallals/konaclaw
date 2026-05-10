@@ -15,32 +15,40 @@ def build_scheduling_tools(
     The supervisor binds this per-conversation when the agent is invoked.
     """
 
-    def _schedule_reminder(when: str, content: str) -> dict:
+    def _schedule_reminder(
+        when: str, content: str,
+        target_channel: str = "current", mode: str = "literal",
+    ) -> dict:
         ctx = current_context()
         return service.schedule_one_shot(
             when=when, content=content,
             conversation_id=ctx["conversation_id"],
             channel=ctx["channel"], chat_id=ctx["chat_id"], agent=ctx["agent"],
+            target_channel=target_channel, mode=mode,
         )
 
-    def _schedule_cron(cron: str, content: str) -> dict:
+    def _schedule_cron(
+        cron: str, content: str,
+        target_channel: str = "current", mode: str = "literal",
+    ) -> dict:
         ctx = current_context()
         return service.schedule_cron(
             cron=cron, content=content,
             conversation_id=ctx["conversation_id"],
             channel=ctx["channel"], chat_id=ctx["chat_id"], agent=ctx["agent"],
+            target_channel=target_channel, mode=mode,
         )
 
-    def _list_reminders(active_only: bool = True) -> dict:
+    def _list_reminders(active_only: bool = True, scope: str = "user") -> dict:
         ctx = current_context()
         return service.list_reminders(
-            conversation_id=ctx["conversation_id"], active_only=active_only,
+            conversation_id=ctx["conversation_id"], active_only=active_only, scope=scope,
         )
 
-    def _cancel_reminder(id_or_description: str) -> dict:
+    def _cancel_reminder(id_or_description: str, scope: str = "user") -> dict:
         ctx = current_context()
         return service.cancel_reminder(
-            id_or_description, conversation_id=ctx["conversation_id"],
+            id_or_description, conversation_id=ctx["conversation_id"], scope=scope,
         )
 
     return [
@@ -58,7 +66,35 @@ def build_scheduling_tools(
                 "type": "object",
                 "properties": {
                     "when": {"type": "string", "description": "natural-language time"},
-                    "content": {"type": "string", "description": "reminder text (1-4000 chars)"},
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "reminder text (1-4000 chars). When mode='agent_phrased', "
+                            "interpreted as an internal trigger description for you, "
+                            "not the literal text the user sees."
+                        ),
+                    },
+                    "target_channel": {
+                        "type": "string",
+                        "enum": ["current", "telegram", "dashboard", "imessage"],
+                        "description": (
+                            "Use only when the user explicitly asks to be reminded "
+                            "somewhere other than this conversation. Channels not in "
+                            "the configured allowlist will raise. Default 'current'."
+                        ),
+                        "default": "current",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["literal", "agent_phrased"],
+                        "description": (
+                            "If 'agent_phrased', you will be re-invoked at fire time "
+                            "to compose the actual message. The 'content' arg is then "
+                            "a trigger description for you, not user-facing text. "
+                            "Default 'literal'."
+                        ),
+                        "default": "literal",
+                    },
                 },
                 "required": ["when", "content"],
             },
@@ -77,7 +113,35 @@ def build_scheduling_tools(
                 "type": "object",
                 "properties": {
                     "cron": {"type": "string", "description": "5-field cron expression"},
-                    "content": {"type": "string", "description": "reminder text (1-4000 chars)"},
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "reminder text (1-4000 chars). When mode='agent_phrased', "
+                            "interpreted as an internal trigger description for you, "
+                            "not the literal text the user sees."
+                        ),
+                    },
+                    "target_channel": {
+                        "type": "string",
+                        "enum": ["current", "telegram", "dashboard", "imessage"],
+                        "description": (
+                            "Use only when the user explicitly asks to be reminded "
+                            "somewhere other than this conversation. Channels not in "
+                            "the configured allowlist will raise. Default 'current'."
+                        ),
+                        "default": "current",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["literal", "agent_phrased"],
+                        "description": (
+                            "If 'agent_phrased', you will be re-invoked at fire time "
+                            "to compose the actual message. The 'content' arg is then "
+                            "a trigger description for you, not user-facing text. "
+                            "Default 'literal'."
+                        ),
+                        "default": "literal",
+                    },
                 },
                 "required": ["cron", "content"],
             },
@@ -86,10 +150,11 @@ def build_scheduling_tools(
         Tool(
             name="list_reminders",
             description=(
-                "List reminders scheduled in the current conversation. "
-                "If active_only is True (default), returns only pending "
-                "reminders; otherwise also includes done, cancelled, failed, "
-                "and missed."
+                "List your reminders. By default (scope='user') returns reminders "
+                "across all your conversations and channels; pass "
+                "scope='conversation' to restrict to this conversation only. If "
+                "active_only is True (default), returns only pending reminders; "
+                "otherwise also includes done, cancelled, failed, and missed."
             ),
             parameters={
                 "type": "object",
@@ -98,6 +163,16 @@ def build_scheduling_tools(
                         "type": "boolean",
                         "description": "if True, only pending reminders",
                         "default": True,
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["user", "conversation"],
+                        "description": (
+                            "'user' (default) lists all your reminders across "
+                            "channels. 'conversation' restricts to reminders "
+                            "scheduled in this conversation."
+                        ),
+                        "default": "user",
                     },
                 },
                 "required": [],
@@ -120,6 +195,16 @@ def build_scheduling_tools(
                     "id_or_description": {
                         "type": "string",
                         "description": "integer ID or description fragment",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["user", "conversation"],
+                        "description": (
+                            "'user' (default) searches all your reminders across "
+                            "channels. 'conversation' restricts to reminders "
+                            "scheduled in this conversation."
+                        ),
+                        "default": "user",
                     },
                 },
                 "required": ["id_or_description"],
