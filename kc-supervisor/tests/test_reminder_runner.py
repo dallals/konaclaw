@@ -402,3 +402,122 @@ def test_compose_agent_phrased_returns_none_when_agent_raises(tmp_path):
     )
     text = runner._compose_agent_phrased(s.get_scheduled_job(job_id), dest_conv_id=cid)
     assert text is None
+
+
+def test_fire_literal_mode_uses_prefix_unchanged(tmp_path):
+    """Existing Phase 1 behavior: literal rows fire with the ⏰ prefix."""
+    runner, s, cm, registry = _make_runner(tmp_path)
+    job_id = _seed(s, cm)  # mode defaults to literal
+    runner.fire(job_id)
+    connector = registry.get.return_value
+    content = connector.send.call_args.args[1]
+    assert content == "⏰ dinner"
+
+
+def test_fire_agent_phrased_dispatches_composed_text(tmp_path):
+    """agent_phrased rows: runner ships the agent's composed text (no prefix)."""
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.runner import ReminderRunner
+    from kc_core.messages import AssistantMessage
+    from unittest.mock import MagicMock, AsyncMock
+    import asyncio
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="telegram")
+    s.put_conv_for_chat("telegram", "C1", "kona", cid)
+    job_id = s.add_scheduled_job(
+        kind="reminder", agent="kona", conversation_id=cid,
+        channel="telegram", chat_id="C1", payload="dinner trigger",
+        when_utc=1.0, cron_spec=None, mode="agent_phrased",
+    )
+
+    class FakeToolRegistry:
+        def __init__(self, names): self._names = list(names)
+        def names(self): return list(self._names)
+        def to_openai_schema(self): return []
+        def invoke(self, name, args): raise NotImplementedError
+
+    fake_core = MagicMock()
+    fake_core.tools = FakeToolRegistry([])
+    fake_core.system_prompt = "x"
+
+    async def fake_send_stream(_content):
+        class FakeComplete:
+            reply = AssistantMessage(content="hey, ready for dinner?")
+        yield FakeComplete()
+
+    fake_core.send_stream = fake_send_stream
+    fake_assembled = MagicMock(); fake_assembled.core_agent = fake_core
+    fake_assembled.base_system_prompt = "x"
+    fake_runtime = MagicMock(); fake_runtime.assembled = fake_assembled
+    fake_registry = MagicMock(); fake_registry.get.return_value = fake_runtime
+
+    cm = MagicMock()
+    cm.get_or_create.return_value = cid
+    cm.list_messages.return_value = []
+    connector_registry = MagicMock()
+    connector = MagicMock(); connector.send = AsyncMock()
+    connector_registry.get.return_value = connector
+
+    runner = ReminderRunner(
+        storage=s, conversations=cm, connector_registry=connector_registry,
+        coroutine_runner=lambda c: asyncio.run(c),
+        agent_registry=fake_registry,
+    )
+    runner.fire(job_id)
+    content = connector.send.call_args.args[1]
+    assert content == "hey, ready for dinner?"
+    # Persisted text matches.
+    assert cm.append.call_args.args[1].content == "hey, ready for dinner?"
+
+
+def test_fire_agent_phrased_failure_marks_row_failed_no_dispatch(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.runner import ReminderRunner
+    from unittest.mock import MagicMock, AsyncMock
+    import asyncio
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="telegram")
+    s.put_conv_for_chat("telegram", "C1", "kona", cid)
+    job_id = s.add_scheduled_job(
+        kind="reminder", agent="kona", conversation_id=cid,
+        channel="telegram", chat_id="C1", payload="x",
+        when_utc=1.0, cron_spec=None, mode="agent_phrased",
+    )
+
+    class FakeToolRegistry:
+        def names(self): return []
+        def to_openai_schema(self): return []
+        def invoke(self, name, args): raise NotImplementedError
+
+    fake_core = MagicMock()
+    fake_core.tools = FakeToolRegistry()
+    fake_core.system_prompt = "x"
+
+    async def boom(_content):
+        raise RuntimeError("nope")
+        yield
+
+    fake_core.send_stream = boom
+    fake_assembled = MagicMock(); fake_assembled.core_agent = fake_core
+    fake_assembled.base_system_prompt = "x"
+    fake_runtime = MagicMock(); fake_runtime.assembled = fake_assembled
+    fake_registry = MagicMock(); fake_registry.get.return_value = fake_runtime
+
+    cm = MagicMock(); cm.get_or_create.return_value = cid
+    cm.list_messages.return_value = []
+    connector_registry = MagicMock()
+    connector = MagicMock(); connector.send = AsyncMock()
+    connector_registry.get.return_value = connector
+
+    runner = ReminderRunner(
+        storage=s, conversations=cm, connector_registry=connector_registry,
+        coroutine_runner=lambda c: asyncio.run(c),
+        agent_registry=fake_registry,
+    )
+    runner.fire(job_id)
+    row = s.get_scheduled_job(job_id)
+    assert row["status"] == "failed"
+    connector.send.assert_not_called()
+    cm.append.assert_not_called()

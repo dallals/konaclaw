@@ -94,7 +94,15 @@ class ReminderRunner:
             )
             return
 
-        text = PREFIX + (row["payload"] or "")  # mode branch added in Task 6.3
+        if row["mode"] == "agent_phrased":
+            text = self._compose_agent_phrased(row, dest_conv_id=dest_conv_id)
+            if text is None:
+                self.storage.update_scheduled_job_after_fire(
+                    job_id, fired_at=time.time(), new_status="failed",
+                )
+                return
+        else:
+            text = PREFIX + (row["payload"] or "")
 
         if row["channel"] == "dashboard":
             try:
