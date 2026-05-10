@@ -118,10 +118,7 @@ def build_scheduling_tools(
         Tool(
             name="list_reminders",
             description=(
-                "List reminders scheduled in the current conversation. "
-                "If active_only is True (default), returns only pending "
-                "reminders; otherwise also includes done, cancelled, failed, "
-                "and missed."
+                "List your reminders. By default (scope='user') returns reminders across all your conversations and channels; pass scope='conversation' to restrict to this conversation only. If active_only is True (default), returns only pending reminders; otherwise also includes done, cancelled, failed, and missed."
             ),
             parameters={
                 "type": "object",
