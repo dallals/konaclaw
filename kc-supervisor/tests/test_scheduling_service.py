@@ -303,3 +303,128 @@ def test_cancel_reminder_scoped_to_conversation(tmp_path):
             svc.cancel_reminder(str(r["id"]), conversation_id=cid_b)
     finally:
         svc.shutdown()
+
+
+def test_schedule_one_shot_target_channel_uses_routing(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.upsert_channel_routing("telegram", "8627206839", enabled=1)
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    runner = MagicMock()
+    svc = ScheduleService(s, runner, tmp_path / "kc.db", "America/Los_Angeles")
+    out = svc.schedule_one_shot(
+        when="in 5 minutes", content="dinner",
+        conversation_id=cid, channel="dashboard", chat_id="ws-1", agent="kona",
+        target_channel="telegram",
+    )
+    row = s.get_scheduled_job(out["id"])
+    assert row["channel"] == "telegram"
+    assert row["chat_id"] == "8627206839"
+    assert row["mode"] == "literal"
+
+
+def test_schedule_one_shot_target_channel_current_keeps_ctx(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    out = svc.schedule_one_shot(
+        when="in 5 minutes", content="x",
+        conversation_id=cid, channel="dashboard", chat_id="ws-1", agent="kona",
+        target_channel="current",
+    )
+    row = s.get_scheduled_job(out["id"])
+    assert row["channel"] == "dashboard"
+    assert row["chat_id"] == "ws-1"
+
+
+def test_schedule_one_shot_target_channel_unknown_raises(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    import pytest
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    with pytest.raises(ValueError, match="not configured"):
+        svc.schedule_one_shot(
+            when="in 5 minutes", content="x",
+            conversation_id=cid, channel="dashboard", chat_id="ws-1", agent="kona",
+            target_channel="telegram",
+        )
+
+
+def test_schedule_one_shot_target_channel_disabled_raises(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    import pytest
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    s.upsert_channel_routing("telegram", "X", enabled=0)
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    with pytest.raises(ValueError, match="disabled"):
+        svc.schedule_one_shot(
+            when="in 5 minutes", content="x",
+            conversation_id=cid, channel="dashboard", chat_id="ws-1", agent="kona",
+            target_channel="telegram",
+        )
+
+
+def test_schedule_one_shot_invalid_target_channel_raises(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    import pytest
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    with pytest.raises(ValueError, match="unknown channel"):
+        svc.schedule_one_shot(
+            when="in 5 minutes", content="x",
+            conversation_id=cid, channel="dashboard", chat_id="ws-1", agent="kona",
+            target_channel="bogus",
+        )
+
+
+def test_schedule_one_shot_invalid_mode_raises(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    import pytest
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    with pytest.raises(ValueError, match="unknown mode"):
+        svc.schedule_one_shot(
+            when="in 5 minutes", content="x",
+            conversation_id=cid, channel="dashboard", chat_id="ws-1", agent="kona",
+            mode="bogus",
+        )
+
+
+def test_schedule_one_shot_mode_agent_phrased_persists(tmp_path):
+    from kc_supervisor.storage import Storage
+    from kc_supervisor.scheduling.service import ScheduleService
+    from unittest.mock import MagicMock
+    s = Storage(tmp_path / "kc.db")
+    s.init()
+    cid = s.create_conversation(agent="kona", channel="dashboard")
+    svc = ScheduleService(s, MagicMock(), tmp_path / "kc.db", "America/Los_Angeles")
+    out = svc.schedule_one_shot(
+        when="in 5 minutes", content="dinner trigger",
+        conversation_id=cid, channel="dashboard", chat_id="ws-1", agent="kona",
+        mode="agent_phrased",
+    )
+    row = s.get_scheduled_job(out["id"])
+    assert row["mode"] == "agent_phrased"

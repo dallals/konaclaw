@@ -88,6 +88,9 @@ class ScheduleService:
 
     # ---- one-shot ----
 
+    _ALLOWED_TARGET_CHANNELS = {"current", "telegram", "dashboard", "imessage"}
+    _ALLOWED_MODES = {"literal", "agent_phrased"}
+
     def schedule_one_shot(
         self,
         *,
@@ -97,11 +100,28 @@ class ScheduleService:
         channel: str,
         chat_id: str,
         agent: str,
+        target_channel: str = "current",
+        mode: str = "literal",
     ) -> dict:
         if not content or not content.strip():
             raise ValueError("content must be 1-4000 chars")
         if len(content) > MAX_PAYLOAD_CHARS:
             raise ValueError(f"content must be 1-{MAX_PAYLOAD_CHARS} chars")
+        if mode not in self._ALLOWED_MODES:
+            raise ValueError(f"unknown mode {mode!r}")
+        if target_channel not in self._ALLOWED_TARGET_CHANNELS:
+            raise ValueError(f"unknown channel {target_channel!r}")
+
+        if target_channel == "current":
+            use_channel, use_chat_id = channel, chat_id
+        else:
+            routing = self.storage.get_channel_routing(target_channel)
+            if routing is None:
+                raise ValueError(f"channel {target_channel!r} not configured (no routing entry)")
+            if not routing["enabled"]:
+                raise ValueError(f"channel {target_channel!r} is disabled")
+            use_channel, use_chat_id = target_channel, routing["default_chat_id"]
+
         target = parse_when(when, self._tz)
         if is_past(target):
             raise ValueError(f"'when' resolves to the past: {when!r}")
@@ -109,8 +129,9 @@ class ScheduleService:
 
         job_id = self.storage.add_scheduled_job(
             kind="reminder", agent=agent, conversation_id=conversation_id,
-            channel=channel, chat_id=chat_id, payload=content,
+            channel=use_channel, chat_id=use_chat_id, payload=content,
             when_utc=target_utc.timestamp(), cron_spec=None,
+            mode=mode,
         )
         try:
             self._scheduler.add_job(
