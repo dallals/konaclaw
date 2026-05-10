@@ -166,3 +166,88 @@ class ScheduleService:
             "human_summary": human_summary,
             "kind": "cron",
         }
+
+    # ---- list / cancel ----
+
+    def list_reminders(
+        self, *, conversation_id: int, active_only: bool = True,
+    ) -> dict:
+        statuses = ("pending",) if active_only else None
+        rows = self.storage.list_scheduled_jobs(
+            conversation_id=conversation_id, statuses=statuses,
+        )
+        return {"reminders": [self._row_to_view(r) for r in rows]}
+
+    def cancel_reminder(
+        self, id_or_description: str, *, conversation_id: int,
+    ) -> dict:
+        if not id_or_description:
+            raise ValueError("id_or_description must not be empty")
+
+        candidates = self.storage.list_scheduled_jobs(
+            conversation_id=conversation_id, statuses=("pending",),
+        )
+
+        if id_or_description.strip().isdigit():
+            target_id = int(id_or_description)
+            matches = [r for r in candidates if r["id"] == target_id]
+            if not matches:
+                raise ValueError(f"no reminder with id {target_id}")
+            return self._do_cancel(matches)
+
+        needle = id_or_description.lower()
+        matches = [r for r in candidates if needle in (r["payload"] or "").lower()]
+        if not matches:
+            raise ValueError(f"no reminder matched {id_or_description!r}")
+        if len(matches) > 1:
+            return {
+                "ambiguous": True,
+                "candidates": [
+                    {"id": r["id"], "content": r["payload"]} for r in matches
+                ],
+                "cancelled": [],
+            }
+        return self._do_cancel(matches)
+
+    def _do_cancel(self, rows: list[dict]) -> dict:
+        cancelled: list[dict] = []
+        for r in rows:
+            try:
+                self._scheduler.remove_job(str(r["id"]))
+            except Exception:
+                logger.debug("APS job %s not found; deleting DB row anyway", r["id"])
+            self.storage.delete_scheduled_job(r["id"])
+            cancelled.append({"id": r["id"], "content": r["payload"]})
+        return {"ambiguous": False, "candidates": [], "cancelled": cancelled}
+
+    def _row_to_view(self, row: dict) -> dict:
+        kind = row["kind"]
+        fires_at_human = None
+        next_fire_human = None
+        human_summary = None
+        if kind == "reminder" and row["when_utc"] is not None:
+            from zoneinfo import ZoneInfo
+            dt = datetime.fromtimestamp(row["when_utc"], tz=_tz_mod.utc)
+            dt_local = dt.astimezone(ZoneInfo(self._tz))
+            fires_at_human = humanize(dt_local)
+        elif kind == "cron" and row["cron_spec"]:
+            try:
+                trigger = CronTrigger.from_crontab(row["cron_spec"], timezone=self._tz)
+                nxt = trigger.get_next_fire_time(None, datetime.now(_tz_mod.utc))
+                if nxt is not None:
+                    next_fire_human = humanize(nxt)
+            except Exception:
+                pass
+            try:
+                human_summary = get_description(row["cron_spec"])
+            except Exception:
+                human_summary = row["cron_spec"]
+        return {
+            "id": row["id"],
+            "kind": kind,
+            "fires_at_human": fires_at_human,
+            "next_fire_human": next_fire_human,
+            "content": row["payload"],
+            "status": row["status"],
+            "human_summary": human_summary,
+        }
