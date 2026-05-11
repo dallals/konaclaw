@@ -70,6 +70,8 @@ class AgentRegistry:
         schedule_service: "Optional[Any]" = None,
         skill_index: "Optional[Any]" = None,
         web_config: "Optional[Any]" = None,
+        todo_storage:    "Optional[Any]" = None,
+        clarify_broker:  "Optional[Any]" = None,
     ) -> None:
         self.agents_dir = Path(agents_dir)
         self.shares = shares
@@ -88,6 +90,8 @@ class AgentRegistry:
         self.schedule_service = schedule_service
         self.skill_index = skill_index
         self.web_config = web_config
+        self.todo_storage    = todo_storage
+        self.clarify_broker  = clarify_broker
         self._by_name: dict[str, AgentRuntime] = {}
 
     def load_all(self) -> None:
@@ -141,6 +145,8 @@ class AgentRegistry:
                     schedule_service=self.schedule_service,
                     skill_index=self.skill_index,
                     web_config=self.web_config,
+                    todo_storage=self.todo_storage,
+                    clarify_broker=self.clarify_broker,
                 )
                 new_by_name[cfg.name] = AgentRuntime(
                     name=cfg.name,

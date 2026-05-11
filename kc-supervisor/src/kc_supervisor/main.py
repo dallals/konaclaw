@@ -88,6 +88,18 @@ def main() -> None:
             # Fail-fast: don't silently disable web tools when explicitly enabled.
             raise RuntimeError(f"failed to build WebConfig: {e}") from e
 
+    # Phase C — todo + clarify singletons. Built unconditionally; both tools
+    # only register on Kona inside assemble_agent.
+    todo_storage = None
+    clarify_broker = None
+    try:
+        from kc_supervisor.todos.storage import TodoStorage
+        from kc_supervisor.clarify.broker import ClarifyBroker
+        todo_storage = TodoStorage(storage)
+        clarify_broker = ClarifyBroker()
+    except ImportError:
+        pass
+
     # MCP integration is optional — if kc-mcp is installed, instantiate the
     # bookkeeping objects here so AgentRegistry sees them. The actual MCP
     # subprocess spawning happens on the FastAPI startup hook in service.py
@@ -287,6 +299,8 @@ def main() -> None:
         ollama_api_key=ollama_api_key,
         skill_index=skill_index,
         web_config=web_config,
+        todo_storage=todo_storage,
+        clarify_broker=clarify_broker,
     )
     registry.load_all()
 
@@ -306,6 +320,8 @@ def main() -> None:
         google_scopes=DEFAULT_GOOGLE_SCOPES,
         news_client=news_client,
         skill_index=skill_index,
+        todo_storage=todo_storage,
+        clarify_broker=clarify_broker,
     )
     # Always wire the registry to deps so ReminderRunner.fire() can call
     # connector_registry.get(channel) at fire time. The InboundRouter still

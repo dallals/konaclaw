@@ -69,6 +69,8 @@ def assemble_agent(
     # Expected type: kc_web.WebConfig. Kept as Any to avoid a hard import of
     # kc_web at supervisor startup — mirrors how news_client uses Any.
     web_config: Optional[Any] = None,
+    todo_storage:   Optional[Any] = None,
+    clarify_broker: Optional[Any] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -294,6 +296,38 @@ def assemble_agent(
         for t in scheduling_tools:
             registry.register(t)
             tier_map[t.name] = Tier.SAFE
+
+    # Phase C — todo + clarify tools. Registered ONLY on Kona (the assistant),
+    # not on Research-Agent (the deep-dive worker). Both subpackages reuse the
+    # scheduling context contextvar set by ws_routes/inbound before invoking
+    # the agent.
+    if cfg.name in ("kona", "Kona-AI") and todo_storage is not None:
+        from kc_supervisor.todos.tools import build_todo_tools
+        from kc_supervisor.scheduling.context import get_current_context
+
+        def _broadcast_todo(event: dict) -> None:
+            # Wired in Task 9 to push todo_event WS frames. For now, no-op
+            # so the tool impls work end-to-end before the broadcaster lands.
+            pass
+
+        for t in build_todo_tools(
+            storage=todo_storage,
+            current_context=get_current_context,
+            broadcast=_broadcast_todo,
+        ):
+            registry.register(t)
+            tier_map[t.name] = Tier.SAFE
+
+    if cfg.name in ("kona", "Kona-AI") and clarify_broker is not None:
+        from kc_supervisor.clarify.tools import build_clarify_tool
+        from kc_supervisor.scheduling.context import get_current_context
+
+        clarify_tool = build_clarify_tool(
+            broker=clarify_broker,
+            current_context=get_current_context,
+        )
+        registry.register(clarify_tool)
+        tier_map[clarify_tool.name] = Tier.SAFE
 
     # 4. PermissionEngine. broker.request_approval is async; the engine's
     # check_async detects coroutines via inspect.iscoroutine and awaits them.

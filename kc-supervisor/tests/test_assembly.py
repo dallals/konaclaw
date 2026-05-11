@@ -437,3 +437,61 @@ def test_zapier_mcp_tools_are_mutating_not_destructive(home):
     assert a.engine.tier_map["mcp.fs.delete"] == Tier.DESTRUCTIVE
     # The meta-tool stays SAFE.
     assert a.engine.tier_map["find_or_install_zap"] == Tier.SAFE
+
+
+# ------------------------------------------------------------------ Phase C
+# (todo + clarify integration)
+
+
+def test_todo_tools_registered_on_kona(home, tmp_path):
+    """When todo_storage is supplied AND agent is named 'kona' or 'Kona-AI',
+    the six todo.* tools register at Tier.SAFE."""
+    from kc_supervisor.todos.storage import TodoStorage
+    from kc_supervisor.storage import Storage
+    db = Storage(tmp_path / "kc.db"); db.init()
+    todo_storage = TodoStorage(db)
+
+    # Need an agent named kona/Kona-AI for registration. The `home` fixture
+    # creates "alice.yaml" — write a "kona.yaml" alongside it.
+    (home / "agents" / "kona.yaml").write_text(
+        "name: kona\nmodel: qwen2.5:7b\nsystem_prompt: I am kona.\n"
+    )
+
+    kwargs = _basic_assemble_kwargs(home)
+    kwargs["cfg"] = AgentConfig(name="kona", model="qwen2.5:7b", system_prompt="I am kona.")
+    a = assemble_agent(**kwargs, todo_storage=todo_storage)
+    names = a.registry.names()
+    for n in ("todo.add", "todo.list", "todo.complete", "todo.update", "todo.delete", "todo.clear_done"):
+        assert n in names
+        assert a.engine.tier_map[n] == Tier.SAFE
+
+
+def test_todo_tools_absent_on_research_agent(home, tmp_path):
+    from kc_supervisor.todos.storage import TodoStorage
+    from kc_supervisor.storage import Storage
+    db = Storage(tmp_path / "kc.db"); db.init()
+    todo_storage = TodoStorage(db)
+    # The 'alice' fixture is not kona — should not get todo tools.
+    a = assemble_agent(**_basic_assemble_kwargs(home), todo_storage=todo_storage)
+    names = a.registry.names()
+    assert "todo.add" not in names
+
+
+def test_clarify_tool_registered_on_kona(home, tmp_path):
+    from kc_supervisor.clarify.broker import ClarifyBroker
+    broker = ClarifyBroker()
+    (home / "agents" / "kona.yaml").write_text(
+        "name: kona\nmodel: qwen2.5:7b\nsystem_prompt: I am kona.\n"
+    )
+    kwargs = _basic_assemble_kwargs(home)
+    kwargs["cfg"] = AgentConfig(name="kona", model="qwen2.5:7b", system_prompt="I am kona.")
+    a = assemble_agent(**kwargs, clarify_broker=broker)
+    assert "clarify" in a.registry.names()
+    assert a.engine.tier_map["clarify"] == Tier.SAFE
+
+
+def test_clarify_tool_absent_on_research_agent(home):
+    from kc_supervisor.clarify.broker import ClarifyBroker
+    broker = ClarifyBroker()
+    a = assemble_agent(**_basic_assemble_kwargs(home), clarify_broker=broker)
+    assert "clarify" not in a.registry.names()

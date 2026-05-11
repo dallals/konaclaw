@@ -82,6 +82,11 @@ class Deps:
     schedule_service: Optional["ScheduleService"] = None
     reminders_broadcaster: Optional[RemindersBroadcaster] = None
     skill_index: Optional[SkillIndex] = None
+    # Phase C — todo + clarify singletons. Constructed in main.py; threaded
+    # to assemble_agent via AgentRegistry. None when the package isn't
+    # importable, which keeps the supervisor bootable without Phase C.
+    todo_storage:    Optional[Any] = None
+    clarify_broker:  Optional[Any] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:
