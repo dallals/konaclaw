@@ -5,7 +5,7 @@ from dataclasses import asdict
 from typing import Literal, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from kc_skills import PathOutsideSkillDir
 from kc_supervisor.scheduling.constants import (
@@ -34,6 +34,27 @@ class CreateConversationRequest(BaseModel):
 
 class SnoozeRequest(BaseModel):
     when_utc: float
+
+
+# ----------- Phase C — todos -----------
+
+class _TodoCreate(BaseModel):
+    conversation_id: int
+    agent:           str
+    title:           str = Field(min_length=1)
+    notes:           str = ""
+    persist:         bool = False
+
+
+class _TodoPatch(BaseModel):
+    conversation_id: int
+    agent:           str
+    title:           Optional[str] = None
+    notes:           Optional[str] = None
+    status:          Optional[str] = None
+    # Status validation is enforced in the route (not via Pydantic validator)
+    # because we're on Pydantic v2 and the v1-style __get_validators__ pattern
+    # is silently ignored.
 
 
 class UpdateConversationRequest(BaseModel):
@@ -506,3 +527,98 @@ def register_http_routes(app: FastAPI) -> None:
                 404, detail={"code": "file_not_found", "file_path": file_path},
             )
         return {"name": name, "file_path": file_path, "content": content}
+
+    # ----------- Phase C — todos -----------
+
+    @app.get("/todos")
+    def list_todos(conversation_id: int, agent: str,
+                   status: str = "open", scope: str = "all"):
+        ts = app.state.deps.todo_storage
+        if ts is None:
+            raise HTTPException(503, detail="todo_storage not configured")
+        try:
+            items = ts.list(agent=agent, conversation_id=conversation_id,
+                            status=status, scope=scope)
+        except ValueError as e:
+            raise HTTPException(422, detail=str(e))
+        return {"items": items, "count": len(items)}
+
+    @app.post("/todos", status_code=201)
+    def create_todo(req: _TodoCreate):
+        ts = app.state.deps.todo_storage
+        if ts is None:
+            raise HTTPException(503, detail="todo_storage not configured")
+        if not req.title.strip():
+            raise HTTPException(422, detail="title must be non-empty")
+        return ts.add(agent=req.agent, conversation_id=req.conversation_id,
+                      title=req.title, notes=req.notes, persist=req.persist)
+
+    @app.patch("/todos/{todo_id}")
+    def patch_todo(todo_id: int, req: _TodoPatch):
+        ts = app.state.deps.todo_storage
+        if ts is None:
+            raise HTTPException(503, detail="todo_storage not configured")
+        if req.status is not None and req.status not in ("open", "done"):
+            raise HTTPException(422, detail="status must be 'open' or 'done'")
+        try:
+            if req.title is not None or req.notes is not None:
+                item = ts.update(agent=req.agent, conversation_id=req.conversation_id,
+                                 todo_id=todo_id, title=req.title, notes=req.notes)
+                if req.status == "done":
+                    item = ts.complete(agent=req.agent, conversation_id=req.conversation_id,
+                                       todo_id=todo_id)
+                return item
+            else:
+                if req.status == "done":
+                    return ts.complete(agent=req.agent, conversation_id=req.conversation_id,
+                                       todo_id=todo_id)
+                if req.status == "open":
+                    return _reopen_todo(ts, agent=req.agent,
+                                        conversation_id=req.conversation_id, todo_id=todo_id)
+                raise HTTPException(422, detail="nothing to update")
+        except LookupError:
+            raise HTTPException(404, detail="not_found")
+        except PermissionError as e:
+            raise HTTPException(403, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(422, detail=str(e))
+
+    def _reopen_todo(ts, *, agent, conversation_id, todo_id):
+        """Dashboard-only reopen path. Bypasses the agent tool surface
+        deliberately — see spec's 'no todo.reopen for v1' decision."""
+        import time as _time
+        with ts._storage.connect() as c:
+            ts._load_and_authz(c, agent=agent, conversation_id=conversation_id, todo_id=todo_id)
+            c.execute("UPDATE todos SET status='open', updated_at=? WHERE id=?",
+                      (_time.time(), todo_id))
+            row = c.execute("SELECT * FROM todos WHERE id=?", (todo_id,)).fetchone()
+        from kc_supervisor.todos.storage import _row_to_dict
+        return _row_to_dict(row)
+
+    @app.delete("/todos/{todo_id}", status_code=204)
+    def delete_todo(todo_id: int, conversation_id: int, agent: str):
+        from fastapi import Response
+        ts = app.state.deps.todo_storage
+        if ts is None:
+            raise HTTPException(503, detail="todo_storage not configured")
+        try:
+            ts.delete(agent=agent, conversation_id=conversation_id, todo_id=todo_id)
+        except LookupError:
+            raise HTTPException(404, detail="not_found")
+        except PermissionError as e:
+            raise HTTPException(403, detail=str(e))
+        return Response(status_code=204)
+
+    @app.delete("/todos")
+    def bulk_delete_todos(conversation_id: int, agent: str,
+                          scope: str = "all", status: str = "done"):
+        if status != "done":
+            raise HTTPException(422, detail="bulk delete supports status=done only")
+        ts = app.state.deps.todo_storage
+        if ts is None:
+            raise HTTPException(503, detail="todo_storage not configured")
+        try:
+            n = ts.clear_done(agent=agent, conversation_id=conversation_id, scope=scope)
+        except ValueError as e:
+            raise HTTPException(422, detail=str(e))
+        return {"deleted_count": n}
