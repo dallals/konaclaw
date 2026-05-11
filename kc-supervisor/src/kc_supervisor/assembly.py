@@ -286,7 +286,7 @@ def assemble_agent(
             tier_map[tool.name] = Tier.SAFE
 
     # Phase-1 scheduling tools — registered ONLY on Kona.
-    if cfg.name == "kona" and schedule_service is not None:
+    if cfg.name in ("kona", "Kona-AI") and schedule_service is not None:
         from kc_supervisor.scheduling import build_scheduling_tools
         from kc_supervisor.scheduling.context import get_current_context
 
