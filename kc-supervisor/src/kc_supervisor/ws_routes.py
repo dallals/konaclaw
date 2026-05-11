@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import logging
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -19,6 +20,7 @@ def register_ws_routes(app: FastAPI) -> None:
     @app.websocket("/ws/chat/{conversation_id}")
     async def ws_chat(ws: WebSocket, conversation_id: int):
         await ws.accept()
+        loop = asyncio.get_running_loop()
         deps = app.state.deps
 
         conv = deps.storage.get_conversation(conversation_id)
@@ -58,9 +60,35 @@ def register_ws_routes(app: FastAPI) -> None:
 
         lock = deps.conv_locks.get(conversation_id)
 
+        # Phase C: subscribe to clarify_request frames for this conversation.
+        clarify_broker = deps.clarify_broker
+        clarify_unsubscribe = None
+        if clarify_broker is not None:
+            def _forward_clarify(frame: dict) -> None:
+                if frame.get("conversation_id") != conversation_id:
+                    return
+                # ws.send_json is async; schedule onto the running loop.
+                try:
+                    asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
+                except Exception:
+                    pass
+            clarify_unsubscribe = clarify_broker.subscribe(_forward_clarify)
+            # Re-emit any in-flight clarifies for this conversation (reconnect).
+            for frame in clarify_broker.pending_for_conversation(conversation_id):
+                await ws.send_json(frame)
+
         try:
             while True:
                 inbound = await ws.receive_json()
+                if inbound.get("type") == "clarify_response":
+                    if clarify_broker is None:
+                        continue  # silently drop — phase C not wired
+                    rid = inbound.get("request_id")
+                    choice = inbound.get("choice")  # may be None for skip
+                    reason = inbound.get("reason", "answered" if choice is not None else "skipped")
+                    if isinstance(rid, str):
+                        clarify_broker.resolve(rid, choice=choice, reason=reason)
+                    continue
                 if inbound.get("type") != "user_message":
                     await ws.send_json({
                         "type": "error",
@@ -239,6 +267,9 @@ def register_ws_routes(app: FastAPI) -> None:
                             rt.set_status(AgentStatus.IDLE)
         except (WebSocketDisconnect, RuntimeError):
             return
+        finally:
+            if clarify_unsubscribe is not None:
+                clarify_unsubscribe()
 
     @app.websocket("/ws/approvals")
     async def ws_approvals(ws: WebSocket):
