@@ -40,7 +40,6 @@ class SnoozeRequest(BaseModel):
 
 class _TodoCreate(BaseModel):
     conversation_id: int
-    agent:           str
     title:           str = Field(min_length=1)
     notes:           str = ""
     persist:         bool = False
@@ -48,7 +47,6 @@ class _TodoCreate(BaseModel):
 
 class _TodoPatch(BaseModel):
     conversation_id: int
-    agent:           str
     title:           Optional[str] = None
     notes:           Optional[str] = None
     status:          Optional[str] = None
@@ -530,9 +528,23 @@ def register_http_routes(app: FastAPI) -> None:
 
     # ----------- Phase C — todos -----------
 
+    def _resolve_agent_for_conversation(conversation_id: int) -> str:
+        """Look up the agent owning a conversation. Raises 404 if the
+        conversation doesn't exist. Used by /todos routes so callers can't
+        spoof the agent via a query param."""
+        with app.state.deps.storage.connect() as c:
+            row = c.execute(
+                "SELECT agent FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(404, detail=f"conversation {conversation_id} not found")
+        return row["agent"]
+
     @app.get("/todos")
-    def list_todos(conversation_id: int, agent: str,
+    def list_todos(conversation_id: int,
                    status: str = "open", scope: str = "all"):
+        agent = _resolve_agent_for_conversation(conversation_id)
         ts = app.state.deps.todo_storage
         if ts is None:
             raise HTTPException(503, detail="todo_storage not configured")
@@ -545,16 +557,18 @@ def register_http_routes(app: FastAPI) -> None:
 
     @app.post("/todos", status_code=201)
     def create_todo(req: _TodoCreate):
+        agent = _resolve_agent_for_conversation(req.conversation_id)
         ts = app.state.deps.todo_storage
         if ts is None:
             raise HTTPException(503, detail="todo_storage not configured")
         if not req.title.strip():
             raise HTTPException(422, detail="title must be non-empty")
-        return ts.add(agent=req.agent, conversation_id=req.conversation_id,
+        return ts.add(agent=agent, conversation_id=req.conversation_id,
                       title=req.title, notes=req.notes, persist=req.persist)
 
     @app.patch("/todos/{todo_id}")
     def patch_todo(todo_id: int, req: _TodoPatch):
+        agent = _resolve_agent_for_conversation(req.conversation_id)
         ts = app.state.deps.todo_storage
         if ts is None:
             raise HTTPException(503, detail="todo_storage not configured")
@@ -562,18 +576,18 @@ def register_http_routes(app: FastAPI) -> None:
             raise HTTPException(422, detail="status must be 'open' or 'done'")
         try:
             if req.title is not None or req.notes is not None:
-                item = ts.update(agent=req.agent, conversation_id=req.conversation_id,
+                item = ts.update(agent=agent, conversation_id=req.conversation_id,
                                  todo_id=todo_id, title=req.title, notes=req.notes)
                 if req.status == "done":
-                    item = ts.complete(agent=req.agent, conversation_id=req.conversation_id,
+                    item = ts.complete(agent=agent, conversation_id=req.conversation_id,
                                        todo_id=todo_id)
                 return item
             else:
                 if req.status == "done":
-                    return ts.complete(agent=req.agent, conversation_id=req.conversation_id,
+                    return ts.complete(agent=agent, conversation_id=req.conversation_id,
                                        todo_id=todo_id)
                 if req.status == "open":
-                    return _reopen_todo(ts, agent=req.agent,
+                    return _reopen_todo(ts, agent=agent,
                                         conversation_id=req.conversation_id, todo_id=todo_id)
                 raise HTTPException(422, detail="nothing to update")
         except LookupError:
@@ -596,8 +610,9 @@ def register_http_routes(app: FastAPI) -> None:
         return _row_to_dict(row)
 
     @app.delete("/todos/{todo_id}", status_code=204)
-    def delete_todo(todo_id: int, conversation_id: int, agent: str):
+    def delete_todo(todo_id: int, conversation_id: int):
         from fastapi import Response
+        agent = _resolve_agent_for_conversation(conversation_id)
         ts = app.state.deps.todo_storage
         if ts is None:
             raise HTTPException(503, detail="todo_storage not configured")
@@ -610,8 +625,9 @@ def register_http_routes(app: FastAPI) -> None:
         return Response(status_code=204)
 
     @app.delete("/todos")
-    def bulk_delete_todos(conversation_id: int, agent: str,
+    def bulk_delete_todos(conversation_id: int,
                           scope: str = "all", status: str = "done"):
+        agent = _resolve_agent_for_conversation(conversation_id)
         if status != "done":
             raise HTTPException(422, detail="bulk delete supports status=done only")
         ts = app.state.deps.todo_storage

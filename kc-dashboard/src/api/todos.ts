@@ -20,7 +20,8 @@ export async function listTodos(args: {
 }): Promise<{ items: Todo[]; count: number }> {
   const params = new URLSearchParams({
     conversation_id: String(args.conversationId),
-    agent: args.agent,
+    // agent is intentionally omitted — the supervisor resolves it from
+    // the conversation row so callers can't spoof it.
     status: args.status ?? "open",
     scope: args.scope ?? "all",
   });
@@ -41,7 +42,7 @@ export async function createTodo(args: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       conversation_id: args.conversationId,
-      agent: args.agent,
+      // agent omitted — supervisor injects it from the conversation row.
       title: args.title,
       notes: args.notes ?? "",
       persist: args.persist ?? false,
@@ -59,9 +60,9 @@ export async function patchTodo(args: {
   notes?: string;
   status?: "open" | "done";
 }): Promise<Todo> {
+  // agent omitted — supervisor injects it from the conversation row.
   const body: Record<string, any> = {
     conversation_id: args.conversationId,
-    agent: args.agent,
   };
   if (args.title !== undefined) body.title = args.title;
   if (args.notes !== undefined) body.notes = args.notes;
@@ -80,9 +81,9 @@ export async function deleteTodo(args: {
   conversationId: number;
   agent: string;
 }): Promise<void> {
+  // agent omitted — supervisor injects it from the conversation row.
   const params = new URLSearchParams({
     conversation_id: String(args.conversationId),
-    agent: args.agent,
   });
   const r = await fetch(`${BASE}/todos/${args.id}?${params.toString()}`, {
     method: "DELETE",
@@ -96,9 +97,9 @@ export async function bulkDeleteTodos(args: {
   scope: "all" | "conversation" | "agent";
   status: "done";
 }): Promise<{ deleted_count: number }> {
+  // agent omitted — supervisor injects it from the conversation row.
   const params = new URLSearchParams({
     conversation_id: String(args.conversationId),
-    agent: args.agent,
     scope: args.scope,
     status: args.status,
   });

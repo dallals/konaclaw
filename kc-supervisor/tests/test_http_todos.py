@@ -32,14 +32,14 @@ def client(tmp_path, monkeypatch):
 
 
 def test_get_todos_empty(client):
-    r = client.get("/todos?conversation_id=40&agent=Kona-AI")
+    r = client.get("/todos?conversation_id=40")
     assert r.status_code == 200
     body = r.json()
     assert body == {"items": [], "count": 0}
 
 
 def test_post_creates_todo(client):
-    r = client.post("/todos", json={"conversation_id": 40, "agent": "Kona-AI", "title": "A"})
+    r = client.post("/todos", json={"conversation_id": 40, "title": "A"})
     assert r.status_code == 201
     body = r.json()
     assert body["title"] == "A"
@@ -47,63 +47,63 @@ def test_post_creates_todo(client):
 
 
 def test_post_missing_title_422(client):
-    r = client.post("/todos", json={"conversation_id": 40, "agent": "Kona-AI", "title": ""})
+    r = client.post("/todos", json={"conversation_id": 40, "title": ""})
     assert r.status_code == 422
 
 
 def test_post_persist_true(client):
-    r = client.post("/todos", json={"conversation_id": 40, "agent": "Kona-AI",
+    r = client.post("/todos", json={"conversation_id": 40,
                                      "title": "P", "persist": True})
     body = r.json()
     assert body["scope"] == "agent"
 
 
 def test_get_after_add_returns_item(client):
-    client.post("/todos", json={"conversation_id": 40, "agent": "Kona-AI", "title": "A"})
-    r = client.get("/todos?conversation_id=40&agent=Kona-AI")
+    client.post("/todos", json={"conversation_id": 40, "title": "A"})
+    r = client.get("/todos?conversation_id=40")
     body = r.json()
     assert body["count"] == 1
     assert body["items"][0]["title"] == "A"
 
 
 def test_patch_updates_title(client):
-    a = client.post("/todos", json={"conversation_id": 40, "agent": "Kona-AI", "title": "A"}).json()
+    a = client.post("/todos", json={"conversation_id": 40, "title": "A"}).json()
     r = client.patch(f"/todos/{a['id']}",
-                     json={"conversation_id": 40, "agent": "Kona-AI", "title": "renamed"})
+                     json={"conversation_id": 40, "title": "renamed"})
     assert r.status_code == 200
     assert r.json()["title"] == "renamed"
 
 
 def test_patch_status_done(client):
-    a = client.post("/todos", json={"conversation_id": 40, "agent": "Kona-AI", "title": "A"}).json()
+    a = client.post("/todos", json={"conversation_id": 40, "title": "A"}).json()
     r = client.patch(f"/todos/{a['id']}",
-                     json={"conversation_id": 40, "agent": "Kona-AI", "status": "done"})
+                     json={"conversation_id": 40, "status": "done"})
     assert r.json()["status"] == "done"
 
 
 def test_patch_invalid_status_422(client):
-    a = client.post("/todos", json={"conversation_id": 40, "agent": "Kona-AI", "title": "A"}).json()
+    a = client.post("/todos", json={"conversation_id": 40, "title": "A"}).json()
     r = client.patch(f"/todos/{a['id']}",
-                     json={"conversation_id": 40, "agent": "Kona-AI", "status": "garbage"})
+                     json={"conversation_id": 40, "status": "garbage"})
     assert r.status_code == 422
 
 
 def test_delete_removes(client):
-    a = client.post("/todos", json={"conversation_id": 40, "agent": "Kona-AI", "title": "A"}).json()
-    r = client.delete(f"/todos/{a['id']}?conversation_id=40&agent=Kona-AI")
+    a = client.post("/todos", json={"conversation_id": 40, "title": "A"}).json()
+    r = client.delete(f"/todos/{a['id']}?conversation_id=40")
     assert r.status_code == 204
-    r2 = client.delete(f"/todos/{a['id']}?conversation_id=40&agent=Kona-AI")
+    r2 = client.delete(f"/todos/{a['id']}?conversation_id=40")
     assert r2.status_code == 404
 
 
 def test_bulk_delete_clear_done(client):
     for t in ("A", "B", "C"):
-        client.post("/todos", json={"conversation_id": 40, "agent": "Kona-AI", "title": t})
-    items = client.get("/todos?conversation_id=40&agent=Kona-AI").json()["items"]
+        client.post("/todos", json={"conversation_id": 40, "title": t})
+    items = client.get("/todos?conversation_id=40").json()["items"]
     client.patch(f"/todos/{items[0]['id']}",
-                 json={"conversation_id": 40, "agent": "Kona-AI", "status": "done"})
+                 json={"conversation_id": 40, "status": "done"})
     client.patch(f"/todos/{items[1]['id']}",
-                 json={"conversation_id": 40, "agent": "Kona-AI", "status": "done"})
-    r = client.delete("/todos?conversation_id=40&agent=Kona-AI&scope=all&status=done")
+                 json={"conversation_id": 40, "status": "done"})
+    r = client.delete("/todos?conversation_id=40&scope=all&status=done")
     assert r.status_code == 200
     assert r.json() == {"deleted_count": 2}
