@@ -13,6 +13,25 @@ from kc_supervisor.service import Deps, create_app
 from kc_supervisor.storage import Storage
 
 
+# Single source of truth for the Google OAuth scopes the supervisor needs.
+# Imported from the adapters when kc-connectors is installed; otherwise a
+# hardcoded-but-complete fallback. Both startup-time refresh validation
+# (main.py) and the dashboard's "Connect Google" route (connectors_routes.py
+# via deps.google_scopes) MUST use the same list — otherwise re-auth mints
+# a token with the narrow set, then the next startup tries to refresh
+# against the broader set and gets `invalid_scope` from Google.
+try:
+    from kc_connectors.gmail_adapter import GMAIL_SCOPES as _GMAIL_SCOPES
+    from kc_connectors.gcal_adapter import GCAL_SCOPES as _GCAL_SCOPES
+    DEFAULT_GOOGLE_SCOPES: tuple[str, ...] = tuple(_GMAIL_SCOPES + _GCAL_SCOPES)
+except ImportError:
+    DEFAULT_GOOGLE_SCOPES = (
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/calendar",
+    )
+
+
 def main() -> None:
     home = Path(os.environ.get("KC_HOME", str(Path.home() / "KonaClaw")))
     default_model = os.environ.get("KC_DEFAULT_MODEL", "qwen2.5:7b")
@@ -119,15 +138,15 @@ def main() -> None:
     gmail_service = None
     gcal_service = None
     try:
-        from kc_connectors.gmail_adapter import build_gmail_service, GMAIL_SCOPES
-        from kc_connectors.gcal_adapter import build_gcal_service, GCAL_SCOPES
+        from kc_connectors.gmail_adapter import build_gmail_service
+        from kc_connectors.gcal_adapter import build_gcal_service
         creds_path = google_creds_path_str
         token_path = google_token_path_str
         if creds_path and Path(creds_path).exists():
             from google.oauth2.credentials import Credentials
             from google_auth_oauthlib.flow import InstalledAppFlow
             from google.auth.transport.requests import Request
-            scopes = GMAIL_SCOPES + GCAL_SCOPES
+            scopes = list(DEFAULT_GOOGLE_SCOPES)
             creds = None
             if Path(token_path).exists():
                 creds = Credentials.from_authorized_user_file(token_path, scopes)
@@ -284,6 +303,7 @@ def main() -> None:
         secrets_store=secrets_store,
         google_credentials_path=Path(google_creds_path_str) if google_creds_path_str else None,
         google_token_path=Path(google_token_path_str),
+        google_scopes=DEFAULT_GOOGLE_SCOPES,
         news_client=news_client,
         skill_index=skill_index,
     )

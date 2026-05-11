@@ -116,11 +116,21 @@ def _run_google_flow(deps: Any) -> None:
         if deps.google_token_path is None:
             raise RuntimeError("google_token_path not configured on Deps")
         from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
+        scopes = list(getattr(deps, "google_scopes", ()) or ())
+        if not scopes:
+            # Defensive fallback that mirrors main.DEFAULT_GOOGLE_SCOPES so a
+            # caller that bypasses normal Deps construction doesn't mint a
+            # token under a narrower set than main.py will validate against
+            # on the next startup (which was the root cause of the
+            # "frequent re-auth" loop — invalid_scope on every refresh).
+            scopes = [
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/calendar",
+            ]
         flow = InstalledAppFlow.from_client_secrets_file(
             str(deps.google_credentials_path),
-            scopes=getattr(deps, "google_scopes",
-                           ["https://www.googleapis.com/auth/gmail.modify",
-                            "https://www.googleapis.com/auth/calendar"]),
+            scopes=scopes,
         )
         creds = flow.run_local_server(host="localhost", port=0, open_browser=True)
         deps.google_token_path.write_text(creds.to_json())

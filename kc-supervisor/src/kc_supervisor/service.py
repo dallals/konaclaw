@@ -60,6 +60,12 @@ class Deps:
     google_oauth: GoogleOAuthState = field(default_factory=GoogleOAuthState)
     google_token_path: Optional[Path] = None
     google_credentials_path: Optional[Path] = None
+    # Single source of truth for the OAuth scopes consumed by Gmail + Calendar.
+    # main.py populates this from GMAIL_SCOPES + GCAL_SCOPES in the adapters;
+    # connectors_routes._run_google_flow reads it instead of hardcoding a
+    # narrower list (which silently minted incomplete tokens, see commit
+    # introducing this field).
+    google_scopes: tuple[str, ...] = ()
     news_client: Optional[Any] = None
     # Captured at FastAPI startup so sync route handlers (running in the
     # threadpool) can dispatch coroutines back to the main event loop via
