@@ -162,3 +162,51 @@ def test_permission_denied(workdir):
     )
     assert result.get("error") == "permission_denied"
     assert "notexec.sh" in result["argv0"]
+
+
+def test_timeout_kills_process(workdir):
+    result = run(
+        argv=["sleep", "5"],
+        command=None,
+        cwd=workdir,
+        env={"PATH": "/usr/bin:/bin"},
+        timeout_seconds=1,
+        output_cap_bytes=1024,
+    )
+    assert result["timed_out"] is True
+    assert result["exit_code"] == -1
+    assert result["duration_ms"] >= 900  # ~1s, allow scheduler jitter
+    assert result["duration_ms"] < 3000
+
+
+def test_stdout_truncation_head_and_tail(workdir):
+    # Emit 8000 bytes of stdout; cap at 1024.
+    result = run(
+        argv=None,
+        command="python3 -c \"import sys; sys.stdout.write('A'*4000); sys.stdout.write('B'*4000)\"",
+        cwd=workdir,
+        env={"PATH": "/usr/bin:/bin"},
+        timeout_seconds=10,
+        output_cap_bytes=1024,
+    )
+    assert result["exit_code"] == 0
+    assert result["stdout_truncated"] is True
+    # Truncated output should contain the marker and both head + tail markers (A and B).
+    assert "[TRUNCATED" in result["stdout"]
+    assert "A" in result["stdout"]
+    assert "B" in result["stdout"]
+    # Truncated length should be approximately cap_bytes + marker.
+    assert len(result["stdout"].encode("utf-8")) < 1024 + 200
+
+
+def test_short_output_not_truncated(workdir):
+    result = run(
+        argv=["echo", "small"],
+        command=None,
+        cwd=workdir,
+        env={"PATH": "/usr/bin:/bin"},
+        timeout_seconds=10,
+        output_cap_bytes=1024,
+    )
+    assert result["stdout_truncated"] is False
+    assert "[TRUNCATED" not in result["stdout"]
