@@ -233,6 +233,18 @@ def assemble_agent(
         tier_map[terminal_tool.name] = Tier.DESTRUCTIVE
         terminal_tier_resolvers[terminal_tool.name] = terminal_tier_resolver
 
+    # Web tools (web_search + web_fetch) — gated by KC_WEB_ENABLED (default disabled).
+    # Lazy-imports kc_web so kc-supervisor doesn't hard-depend on the package.
+    # Both tools are static SAFE (no per-call tier_resolver). The URL guard and
+    # per-session/per-day budget counters live inside each tool's impl as
+    # pre-checks, not approval-time gates.
+    if os.environ.get("KC_WEB_ENABLED", "").lower() in ("1", "true", "yes"):
+        from kc_web import build_web_tools, WebConfig
+        web_cfg = WebConfig.from_env()
+        for web_tool in build_web_tools(web_cfg):
+            registry.register(web_tool)
+            tier_map[web_tool.name] = Tier.SAFE
+
     # Google tool-providers (Gmail + Calendar) — only when the supervisor has
     # built credentialed service objects. Lazy-imports kc_connectors so
     # kc-supervisor doesn't take a hard dep; the presence of a service object
