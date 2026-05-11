@@ -99,6 +99,20 @@ CREATE TABLE IF NOT EXISTS channel_routing (
     default_chat_id  TEXT NOT NULL,
     enabled          INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE TABLE IF NOT EXISTS todos (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent           TEXT    NOT NULL,
+  conversation_id INTEGER NULL,
+  title           TEXT    NOT NULL,
+  notes           TEXT    NOT NULL DEFAULT '',
+  status          TEXT    NOT NULL CHECK (status IN ('open','done')) DEFAULT 'open',
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL,
+  FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_todos_agent_conv ON todos (agent, conversation_id);
+CREATE INDEX IF NOT EXISTS idx_todos_status     ON todos (status);
 """
 
 
