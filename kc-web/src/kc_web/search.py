@@ -43,17 +43,20 @@ def build_web_search_impl(
         # 4. Call Firecrawl.
         t0 = time.monotonic()
         try:
-            results = await client.search(query, max_results, freshness)
+            results = await asyncio.wait_for(
+                client.search(query, max_results, freshness),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            return _json({
+                "error": "timeout",
+                "elapsed_ms": int((time.monotonic() - t0) * 1000),
+            })
         except FirecrawlError as e:
             return _json({
                 "error": "firecrawl_error",
                 "status": e.status,
                 "message": str(e),
-            })
-        except asyncio.TimeoutError:
-            return _json({
-                "error": "timeout",
-                "elapsed_ms": int((time.monotonic() - t0) * 1000),
             })
 
         # 5. Shape return.

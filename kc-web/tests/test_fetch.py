@@ -192,3 +192,21 @@ async def test_budget_blocks_call(cfg, tmp_path):
     out = json.loads(await impl(url="https://example.com"))
     assert out == {"error": "session_cap_exceeded", "limit": 1}
     assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_timeout(cfg, budget):
+    """If the client coroutine takes longer than timeout_seconds, return
+    timeout error shape with elapsed_ms."""
+    import asyncio as _asyncio
+
+    class HangingClient:
+        async def scrape(self, url, timeout_seconds, include_links):
+            await _asyncio.sleep(10)  # longer than any test timeout
+            raise AssertionError("should never get here")
+
+    impl = build_web_fetch_impl(cfg, HangingClient(), budget)
+    out = json.loads(await impl(url="https://example.com", timeout_seconds=1))
+    assert out["error"] == "timeout"
+    assert out["elapsed_ms"] >= 900  # ~1000ms within tolerance
+    assert out["elapsed_ms"] < 5000  # not the full 10s

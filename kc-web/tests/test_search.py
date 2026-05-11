@@ -123,3 +123,25 @@ async def test_budget_blocks_call(cfg, tmp_path):
     out = json.loads(await impl(query="x"))
     assert out == {"error": "session_cap_exceeded", "limit": 1}
     assert len(client.calls) == 1  # second call never reached firecrawl
+
+
+@pytest.mark.asyncio
+async def test_timeout(cfg, budget, monkeypatch):
+    """If search hangs past the internal timeout, return timeout error."""
+    import asyncio as _asyncio
+
+    class HangingClient:
+        async def search(self, query, max_results, freshness):
+            await _asyncio.sleep(10)
+            raise AssertionError("should never get here")
+
+    # Patch the internal timeout from 30 -> 1 for fast test
+    orig_wait_for = _asyncio.wait_for
+    async def short_wait_for(coro, timeout):
+        return await orig_wait_for(coro, timeout=1)  # override to 1s
+    monkeypatch.setattr("kc_web.search.asyncio.wait_for", short_wait_for)
+
+    impl = build_web_search_impl(cfg, HangingClient(), budget)
+    out = json.loads(await impl(query="x"))
+    assert out["error"] == "timeout"
+    assert out["elapsed_ms"] >= 900

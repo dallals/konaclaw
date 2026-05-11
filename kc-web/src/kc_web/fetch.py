@@ -47,17 +47,20 @@ def build_web_fetch_impl(
         # 4. Call Firecrawl.
         t0 = time.monotonic()
         try:
-            result = await client.scrape(url, timeout_seconds, bool(include_links))
+            result = await asyncio.wait_for(
+                client.scrape(url, timeout_seconds, bool(include_links)),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return _json({
+                "error": "timeout",
+                "elapsed_ms": int((time.monotonic() - t0) * 1000),
+            })
         except FirecrawlError as e:
             return _json({
                 "error": "firecrawl_error",
                 "status": e.status,
                 "message": str(e),
-            })
-        except asyncio.TimeoutError:
-            return _json({
-                "error": "timeout",
-                "elapsed_ms": int((time.monotonic() - t0) * 1000),
             })
 
         # 5. Truncate + shape return.
