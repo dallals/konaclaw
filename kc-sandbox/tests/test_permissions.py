@@ -152,3 +152,77 @@ async def test_to_async_agent_callback_returns_async_callable():
     allowed, reason = await result
     assert allowed is True
     assert reason is None
+
+
+def test_resolver_overrides_tier_map():
+    """Tool not in tier_map, but resolver returns SAFE -> allowed without callback."""
+    calls = []
+    def cb(agent, tool, args):
+        calls.append(("cb", agent, tool))
+        return (True, None)
+    engine = PermissionEngine(
+        tier_map={},  # tool unknown — would default to DESTRUCTIVE
+        agent_overrides={},
+        approval_callback=cb,
+        tier_resolvers={"terminal_run": lambda args: Tier.SAFE},
+    )
+    d = engine.check(agent="a", tool="terminal_run", arguments={"argv": ["ls"]})
+    assert d.allowed is True
+    assert d.tier == Tier.SAFE
+    assert calls == []  # no callback invoked
+
+
+def test_resolver_returns_destructive_invokes_callback():
+    seen = []
+    def cb(agent, tool, args):
+        seen.append(args)
+        return (True, None)
+    engine = PermissionEngine(
+        tier_map={},
+        agent_overrides={},
+        approval_callback=cb,
+        tier_resolvers={"terminal_run": lambda args: Tier.DESTRUCTIVE},
+    )
+    d = engine.check(agent="a", tool="terminal_run", arguments={"argv": ["rm", "x"]})
+    assert d.allowed is True
+    assert d.tier == Tier.DESTRUCTIVE
+    assert seen == [{"argv": ["rm", "x"]}]
+
+
+def test_resolver_takes_precedence_over_tier_map():
+    engine = PermissionEngine(
+        tier_map={"terminal_run": Tier.SAFE},  # static says SAFE
+        agent_overrides={},
+        approval_callback=AlwaysDeny(reason="nope"),
+        tier_resolvers={"terminal_run": lambda args: Tier.DESTRUCTIVE},  # dynamic says DESTRUCTIVE
+    )
+    d = engine.check(agent="a", tool="terminal_run", arguments={})
+    assert d.allowed is False
+    assert d.tier == Tier.DESTRUCTIVE
+    assert d.reason == "nope"
+
+
+@pytest.mark.asyncio
+async def test_resolver_works_in_async_path():
+    engine = PermissionEngine(
+        tier_map={},
+        agent_overrides={},
+        approval_callback=AlwaysAllow(),
+        tier_resolvers={"terminal_run": lambda args: Tier.DESTRUCTIVE},
+    )
+    d = await engine.check_async(agent="a", tool="terminal_run", arguments={})
+    assert d.allowed is True
+    assert d.tier == Tier.DESTRUCTIVE
+
+
+def test_no_resolver_falls_back_to_tier_map():
+    engine = PermissionEngine(
+        tier_map={"file.read": Tier.SAFE},
+        agent_overrides={},
+        approval_callback=AlwaysAllow(),
+        tier_resolvers={},
+    )
+    d = engine.check(agent="a", tool="file.read", arguments={})
+    assert d.allowed is True
+    assert d.tier == Tier.SAFE
+    assert d.source == "tier"
