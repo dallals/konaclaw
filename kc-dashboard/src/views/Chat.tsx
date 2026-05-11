@@ -17,6 +17,8 @@ import { MessageBubble, type BubbleUsage } from "../components/MessageBubble";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import { NewsWidget } from "../components/NewsWidget";
+import { TodoWidget } from "../components/TodoWidget";
+import { ClarifyCard } from "../components/ClarifyCard";
 import { formatTokensPerSecond, formatTokenCount, formatTtfb } from "../lib/formatUsage";
 
 const padNum = (n: number, len = 3) => String(n).padStart(len, "0");
@@ -102,6 +104,48 @@ export default function Chat() {
 
   const { events, sendUserMessage } = useChatSocket(activeConv);
   const [draft, setDraft] = useState("");
+
+  const [pendingClarifies, setPendingClarifies] = useState<Array<{
+    request_id: string; question: string; choices: string[];
+    timeout_seconds: number; started_at: number;
+  }>>([]);
+
+  useEffect(() => {
+    if (events.length === 0) return;
+    const last = events[events.length - 1] as any;
+    if (last?.type === "clarify_request") {
+      setPendingClarifies((prev) => {
+        if (prev.find((p) => p.request_id === last.request_id)) return prev;
+        return [...prev, {
+          request_id:      last.request_id,
+          question:        last.question,
+          choices:         last.choices,
+          timeout_seconds: last.timeout_seconds,
+          started_at:      last.started_at,
+        }];
+      });
+    }
+  }, [events]);
+
+  const respondToClarify = (request_id: string, choice: string | null, reason?: string) => {
+    sendUserMessage({
+      type: "clarify_response",
+      request_id,
+      choice,
+      ...(reason ? { reason } : {}),
+    });
+    setPendingClarifies((prev) => prev.filter((p) => p.request_id !== request_id));
+  };
+
+  const [todoEventCounter, setTodoEventCounter] = useState(0);
+
+  useEffect(() => {
+    if (events.length === 0) return;
+    const last = events[events.length - 1] as any;
+    if (last?.type === "todo_event") {
+      setTodoEventCounter((c) => c + 1);
+    }
+  }, [events]);
 
   // Auto-scroll the transcript to the bottom when new content arrives.
   // Refs into the rendered <div> below; pinned to the bottom unless the user
@@ -540,6 +584,18 @@ export default function Chat() {
               onDeny={(id) => respondToApproval(id, false)}
             />
           ))}
+          {pendingClarifies.map((req) => (
+            <ClarifyCard
+              key={req.request_id}
+              request_id={req.request_id}
+              question={req.question}
+              choices={req.choices}
+              timeout_seconds={req.timeout_seconds}
+              started_at={req.started_at}
+              onChoose={(rid, c) => respondToClarify(rid, c)}
+              onSkip={(rid) => respondToClarify(rid, null, "skipped")}
+            />
+          ))}
           {awaitingReply && pendingForAgent.length === 0 && !streaming && (() => {
             const last = events[events.length - 1] as { type?: string; call?: { name?: string } } | undefined;
             let label = "thinking";
@@ -590,6 +646,9 @@ export default function Chat() {
         )}
       </section>
       <NewsWidget />
+      {activeConv != null && activeAgent != null && (
+        <TodoWidget conversationId={activeConv} agent={activeAgent} refreshKey={todoEventCounter} />
+      )}
     </div>
   );
 }

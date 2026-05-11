@@ -33,9 +33,16 @@ export function useChatSocket(conversationId: number | null) {
     return () => { ws.close(); setEvents([]); };
   }, [conversationId]);
 
-  const sendUserMessage = useCallback((content: string) => {
-    wsRef.current?.send(JSON.stringify({ type: "user_message", content }));
-  }, []);
+  const sendUserMessage = useCallback(
+    (contentOrPayload: string | { type: string; [key: string]: unknown }) => {
+      const payload =
+        typeof contentOrPayload === "string"
+          ? { type: "user_message", content: contentOrPayload }
+          : contentOrPayload;
+      wsRef.current?.send(JSON.stringify(payload));
+    },
+    [],
+  );
 
   return { events, sendUserMessage };
 }

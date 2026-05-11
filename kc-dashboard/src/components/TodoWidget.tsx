@@ -25,7 +25,7 @@ export function TodoWidget({ conversationId, agent, refreshKey }: TodoWidgetProp
   useEffect(() => { void refetch(); }, [conversationId, agent, refreshKey]);
 
   if (error) return <div style={{ padding: 8, color: "#e57373" }}>todos: {error}</div>;
-  if (items === null) return <div style={{ padding: 8, color: "#888" }}>Loading…</div>;
+  if (items == null) return <div style={{ padding: 8, color: "#888" }}>Loading…</div>;
   if (items.length === 0) {
     return (
       <div style={{ padding: 8, color: "#888", fontStyle: "italic", fontSize: 11 }}>
