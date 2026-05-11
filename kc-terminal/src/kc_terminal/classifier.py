@@ -73,11 +73,14 @@ def _classify_git(argv: list[str]) -> RawTier:
     # `git reset --hard ...` -> destructive
     if sub == "reset" and any(a == "--hard" for a in argv[2:]):
         return RawTier.DESTRUCTIVE
-    # `git clean -fd` / `-f` -> destructive
-    if sub == "clean" and any(a.startswith("-") and "f" in a for a in argv[2:]):
+    # `git clean -f` / `-fd` / `-fdx` / `--force` -> destructive
+    if sub == "clean" and any(
+        a == "--force" or (a.startswith("-") and not a.startswith("--") and "f" in a)
+        for a in argv[2:]
+    ):
         return RawTier.DESTRUCTIVE
-    # `git tag -d x` -> destructive
-    if sub == "tag" and any(a == "-d" for a in argv[2:]):
+    # `git tag -d x` / `--delete x` -> destructive
+    if sub == "tag" and any(a in ("-d", "--delete") for a in argv[2:]):
         return RawTier.DESTRUCTIVE
     return RawTier.MUTATING
 

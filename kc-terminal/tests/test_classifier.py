@@ -84,6 +84,10 @@ def test_argv_git_safe_subcommands(argv, expected):
     (["git", "clean", "-fd"], RawTier.DESTRUCTIVE),
     (["git", "branch", "-D", "x"], RawTier.DESTRUCTIVE),
     (["git", "tag", "-d", "v1"], RawTier.DESTRUCTIVE),
+    (["git", "clean", "-f"], RawTier.DESTRUCTIVE),
+    (["git", "clean", "-fx"], RawTier.DESTRUCTIVE),
+    (["git", "clean", "--force"], RawTier.DESTRUCTIVE),
+    (["git", "tag", "--delete", "v1"], RawTier.DESTRUCTIVE),
 ])
 def test_argv_git_destructive_subcommands(argv, expected):
     assert classify_argv(argv) == expected
@@ -96,6 +100,8 @@ def test_argv_git_destructive_subcommands(argv, expected):
     (["git", "pull"], RawTier.MUTATING),
     (["git", "add", "."], RawTier.MUTATING),
     (["git", "stash"], RawTier.MUTATING),
+    (["git", "clean", "-n"], RawTier.MUTATING),
+    (["git", "clean", "-d"], RawTier.MUTATING),
 ])
 def test_argv_git_default_mutating(argv, expected):
     assert classify_argv(argv) == expected
