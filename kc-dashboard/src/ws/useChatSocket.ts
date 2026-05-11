@@ -18,7 +18,31 @@ export type ChatEvent =
   | { type: "tool_result"; tool_call_id: string; content?: string }
   | ChatUsageEvent
   | { type: "assistant_complete"; content: string }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | {
+      type: "clarify_request";
+      request_id: string;
+      conversation_id: number;
+      agent: string;
+      question: string;
+      choices: string[];
+      timeout_seconds: number;
+      started_at: number;
+    }
+  | {
+      type: "todo_event";
+      conversation_id: number;
+      agent: string;
+      action: "added" | "updated" | "deleted" | "cleared_done";
+      item?: {
+        id: number;
+        title?: string;
+        notes?: string;
+        status?: "open" | "done";
+        scope?: "conversation" | "agent";
+      };
+      deleted_count?: number;
+    };
 
 export function useChatSocket(conversationId: number | null) {
   const [events, setEvents] = useState<ChatEvent[]>([]);

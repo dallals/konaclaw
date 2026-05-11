@@ -112,7 +112,7 @@ export default function Chat() {
 
   useEffect(() => {
     if (events.length === 0) return;
-    const last = events[events.length - 1] as any;
+    const last = events[events.length - 1];
     if (last?.type === "clarify_request") {
       setPendingClarifies((prev) => {
         if (prev.find((p) => p.request_id === last.request_id)) return prev;
@@ -141,7 +141,7 @@ export default function Chat() {
 
   useEffect(() => {
     if (events.length === 0) return;
-    const last = events[events.length - 1] as any;
+    const last = events[events.length - 1];
     if (last?.type === "todo_event") {
       setTodoEventCounter((c) => c + 1);
     }
