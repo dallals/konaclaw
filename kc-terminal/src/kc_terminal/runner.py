@@ -17,6 +17,15 @@ def _head_tail(text: str, cap_bytes: int) -> tuple[str, bool]:
     return head + marker + tail, True
 
 
+def _decode(b: bytes | None) -> str:
+    """Decode child stdout/stderr bytes with replacement on invalid UTF-8.
+    Subprocess output can include arbitrary bytes (cat /bin/ls, head /dev/urandom,
+    etc.) so we never raise UnicodeDecodeError back to the caller."""
+    if not b:
+        return ""
+    return b.decode("utf-8", errors="replace")
+
+
 def run(
     *,
     argv: list[str] | None,
@@ -34,7 +43,7 @@ def run(
                 argv,
                 shell=False,
                 capture_output=True,
-                text=True,
+                text=False,
                 cwd=str(cwd),
                 env=env,
                 timeout=timeout_seconds,
@@ -46,24 +55,25 @@ def run(
                 shell=True,
                 executable="/bin/bash",
                 capture_output=True,
-                text=True,
+                text=False,
                 cwd=str(cwd),
                 env=env,
                 timeout=timeout_seconds,
                 stdin=subprocess.DEVNULL,
             )
     except FileNotFoundError as e:
-        return {
-            "error": "executable_not_found",
-            "argv0": (argv[0] if argv else (command or "").split()[0] if command else ""),
-            "detail": str(e),
-        }
+        # Disambiguate: missing cwd vs missing argv[0].
+        if e.filename == str(cwd):
+            return {"error": "cwd_does_not_exist", "cwd": str(cwd), "detail": str(e)}
+        argv0 = argv[0] if argv else (command or "").split()[0] if command else ""
+        return {"error": "executable_not_found", "argv0": argv0, "detail": str(e)}
+    except PermissionError as e:
+        argv0 = argv[0] if argv else (command or "").split()[0] if command else ""
+        return {"error": "permission_denied", "argv0": argv0, "detail": str(e)}
     except subprocess.TimeoutExpired as e:
         duration_ms = (time.time_ns() - start_ns) // 1_000_000
-        stdout_text = (e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")) or ""
-        stderr_text = (e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")) or ""
-        out, out_tr = _head_tail(stdout_text, output_cap_bytes)
-        err, err_tr = _head_tail(stderr_text, output_cap_bytes)
+        out, out_tr = _head_tail(_decode(e.stdout), output_cap_bytes)
+        err, err_tr = _head_tail(_decode(e.stderr), output_cap_bytes)
         return {
             "mode": mode,
             "exit_code": -1,
@@ -75,8 +85,8 @@ def run(
             "timed_out": True,
         }
     duration_ms = (time.time_ns() - start_ns) // 1_000_000
-    stdout, stdout_tr = _head_tail(completed.stdout or "", output_cap_bytes)
-    stderr, stderr_tr = _head_tail(completed.stderr or "", output_cap_bytes)
+    stdout, stdout_tr = _head_tail(_decode(completed.stdout), output_cap_bytes)
+    stderr, stderr_tr = _head_tail(_decode(completed.stderr), output_cap_bytes)
     return {
         "mode": mode,
         "exit_code": completed.returncode,

@@ -110,3 +110,55 @@ def test_stdin_is_devnull(workdir):
     assert result["exit_code"] == 0
     assert result["stdout"] == ""
     assert result["timed_out"] is False
+
+
+def test_non_utf8_output_does_not_crash(workdir):
+    """If a subprocess writes non-UTF-8 bytes, the runner replaces invalid
+    sequences rather than raising UnicodeDecodeError."""
+    # printf %b with octal escapes is a portable way to emit raw bytes.
+    result = run(
+        argv=["bash", "-c", "printf '\\xff\\xfe\\xfd'"],
+        command=None,
+        cwd=workdir,
+        env={"PATH": "/usr/bin:/bin"},
+        timeout_seconds=5,
+        output_cap_bytes=1024,
+    )
+    assert result["exit_code"] == 0
+    # Invalid bytes get replaced with U+FFFD (?, the Unicode replacement char).
+    assert "�" in result["stdout"]
+
+
+def test_missing_cwd_returns_cwd_does_not_exist(tmp_path):
+    """A non-existent cwd should be reported distinctly from missing argv[0]."""
+    missing = tmp_path / "no-such-dir"
+    # Don't mkdir -- we want it absent.
+    result = run(
+        argv=["ls"],
+        command=None,
+        cwd=missing,
+        env={"PATH": "/usr/bin:/bin"},
+        timeout_seconds=5,
+        output_cap_bytes=1024,
+    )
+    assert result.get("error") == "cwd_does_not_exist"
+    assert str(missing) in result["cwd"]
+
+
+def test_permission_denied(workdir):
+    """A non-executable file at argv[0] returns permission_denied."""
+    # Create a non-executable file and try to run it.
+    script = workdir / "notexec.sh"
+    script.write_text("#!/bin/sh\necho hi\n")
+    # chmod -x explicitly (default is non-exec but be explicit).
+    script.chmod(0o644)
+    result = run(
+        argv=[str(script)],
+        command=None,
+        cwd=workdir,
+        env={"PATH": "/usr/bin:/bin"},
+        timeout_seconds=5,
+        output_cap_bytes=1024,
+    )
+    assert result.get("error") == "permission_denied"
+    assert "notexec.sh" in result["argv0"]
