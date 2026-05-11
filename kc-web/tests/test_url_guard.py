@@ -68,3 +68,38 @@ def test_extra_blocked_hosts_no_suffix_match():
     )
     assert allowed
     assert reason is None
+
+
+@pytest.mark.parametrize("url,expected_reason", [
+    # Hex-encoded 127.0.0.1
+    ("http://0x7f000001", "private_ip"),
+    # Decimal-encoded 127.0.0.1
+    ("http://2130706433", "private_ip"),
+    # Short forms of 127.0.0.1
+    ("http://127.1", "private_ip"),
+    ("http://127.0.1", "private_ip"),
+    # Hex-encoded 192.168.1.1
+    ("http://0xc0a80101", "private_ip"),
+    # Decimal-encoded 10.0.0.1
+    ("http://167772161", "private_ip"),
+])
+def test_nonstandard_ip_encodings_blocked(url, expected_reason):
+    allowed, reason = is_public_url(url)
+    assert not allowed, f"{url} should be blocked"
+    assert reason == expected_reason
+
+
+def test_public_ip_decimal_form_not_falsely_blocked():
+    """Sanity check: a decimal-encoded PUBLIC IP (134744072 = 8.8.8.8) should NOT
+    be blocked by the new check. The check only blocks private/local IPs."""
+    allowed, reason = is_public_url("http://134744072")
+    assert allowed
+    assert reason is None
+
+
+def test_regular_hostname_unaffected():
+    """example.com should still parse cleanly — getaddrinfo(AI_NUMERICHOST)
+    raises gaierror for non-numeric hosts, which the guard catches."""
+    allowed, reason = is_public_url("http://example.com")
+    assert allowed
+    assert reason is None

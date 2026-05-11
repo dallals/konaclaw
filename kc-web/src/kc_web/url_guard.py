@@ -1,5 +1,6 @@
 from __future__ import annotations
 import ipaddress
+import socket
 import urllib.parse
 from typing import Iterable
 
@@ -55,6 +56,34 @@ def is_public_url(
             return False, "private_ip"
     except ValueError:
         pass  # not an IP literal — fine, fall through
+
+    # Catch non-standard numeric IP encodings that ipaddress.ip_address misses:
+    # hex (0x7f000001), decimal (2130706433), short forms (127.1, 127.0.1).
+    # socket.getaddrinfo with AI_NUMERICHOST parses these without DNS.
+    try:
+        addrs = socket.getaddrinfo(
+            host, None, family=socket.AF_UNSPEC, flags=socket.AI_NUMERICHOST
+        )
+        for family, _stype, _proto, _canon, sockaddr in addrs:
+            ip_str = sockaddr[0]
+            # Strip IPv6 scope id if present (e.g., "fe80::1%eth0")
+            if "%" in ip_str:
+                ip_str = ip_str.split("%", 1)[0]
+            try:
+                normalized = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+            if (
+                normalized.is_private
+                or normalized.is_loopback
+                or normalized.is_link_local
+                or normalized.is_reserved
+                or normalized.is_multicast
+                or normalized.is_unspecified
+            ):
+                return False, "private_ip"
+    except (socket.gaierror, OSError):
+        pass  # not a numeric host — fine, fall through to hostname checks
 
     if host_lower in set(extra_blocked_hosts):
         return False, "extra_blocked"
