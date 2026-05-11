@@ -240,10 +240,12 @@ SECRET_PREFIXES = (
     "ANTHROPIC_", "OPENAI_", "DEEPSEEK_", "GROQ_",
     "SUPABASE_",  "KONA_",   "KC_",
     "GOOGLE_OAUTH_", "GCAL_", "GMAIL_",
-    "TELEGRAM_BOT_TOKEN", "ZAPIER_",
+    "TELEGRAM_",  "ZAPIER_",
     "STRIPE_",    "TWILIO_", "SENDGRID_",
 )
 ```
+
+Note: `TELEGRAM_` is a prefix (not the full var name), so it strips `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and any per-bot variant like `TELEGRAM_BOT_TOKEN_FOO`.
 
 Rule: for each key in `parent_env`, drop if `key.startswith(prefix)` for any prefix in `secret_prefixes`. Keep everything else.
 

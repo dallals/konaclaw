@@ -63,3 +63,30 @@ def test_custom_prefix_list():
     out = build_child_env(parent, ("MYAPP_",))
     assert "MYAPP_KEY" not in out
     assert out["PATH"] == "/usr/bin"
+
+
+def test_strips_full_telegram_family():
+    """TELEGRAM_ is a prefix, not a full name -- catches BOT_TOKEN + API_ID + API_HASH."""
+    parent = {
+        "TELEGRAM_BOT_TOKEN": "secret",
+        "TELEGRAM_API_ID": "12345",
+        "TELEGRAM_API_HASH": "hash",
+        "TELEGRAM_BOT_TOKEN_KONA": "secret",
+        "PATH": "/usr/bin",
+    }
+    out = build_child_env(parent, DEFAULT_SECRET_PREFIXES)
+    assert "TELEGRAM_BOT_TOKEN" not in out
+    assert "TELEGRAM_API_ID" not in out
+    assert "TELEGRAM_API_HASH" not in out
+    assert "TELEGRAM_BOT_TOKEN_KONA" not in out
+    assert out["PATH"] == "/usr/bin"
+
+
+def test_parent_dict_not_mutated():
+    parent = {"ANTHROPIC_API_KEY": "secret", "PATH": "/usr/bin"}
+    out = build_child_env(parent, DEFAULT_SECRET_PREFIXES)
+    # parent unchanged
+    assert "ANTHROPIC_API_KEY" in parent
+    assert parent["ANTHROPIC_API_KEY"] == "secret"
+    # output stripped
+    assert "ANTHROPIC_API_KEY" not in out
