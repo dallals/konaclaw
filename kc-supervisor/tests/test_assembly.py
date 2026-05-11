@@ -358,6 +358,35 @@ def test_skill_tools_absent_when_skill_index_none(home):
     assert "skill_run_script" not in names
 
 
+# ------------------------------------------------------------------ Terminal
+# (kc-terminal integration — phase A)
+
+
+def test_terminal_tool_absent_when_disabled(home, monkeypatch):
+    """When KC_TERMINAL_ENABLED is unset (or false), terminal_run is not registered."""
+    monkeypatch.delenv("KC_TERMINAL_ENABLED", raising=False)
+    a = assemble_agent(**_basic_assemble_kwargs(home))
+    assert "terminal_run" not in a.registry.names()
+    assert "terminal_run" not in a.engine.tier_resolvers
+
+
+def test_terminal_tool_present_when_enabled(home, monkeypatch, tmp_path):
+    """When KC_TERMINAL_ENABLED=true, terminal_run is registered with DESTRUCTIVE fallback tier."""
+    monkeypatch.setenv("KC_TERMINAL_ENABLED", "true")
+    monkeypatch.setenv("KC_TERMINAL_ROOTS", str(tmp_path))
+    a = assemble_agent(**_basic_assemble_kwargs(home))
+    assert "terminal_run" in a.registry.names()
+    assert a.engine.tier_map["terminal_run"] == Tier.DESTRUCTIVE
+
+
+def test_terminal_tier_resolver_registered_when_enabled(home, monkeypatch, tmp_path):
+    """When KC_TERMINAL_ENABLED=true, the PermissionEngine has a tier_resolver for terminal_run."""
+    monkeypatch.setenv("KC_TERMINAL_ENABLED", "true")
+    monkeypatch.setenv("KC_TERMINAL_ROOTS", str(tmp_path))
+    a = assemble_agent(**_basic_assemble_kwargs(home))
+    assert "terminal_run" in a.engine.tier_resolvers
+
+
 def test_zapier_mcp_tools_are_mutating_not_destructive(home):
     """Zapier MCP tools are user-authorized at mcp.zapier.com (per-app OAuth),
     so KonaClaw treats them as MUTATING (audited, no popup) rather than
