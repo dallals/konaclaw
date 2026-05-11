@@ -143,8 +143,32 @@ def main() -> None:
     except ImportError:
         pass
     except Exception as e:
+        # Make this LOUD. The logger warning was easy to miss in the launcher
+        # terminal and the silent disable bit us in production: Kona would
+        # call gcal.list_events / gmail.search and the supervisor returned
+        # "unknown_tool", which the model can't recover from. Print a clearly
+        # marked banner to stderr so it can't slip past on a noisy startup.
         import logging
+        import sys
         logging.getLogger(__name__).warning("google connectors disabled: %s", e)
+        cause = type(e).__name__
+        hint = (
+            "Re-authorize via the dashboard's Connect Google flow, then "
+            "restart the supervisor."
+            if cause == "RefreshError"
+            else "Check ~/KonaClaw/config/secrets.yaml.enc for "
+                 "google_credentials_json_path and re-run the OAuth flow."
+        )
+        banner = (
+            "\n"
+            "!!! GOOGLE CONNECTORS DISABLED !!!\n"
+            f"    cause:   {cause}: {e}\n"
+            f"    impact:  gmail.* and gcal.* tools will NOT be registered.\n"
+            f"             Agents that try to call them will get an\n"
+            f"             'unknown_tool' error from the registry.\n"
+            f"    fix:     {hint}\n"
+        )
+        print(banner, file=sys.stderr, flush=True)
 
     # Channel connectors (Telegram, iMessage). Built only when secrets
     # supplies the relevant config and kc-connectors is importable. Failures
