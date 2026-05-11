@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kc-terminal"
+version = "0.1.0"
+description = "KonaClaw terminal_run tool (Phase A of tools rollout)"
+requires-python = ">=3.11"
+dependencies = ["kc-core", "kc-sandbox"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kc_terminal"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+asyncio_mode = "auto"
