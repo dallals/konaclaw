@@ -65,10 +65,15 @@ export function MessageBubble({
 }) {
   const isEmpty = !content || !content.trim();
   const isUser = role === "user";
-  // Suppress the "(no reply...)" placeholder when this is a tool-only turn
-  // (assistant produced no text but did call tools — usage tells us).
+  // Suppress the "(no reply...)" placeholder for intermediate / tool-only turns.
+  // Two cases collapse here:
+  //  1. Persisted assistant row with usage attached but output_tokens === 0
+  //     (a final-turn that genuinely produced no content — e.g. tool-only).
+  //  2. Live streaming bubble with no usage attached at all (the streaming
+  //     buffer briefly renders with whitespace-only content during a tool
+  //     turn before the next assistant_complete fires).
   const isToolOnlyTurn =
-    role === "assistant" && usage !== undefined && (usage.output_tokens ?? 0) === 0;
+    role === "assistant" && (usage === undefined || (usage.output_tokens ?? 0) === 0);
   return (
     <div className="grid grid-cols-[90px_1fr] gap-7 py-[22px] items-start relative">
       {/* dimensional tick at the meta/body seam */}

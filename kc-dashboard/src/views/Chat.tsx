@@ -496,7 +496,7 @@ export default function Chat() {
               <MessageBubble key={i} role={m.role} content={m.content} usage={m.usage} />
             ),
           )}
-          {streaming && <MessageBubble role="assistant" content={streaming} />}
+          {streaming.trim() && <MessageBubble role="assistant" content={streaming} />}
           {pendingForAgent.map((req) => (
             <ApprovalCard
               key={req.request_id}
