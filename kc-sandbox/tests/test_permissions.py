@@ -226,3 +226,44 @@ def test_no_resolver_falls_back_to_tier_map():
     assert d.allowed is True
     assert d.tier == Tier.SAFE
     assert d.source == "tier"
+
+
+def test_agent_override_wins_over_resolver():
+    """Precedence invariant: agent_overrides beats tier_resolvers for same (agent, tool)."""
+    engine = PermissionEngine(
+        tier_map={},
+        agent_overrides={"a": {"terminal_run": Tier.SAFE}},
+        approval_callback=AlwaysDeny(reason="should not see this"),
+        tier_resolvers={"terminal_run": lambda args: Tier.DESTRUCTIVE},
+    )
+    d = engine.check(agent="a", tool="terminal_run", arguments={})
+    assert d.allowed is True
+    assert d.tier == Tier.SAFE
+    assert d.source == "override"
+
+
+def test_resolver_exception_fails_closed_to_destructive():
+    """If a registered resolver raises, treat as DESTRUCTIVE (require approval)
+    rather than propagating the exception to the caller."""
+    calls = []
+
+    def crashing_resolver(args):
+        raise KeyError("argv")  # simulate malformed args
+
+    def cb(agent, tool, args):
+        calls.append((agent, tool))
+        return (True, None)
+
+    engine = PermissionEngine(
+        tier_map={},
+        agent_overrides={},
+        approval_callback=cb,
+        tier_resolvers={"terminal_run": crashing_resolver},
+    )
+    d = engine.check(agent="a", tool="terminal_run", arguments={})
+    # Did not propagate — got a normal Decision back.
+    assert d.tier == Tier.DESTRUCTIVE
+    # And the callback was invoked (because DESTRUCTIVE routes through it).
+    assert calls == [("a", "terminal_run")]
+    # source string per the implementation note
+    assert d.source in ("resolver+callback", "callback")

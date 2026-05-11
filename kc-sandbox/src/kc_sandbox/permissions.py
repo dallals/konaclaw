@@ -15,7 +15,8 @@ class Tier(str, Enum):
 class Decision:
     allowed: bool
     tier: Tier
-    source: str            # "tier", "callback", "override"
+    source: str            # "tier", "callback", "override", "override+callback",
+                           #  "resolver", "resolver+callback"
     reason: Optional[str] = None
 
 
@@ -56,7 +57,12 @@ class PermissionEngine:
             return override, "override"
         resolver = self.tier_resolvers.get(tool)
         if resolver is not None:
-            return resolver(arguments), "resolver"
+            try:
+                return resolver(arguments), "resolver"
+            except Exception:
+                # Resolver crashed (malformed args, buggy classifier, etc.).
+                # Fail closed: require approval rather than silently propagating.
+                return Tier.DESTRUCTIVE, "resolver"
         return self.tier_map.get(tool, Tier.DESTRUCTIVE), "tier"
 
     def check(self, agent: str, tool: str, arguments: dict[str, Any]) -> Decision:
