@@ -108,6 +108,7 @@ export default function Chat() {
   const [pendingClarifies, setPendingClarifies] = useState<Array<{
     request_id: string; question: string; choices: string[];
     timeout_seconds: number; started_at: number;
+    resolved?: { choice: string | null; reason?: string };
   }>>([]);
 
   useEffect(() => {
@@ -134,7 +135,12 @@ export default function Chat() {
       choice,
       ...(reason ? { reason } : {}),
     });
-    setPendingClarifies((prev) => prev.filter((p) => p.request_id !== request_id));
+    // Mark resolved instead of removing — card stays in transcript as history.
+    setPendingClarifies((prev) => prev.map((p) =>
+      p.request_id === request_id
+        ? { ...p, resolved: { choice, reason } }
+        : p
+    ));
   };
 
   const [todoEventCounter, setTodoEventCounter] = useState(0);
@@ -594,6 +600,7 @@ export default function Chat() {
               started_at={req.started_at}
               onChoose={(rid, c) => respondToClarify(rid, c)}
               onSkip={(rid) => respondToClarify(rid, null, "skipped")}
+              resolved={req.resolved}
             />
           ))}
           {awaitingReply && pendingForAgent.length === 0 && !streaming && (() => {

@@ -8,6 +8,7 @@ export type ClarifyCardProps = {
   started_at: number;          // seconds since epoch (server-supplied)
   onChoose: (request_id: string, choice: string) => void;
   onSkip: (request_id: string) => void;
+  resolved?: { choice: string | null; reason?: string };  // NEW
 };
 
 function fmt(secs: number): string {
@@ -27,6 +28,29 @@ export function ClarifyCard(props: ClarifyCardProps) {
     }, 1000);
     return () => clearInterval(id);
   }, [deadline]);
+
+  // Resolved state: render compact history card, no active buttons.
+  if (props.resolved !== undefined) {
+    const r = props.resolved;
+    return (
+      <div style={{
+        border: "1px solid #555",
+        background: "transparent",
+        borderRadius: 6,
+        padding: "8px 12px",
+        margin: "12px 0",
+        color: "#888",
+        fontSize: 13,
+      }}>
+        <div style={{ marginBottom: 2 }}>❓ {props.question}</div>
+        <div>
+          {r.choice !== null
+            ? `✓ ${r.choice}`
+            : r.reason === "skipped" ? "↷ Skipped" : "⏱ Timed out"}
+        </div>
+      </div>
+    );
+  }
 
   const timedOut = remaining <= 0;
 

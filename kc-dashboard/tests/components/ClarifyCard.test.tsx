@@ -64,4 +64,28 @@ describe("ClarifyCard", () => {
     const btnA = getByText("A").closest("button");
     expect(btnA?.disabled).toBe(true);
   });
+
+  it("renders resolved state when resolved prop is set", () => {
+    const { container } = render(
+      <ClarifyCard request_id="r1" question="Which day?"
+                   choices={["Mon", "Tue"]} timeout_seconds={300}
+                   started_at={Date.now() / 1000}
+                   onChoose={vi.fn()} onSkip={vi.fn()}
+                   resolved={{ choice: "Tue" }} />
+    );
+    expect(container.textContent).toContain("Which day?");
+    expect(container.textContent).toContain("✓ Tue");
+    // No active buttons in resolved state.
+    expect(container.querySelectorAll("button").length).toBe(0);
+  });
+
+  it("renders skipped state when resolved with reason=skipped", () => {
+    const { container } = render(
+      <ClarifyCard request_id="r1" question="Q?" choices={["A", "B"]}
+                   timeout_seconds={300} started_at={Date.now() / 1000}
+                   onChoose={vi.fn()} onSkip={vi.fn()}
+                   resolved={{ choice: null, reason: "skipped" }} />
+    );
+    expect(container.textContent).toContain("Skipped");
+  });
 });
