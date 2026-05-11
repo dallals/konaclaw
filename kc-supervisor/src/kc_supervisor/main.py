@@ -92,11 +92,14 @@ def main() -> None:
     # only register on Kona inside assemble_agent.
     todo_storage = None
     clarify_broker = None
+    todo_broadcaster = None
     try:
         from kc_supervisor.todos.storage import TodoStorage
         from kc_supervisor.clarify.broker import ClarifyBroker
+        from kc_supervisor.service import TodoBroadcaster
         todo_storage = TodoStorage(storage)
         clarify_broker = ClarifyBroker()
+        todo_broadcaster = TodoBroadcaster()
     except ImportError:
         pass
 
@@ -301,6 +304,7 @@ def main() -> None:
         web_config=web_config,
         todo_storage=todo_storage,
         clarify_broker=clarify_broker,
+        todo_broadcaster=todo_broadcaster,
     )
     registry.load_all()
 
@@ -322,6 +326,7 @@ def main() -> None:
         skill_index=skill_index,
         todo_storage=todo_storage,
         clarify_broker=clarify_broker,
+        todo_broadcaster=todo_broadcaster,
     )
     # Always wire the registry to deps so ReminderRunner.fire() can call
     # connector_registry.get(channel) at fire time. The InboundRouter still

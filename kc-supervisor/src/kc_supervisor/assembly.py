@@ -69,8 +69,9 @@ def assemble_agent(
     # Expected type: kc_web.WebConfig. Kept as Any to avoid a hard import of
     # kc_web at supervisor startup — mirrors how news_client uses Any.
     web_config: Optional[Any] = None,
-    todo_storage:   Optional[Any] = None,
-    clarify_broker: Optional[Any] = None,
+    todo_storage:    Optional[Any] = None,
+    clarify_broker:  Optional[Any] = None,
+    todo_broadcaster: Optional[Any] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -306,9 +307,9 @@ def assemble_agent(
         from kc_supervisor.scheduling.context import get_current_context
 
         def _broadcast_todo(event: dict) -> None:
-            # Wired in Task 9 to push todo_event WS frames. For now, no-op
-            # so the tool impls work end-to-end before the broadcaster lands.
-            pass
+            if todo_broadcaster is None:
+                return
+            todo_broadcaster.publish({"type": "todo_event", **event})
 
         for t in build_todo_tools(
             storage=todo_storage,

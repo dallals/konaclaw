@@ -126,3 +126,29 @@ def test_broadcast_called_on_mutation(store):
     # We expect one event after add. Shape verified in Task 9.
     assert len(events) == 1
     assert events[0]["action"] == "added"
+
+
+def test_broadcast_receives_event_via_real_broadcaster(store):
+    """End-to-end: a tool call -> _broadcast_todo -> TodoBroadcaster.publish ->
+    subscriber sees the {type:todo_event, action:added, item:..., ...} dict."""
+    from kc_supervisor.service import TodoBroadcaster
+    bc = TodoBroadcaster()
+    captured = []
+    bc.subscribe(lambda e: captured.append(e))
+
+    def emit(event):
+        bc.publish({"type": "todo_event", **event})
+
+    ctx = {"conversation_id": 40, "agent": "Kona-AI",
+           "channel": "dashboard", "chat_id": "dashboard:40"}
+    tools = {t.name: t for t in build_todo_tools(
+        storage=store, current_context=lambda: ctx, broadcast=emit,
+    )}
+    tools["todo.add"].impl(title="A")
+    assert len(captured) == 1
+    e = captured[0]
+    assert e["type"] == "todo_event"
+    assert e["action"] == "added"
+    assert e["item"]["title"] == "A"
+    assert e["conversation_id"] == 40
+    assert e["agent"] == "Kona-AI"

@@ -60,6 +60,24 @@ def register_ws_routes(app: FastAPI) -> None:
 
         lock = deps.conv_locks.get(conversation_id)
 
+        # Phase C: subscribe to todo_event frames for this conversation.
+        todo_broadcaster = app.state.deps.todo_broadcaster
+        todo_unsubscribe = None
+        if todo_broadcaster is not None:
+            def _forward_todo(event: dict) -> None:
+                if event.get("conversation_id") != conversation_id:
+                    # Agent-scoped events still carry the conversation_id of
+                    # whatever conversation Kona was in when she mutated the
+                    # persistent item. For now, only deliver to that
+                    # conversation. Cross-conversation propagation of
+                    # persistent items can be added later if needed.
+                    return
+                try:
+                    asyncio.run_coroutine_threadsafe(ws.send_json(event), loop)
+                except Exception:
+                    pass
+            todo_unsubscribe = todo_broadcaster.subscribe(_forward_todo)
+
         # Phase C: subscribe to clarify_request frames for this conversation.
         clarify_broker = deps.clarify_broker
         clarify_unsubscribe = None
@@ -268,6 +286,8 @@ def register_ws_routes(app: FastAPI) -> None:
         except (WebSocketDisconnect, RuntimeError):
             return
         finally:
+            if todo_unsubscribe is not None:
+                todo_unsubscribe()
             if clarify_unsubscribe is not None:
                 clarify_unsubscribe()
 

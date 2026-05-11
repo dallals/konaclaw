@@ -19,6 +19,31 @@ if TYPE_CHECKING:
     from kc_supervisor.scheduling.service import ScheduleService
 
 
+class TodoBroadcaster:
+    """Pub-sub for todo_event frames. Built once in main.py; subscribed to
+    by each WS chat connection. The agent tools invoke .publish() on every
+    mutation."""
+
+    def __init__(self) -> None:
+        self._subscribers: list = []
+
+    def subscribe(self, fn):
+        self._subscribers.append(fn)
+        def unsubscribe():
+            try:
+                self._subscribers.remove(fn)
+            except ValueError:
+                pass
+        return unsubscribe
+
+    def publish(self, event: dict) -> None:
+        for sub in list(self._subscribers):
+            try:
+                sub(event)
+            except Exception:
+                pass
+
+
 @dataclass
 class GoogleOAuthState:
     """Tracks the in-process state of a Google OAuth installed-app flow.
@@ -87,6 +112,7 @@ class Deps:
     # importable, which keeps the supervisor bootable without Phase C.
     todo_storage:    Optional[Any] = None
     clarify_broker:  Optional[Any] = None
+    todo_broadcaster: Optional[Any] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:
