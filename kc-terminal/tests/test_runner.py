@@ -51,6 +51,7 @@ def test_argv_executable_not_found(workdir):
     )
     assert result.get("error") == "executable_not_found"
     assert "this-command-does-not-exist-12345" in result["argv0"]
+    assert result["cwd"] == str(workdir)
 
 
 def test_shell_pipe(workdir):
@@ -162,6 +163,7 @@ def test_permission_denied(workdir):
     )
     assert result.get("error") == "permission_denied"
     assert "notexec.sh" in result["argv0"]
+    assert result["cwd"] == str(workdir)
 
 
 def test_timeout_kills_process(workdir):

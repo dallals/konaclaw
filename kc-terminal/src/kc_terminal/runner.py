@@ -66,10 +66,10 @@ def run(
         if e.filename == str(cwd):
             return {"error": "cwd_does_not_exist", "cwd": str(cwd), "detail": str(e)}
         argv0 = argv[0] if argv else (command or "").split()[0] if command else ""
-        return {"error": "executable_not_found", "argv0": argv0, "detail": str(e)}
+        return {"error": "executable_not_found", "argv0": argv0, "cwd": str(cwd), "detail": str(e)}
     except PermissionError as e:
         argv0 = argv[0] if argv else (command or "").split()[0] if command else ""
-        return {"error": "permission_denied", "argv0": argv0, "detail": str(e)}
+        return {"error": "permission_denied", "argv0": argv0, "cwd": str(cwd), "detail": str(e)}
     except subprocess.TimeoutExpired as e:
         duration_ms = (time.time_ns() - start_ns) // 1_000_000
         out, out_tr = _head_tail(_decode(e.stdout), output_cap_bytes)

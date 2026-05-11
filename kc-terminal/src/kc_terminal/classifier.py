@@ -97,14 +97,78 @@ def _classify_gh(argv: list[str]) -> RawTier:
     return RawTier.MUTATING
 
 
+def _classify_argv_env(argv: list[str]) -> RawTier:
+    """argv[0] is 'env' (basenamed). Skip env-assignments, then re-classify
+    the remainder as the actual command being invoked. If the remainder is
+    empty (bare `env`), treat as SAFE (lists env vars)."""
+    rest = list(argv[1:])
+    # Skip leading -flag tokens (e.g. `env -i`, `env -u VAR`). Conservative:
+    # skip any token starting with `-`. `--` terminates flag parsing.
+    while rest and rest[0].startswith("-"):
+        if rest[0] == "--":
+            rest = rest[1:]
+            break
+        rest = rest[1:]
+    # Skip VAR=value assignments.
+    while rest and _looks_like_env_assignment(rest[0]):
+        rest = rest[1:]
+    if not rest:
+        return RawTier.SAFE  # bare `env` or env with only assignments
+    return classify_argv(rest)  # recurse on the unwrapped command
+
+
+def _classify_argv_find(argv: list[str]) -> RawTier:
+    """argv[0] is 'find' (basenamed). Destructive if -delete or -exec rm appears."""
+    rest = argv[1:]
+    if "-delete" in rest:
+        return RawTier.DESTRUCTIVE
+    for i, tok in enumerate(rest):
+        if tok == "-exec" and i + 1 < len(rest):
+            if _basename(rest[i + 1]) in DESTRUCTIVE_COMMANDS:
+                return RawTier.DESTRUCTIVE
+    return RawTier.SAFE  # vanilla find -name, -type, etc.
+
+
+def _classify_argv_lang_runner(argv: list[str]) -> RawTier:
+    """argv[0] is in _LANG_RUNNERS. -c / -e means arbitrary code -> DESTRUCTIVE.
+    Without those flags, running a script file -> MUTATING."""
+    if any(t in ("-c", "-e") for t in argv[1:]):
+        return RawTier.DESTRUCTIVE
+    return RawTier.MUTATING
+
+
+def _classify_argv_shell_runner(argv: list[str]) -> RawTier:
+    """argv[0] is in _SHELL_RUNNERS. If `-c PAYLOAD` present, recursively
+    classify the payload as a shell command (strictest wins)."""
+    rest = argv[1:]
+    for i, tok in enumerate(rest):
+        if tok == "-c" and i + 1 < len(rest):
+            inner = classify_command(rest[i + 1])
+            return RawTier.DESTRUCTIVE if inner == RawTier.DESTRUCTIVE else RawTier.MUTATING
+    # Interactive shell -> would hang on DEVNULL stdin, so MUTATING is fine.
+    return RawTier.MUTATING
+
+
 def classify_argv(argv: list[str]) -> RawTier:
     if not argv:
         raise BadArgvError("empty argv")
     cmd = _basename(argv[0])
+    # Dispatch to git/gh subrules first.
     if cmd == "git":
         return _classify_git([cmd, *argv[1:]])
     if cmd == "gh":
         return _classify_gh([cmd, *argv[1:]])
+    # Unwrap env-style wrappers (parallel to shell-mode _segment_tier).
+    if cmd == "env":
+        return _classify_argv_env([cmd, *argv[1:]])
+    if cmd == "find":
+        return _classify_argv_find([cmd, *argv[1:]])
+    if cmd in _LANG_RUNNERS:
+        return _classify_argv_lang_runner([cmd, *argv[1:]])
+    if cmd in _SHELL_RUNNERS:
+        return _classify_argv_shell_runner([cmd, *argv[1:]])
+    # Base set lookups. Note: dispatch above means `env`/`find` never reach
+    # SAFE_COMMANDS even though they're members (keeps disjointness invariant).
     if cmd in DESTRUCTIVE_COMMANDS:
         return RawTier.DESTRUCTIVE
     if cmd in SAFE_COMMANDS:

@@ -43,6 +43,18 @@ Run on macOS, by Sammy, after merging `phase-a-terminal-tool` to `main`. Six gat
   Ask Kona: "Run `sleep 5` with timeout_seconds 1."
   - Expected: `sleep` is MUTATING → prompt. Approve. Tool returns `{"timed_out": true, "exit_code": -1, "duration_ms": ~1000}`. Process is killed by the timeout.
 
+- [ ] **Gate 7 — Argv-mode `env` wrapper unwrap.**
+  Ask Kona: "Run `terminal_run argv=['env', 'FOO=bar', 'rm', 'nothing-here']` in `~/Desktop/claudeCode/SammyClaw`."
+  - Expected: DESTRUCTIVE prompt (the `env` prefix must NOT skip approval). Approve. Tool returns `rm: nothing-here: No such file or directory` (or similar).
+
+- [ ] **Gate 8 — Argv-mode language runner with -c.**
+  Ask Kona: "Run `terminal_run argv=['python3', '-c', 'print(1)']` in `~/Desktop/claudeCode/SammyClaw`."
+  - Expected: DESTRUCTIVE prompt (language -c is arbitrary code). Approve. Tool returns `1`.
+
+- [ ] **Gate 9 — Argv-mode find -delete.**
+  Ask Kona: "Run `terminal_run argv=['find', '.', '-delete']` in some safe tmp dir."
+  - Expected: DESTRUCTIVE prompt. DENY (don't actually delete anything). Confirm the deny path returns `{error: "approval_denied", ...}` and the subprocess does not run.
+
 ## Anti-Goal Verification
 
 - [ ] **Confirm no interactive commands sneak through.** Try asking Kona to run something interactive like `git commit` (without `-m`). Expected: tool either hangs and times out (because stdin is DEVNULL), or returns a quick error from git complaining about no editor. Either way, the supervisor should not lock up.

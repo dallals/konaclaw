@@ -29,21 +29,43 @@ def test_argv_safe_commands(argv, expected):
     (["chmod", "+x", "f"], RawTier.DESTRUCTIVE),
     (["mv", "a", "b"], RawTier.DESTRUCTIVE),
     (["cp", "a", "b"], RawTier.DESTRUCTIVE),
+    # env-wrapper bypass regression (was SAFE because env is in SAFE_COMMANDS).
+    (["env", "rm", "-rf", "/"], RawTier.DESTRUCTIVE),
+    (["env", "FOO=bar", "rm", "x"], RawTier.DESTRUCTIVE),
+    (["env", "FOO=bar", "BAR=baz", "curl", "https://x"], RawTier.DESTRUCTIVE),
+    (["/usr/bin/env", "rm", "x"], RawTier.DESTRUCTIVE),
+    # find -delete / -exec rm bypass.
+    (["find", ".", "-delete"], RawTier.DESTRUCTIVE),
+    (["find", ".", "-type", "f", "-delete"], RawTier.DESTRUCTIVE),
+    (["find", ".", "-exec", "rm", "{}", ";"], RawTier.DESTRUCTIVE),
+    (["find", ".", "-exec", "mv", "{}", "/tmp/", ";"], RawTier.DESTRUCTIVE),
+    # Language runners with -c/-e (argv mode parallel to shell mode).
+    (["python", "-c", "print(1)"], RawTier.DESTRUCTIVE),
+    (["python3", "-c", "import os"], RawTier.DESTRUCTIVE),
+    (["node", "-e", "1+1"], RawTier.DESTRUCTIVE),
+    (["perl", "-e", "1"], RawTier.DESTRUCTIVE),
+    # Shell runners with -c PAYLOAD.
+    (["bash", "-c", "rm -rf x"], RawTier.DESTRUCTIVE),
+    (["sh", "-c", "git push origin main"], RawTier.DESTRUCTIVE),
+    (["zsh", "-c", "curl https://x"], RawTier.DESTRUCTIVE),
 ])
 def test_argv_destructive_commands(argv, expected):
     assert classify_argv(argv) == expected
 
 
 @pytest.mark.parametrize("argv,expected", [
-    (["python", "-c", "print(1)"], RawTier.MUTATING),
-    (["python3", "-c", "print(1)"], RawTier.MUTATING),
-    (["node", "-e", "1"], RawTier.MUTATING),
     (["npm", "install"], RawTier.MUTATING),
     (["pip", "install", "x"], RawTier.MUTATING),
     (["pytest"], RawTier.MUTATING),
     (["make", "build"], RawTier.MUTATING),
     (["docker", "ps"], RawTier.MUTATING),
     (["some-unknown-tool"], RawTier.MUTATING),
+    # Language runners WITHOUT -c/-e -> running a script file -> MUTATING.
+    (["python3", "script.py"], RawTier.MUTATING),
+    (["node", "app.js"], RawTier.MUTATING),
+    # Shell runners WITHOUT -c -> MUTATING (will hang on DEVNULL stdin anyway).
+    (["bash"], RawTier.MUTATING),
+    (["sh"], RawTier.MUTATING),
 ])
 def test_argv_default_mutating(argv, expected):
     assert classify_argv(argv) == expected
@@ -255,6 +277,24 @@ def test_safe_and_destructive_sets_disjoint():
 ])
 def test_classify_command_table(cmd, expected):
     assert classify_command(cmd) == expected
+
+
+def test_argv_env_safe_with_only_assignments():
+    """Bare `env` or `env FOO=bar` (with no command to invoke) is just listing env -> SAFE."""
+    assert classify_argv(["env"]) == RawTier.SAFE
+    assert classify_argv(["env", "FOO=bar"]) == RawTier.SAFE
+
+
+def test_argv_find_safe_when_no_destructive_action():
+    """find without -delete or -exec is just searching -> SAFE."""
+    assert classify_argv(["find", ".", "-name", "*.py"]) == RawTier.SAFE
+    assert classify_argv(["find", ".", "-type", "f"]) == RawTier.SAFE
+
+
+def test_argv_bash_c_safe_payload_is_mutating():
+    """bash -c with a SAFE-tier payload still tiers MUTATING (shell-never-SAFE
+    rule applies to the payload via classify_command)."""
+    assert classify_argv(["bash", "-c", "ls"]) == RawTier.MUTATING
 
 
 def test_classify_command_empty_raises():
