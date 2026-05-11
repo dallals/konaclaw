@@ -2,7 +2,7 @@ from __future__ import annotations
 import inspect
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 
 class Tier(str, Enum):
@@ -15,7 +15,8 @@ class Tier(str, Enum):
 class Decision:
     allowed: bool
     tier: Tier
-    source: str            # "tier", "callback", "override"
+    source: str            # "tier", "callback", "override", "override+callback",
+                           #  "resolver", "resolver+callback"
     reason: Optional[str] = None
 
 
@@ -43,31 +44,37 @@ class PermissionEngine:
         tier_map: dict[str, Tier],
         agent_overrides: dict[str, dict[str, Tier]],
         approval_callback: ApprovalCallback,
+        tier_resolvers: dict[str, "Callable[[dict[str, Any]], Tier]"] | None = None,
     ) -> None:
         self.tier_map = dict(tier_map)
         self.agent_overrides = {a: dict(o) for a, o in agent_overrides.items()}
         self.approval_callback = approval_callback
+        self.tier_resolvers = dict(tier_resolvers or {})
 
-    def check(self, agent: str, tool: str, arguments: dict[str, Any]) -> Decision:
-        # Resolve effective tier
+    def _resolve_tier(self, agent: str, tool: str, arguments: dict[str, Any]) -> tuple[Tier, str]:
         override = self.agent_overrides.get(agent, {}).get(tool)
         if override is not None:
-            tier = override
-            source = "override"
-        else:
-            # Spec rule: unknown tools default to DESTRUCTIVE
-            tier = self.tier_map.get(tool, Tier.DESTRUCTIVE)
-            source = "tier"
+            return override, "override"
+        resolver = self.tier_resolvers.get(tool)
+        if resolver is not None:
+            try:
+                return resolver(arguments), "resolver"
+            except Exception:
+                # Resolver crashed (malformed args, buggy classifier, etc.).
+                # Fail closed: require approval rather than silently propagating.
+                return Tier.DESTRUCTIVE, "resolver"
+        return self.tier_map.get(tool, Tier.DESTRUCTIVE), "tier"
 
+    def check(self, agent: str, tool: str, arguments: dict[str, Any]) -> Decision:
+        tier, source = self._resolve_tier(agent, tool, arguments)
         if tier in (Tier.SAFE, Tier.MUTATING):
             return Decision(allowed=True, tier=tier, source=source)
-
-        # DESTRUCTIVE — ask the callback. If we got here because of an
-        # override (not the default tier_map), record both facts in the
-        # source so audit logs can distinguish "default DESTRUCTIVE → callback"
-        # from "override raised tier → callback".
         allowed, reason = self.approval_callback(agent, tool, arguments)
-        callback_source = "override+callback" if source == "override" else "callback"
+        callback_source = (
+            "override+callback" if source == "override"
+            else "resolver+callback" if source == "resolver"
+            else "callback"
+        )
         return Decision(allowed=allowed, tier=tier, source=callback_source, reason=reason)
 
     def to_agent_callback(self, agent: str):
@@ -83,26 +90,18 @@ class PermissionEngine:
         return _check
 
     async def check_async(self, agent: str, tool: str, arguments: dict[str, Any]) -> Decision:
-        # Resolve effective tier — same logic as sync check()
-        override = self.agent_overrides.get(agent, {}).get(tool)
-        if override is not None:
-            tier = override
-            source = "override"
-        else:
-            # Spec rule: unknown tools default to DESTRUCTIVE
-            tier = self.tier_map.get(tool, Tier.DESTRUCTIVE)
-            source = "tier"
-
+        tier, source = self._resolve_tier(agent, tool, arguments)
         if tier in (Tier.SAFE, Tier.MUTATING):
             return Decision(allowed=True, tier=tier, source=source)
-
-        # DESTRUCTIVE — call the callback. If callback returns a coroutine, await it.
         result = self.approval_callback(agent, tool, arguments)
         if inspect.iscoroutine(result):
             result = await result
         allowed, reason = result
-        # Match sync semantics: preserve "override+callback" attribution.
-        callback_source = "override+callback" if source == "override" else "callback"
+        callback_source = (
+            "override+callback" if source == "override"
+            else "resolver+callback" if source == "resolver"
+            else "callback"
+        )
         return Decision(allowed=allowed, tier=tier, source=callback_source, reason=reason)
 
     def to_async_agent_callback(self, agent: str):

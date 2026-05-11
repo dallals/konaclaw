@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -217,6 +218,21 @@ def assemble_agent(
             else:
                 tier_map[skill_tool.name] = Tier.SAFE
 
+    # Terminal tool — gated by KC_TERMINAL_ENABLED (default disabled).
+    # Lazy-imports kc_terminal so kc-supervisor doesn't hard-depend on the package.
+    # The classifier-based tier_resolver lets us run common SAFE commands (ls, cat,
+    # git status) without a permission popup while still gating MUTATING/DESTRUCTIVE
+    # invocations. The static tier_map entry is only a fallback used if the resolver
+    # is ever bypassed.
+    terminal_tier_resolvers: dict[str, Any] = {}
+    if os.environ.get("KC_TERMINAL_ENABLED", "").lower() in ("1", "true", "yes"):
+        from kc_terminal import build_terminal_tool, terminal_tier_resolver, TerminalConfig
+        terminal_cfg = TerminalConfig.from_env()
+        terminal_tool = build_terminal_tool(terminal_cfg)
+        registry.register(terminal_tool)
+        tier_map[terminal_tool.name] = Tier.DESTRUCTIVE
+        terminal_tier_resolvers[terminal_tool.name] = terminal_tier_resolver
+
     # Google tool-providers (Gmail + Calendar) — only when the supervisor has
     # built credentialed service objects. Lazy-imports kc_connectors so
     # kc-supervisor doesn't take a hard dep; the presence of a service object
@@ -275,6 +291,7 @@ def assemble_agent(
         approval_callback=lambda agent, tool, args: broker.request_approval(
             agent=agent, tool=tool, arguments=args,
         ),
+        tier_resolvers=terminal_tier_resolvers,
     )
 
     # 5. OllamaClient + kc-core Agent. cfg.model wins over default_model when present.

@@ -152,3 +152,118 @@ async def test_to_async_agent_callback_returns_async_callable():
     allowed, reason = await result
     assert allowed is True
     assert reason is None
+
+
+def test_resolver_overrides_tier_map():
+    """Tool not in tier_map, but resolver returns SAFE -> allowed without callback."""
+    calls = []
+    def cb(agent, tool, args):
+        calls.append(("cb", agent, tool))
+        return (True, None)
+    engine = PermissionEngine(
+        tier_map={},  # tool unknown — would default to DESTRUCTIVE
+        agent_overrides={},
+        approval_callback=cb,
+        tier_resolvers={"terminal_run": lambda args: Tier.SAFE},
+    )
+    d = engine.check(agent="a", tool="terminal_run", arguments={"argv": ["ls"]})
+    assert d.allowed is True
+    assert d.tier == Tier.SAFE
+    assert calls == []  # no callback invoked
+
+
+def test_resolver_returns_destructive_invokes_callback():
+    seen = []
+    def cb(agent, tool, args):
+        seen.append(args)
+        return (True, None)
+    engine = PermissionEngine(
+        tier_map={},
+        agent_overrides={},
+        approval_callback=cb,
+        tier_resolvers={"terminal_run": lambda args: Tier.DESTRUCTIVE},
+    )
+    d = engine.check(agent="a", tool="terminal_run", arguments={"argv": ["rm", "x"]})
+    assert d.allowed is True
+    assert d.tier == Tier.DESTRUCTIVE
+    assert seen == [{"argv": ["rm", "x"]}]
+
+
+def test_resolver_takes_precedence_over_tier_map():
+    engine = PermissionEngine(
+        tier_map={"terminal_run": Tier.SAFE},  # static says SAFE
+        agent_overrides={},
+        approval_callback=AlwaysDeny(reason="nope"),
+        tier_resolvers={"terminal_run": lambda args: Tier.DESTRUCTIVE},  # dynamic says DESTRUCTIVE
+    )
+    d = engine.check(agent="a", tool="terminal_run", arguments={})
+    assert d.allowed is False
+    assert d.tier == Tier.DESTRUCTIVE
+    assert d.reason == "nope"
+
+
+@pytest.mark.asyncio
+async def test_resolver_works_in_async_path():
+    engine = PermissionEngine(
+        tier_map={},
+        agent_overrides={},
+        approval_callback=AlwaysAllow(),
+        tier_resolvers={"terminal_run": lambda args: Tier.DESTRUCTIVE},
+    )
+    d = await engine.check_async(agent="a", tool="terminal_run", arguments={})
+    assert d.allowed is True
+    assert d.tier == Tier.DESTRUCTIVE
+
+
+def test_no_resolver_falls_back_to_tier_map():
+    engine = PermissionEngine(
+        tier_map={"file.read": Tier.SAFE},
+        agent_overrides={},
+        approval_callback=AlwaysAllow(),
+        tier_resolvers={},
+    )
+    d = engine.check(agent="a", tool="file.read", arguments={})
+    assert d.allowed is True
+    assert d.tier == Tier.SAFE
+    assert d.source == "tier"
+
+
+def test_agent_override_wins_over_resolver():
+    """Precedence invariant: agent_overrides beats tier_resolvers for same (agent, tool)."""
+    engine = PermissionEngine(
+        tier_map={},
+        agent_overrides={"a": {"terminal_run": Tier.SAFE}},
+        approval_callback=AlwaysDeny(reason="should not see this"),
+        tier_resolvers={"terminal_run": lambda args: Tier.DESTRUCTIVE},
+    )
+    d = engine.check(agent="a", tool="terminal_run", arguments={})
+    assert d.allowed is True
+    assert d.tier == Tier.SAFE
+    assert d.source == "override"
+
+
+def test_resolver_exception_fails_closed_to_destructive():
+    """If a registered resolver raises, treat as DESTRUCTIVE (require approval)
+    rather than propagating the exception to the caller."""
+    calls = []
+
+    def crashing_resolver(args):
+        raise KeyError("argv")  # simulate malformed args
+
+    def cb(agent, tool, args):
+        calls.append((agent, tool))
+        return (True, None)
+
+    engine = PermissionEngine(
+        tier_map={},
+        agent_overrides={},
+        approval_callback=cb,
+        tier_resolvers={"terminal_run": crashing_resolver},
+    )
+    d = engine.check(agent="a", tool="terminal_run", arguments={})
+    # Did not propagate — got a normal Decision back.
+    assert d.tier == Tier.DESTRUCTIVE
+    # And the callback was invoked (because DESTRUCTIVE routes through it).
+    assert calls == [("a", "terminal_run")]
+    # source string per the implementation note
+    assert d.source in ("resolver+callback", "callback")
