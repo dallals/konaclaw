@@ -20,7 +20,7 @@ def test_from_env_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("KC_TERMINAL_MAX_TIMEOUT", "120")
     monkeypatch.setenv("KC_TERMINAL_OUTPUT_CAP_BYTES", "2048")
     cfg = TerminalConfig.from_env()
-    assert cfg.roots == [r1, r2]
+    assert cfg.roots == (r1, r2)
     assert cfg.default_timeout_seconds == 30
     assert cfg.max_timeout_seconds == 120
     assert cfg.output_cap_bytes == 2048
@@ -41,3 +41,9 @@ def test_clamp_timeout():
     assert cfg.clamp_timeout(-5) == 1
     assert cfg.clamp_timeout(10_000) == cfg.max_timeout_seconds
     assert cfg.clamp_timeout(45) == 45
+
+
+def test_output_cap_bytes_falls_back(monkeypatch):
+    monkeypatch.delenv("KC_TERMINAL_OUTPUT_CAP_BYTES", raising=False)
+    cfg = TerminalConfig.from_env()
+    assert cfg.output_cap_bytes == 128 * 1024
