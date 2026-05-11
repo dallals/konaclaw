@@ -103,6 +103,26 @@ export default function Chat() {
   const { events, sendUserMessage } = useChatSocket(activeConv);
   const [draft, setDraft] = useState("");
 
+  // Auto-scroll the transcript to the bottom when new content arrives.
+  // Refs into the rendered <div> below; pinned to the bottom unless the user
+  // has scrolled up to read history (then we leave them put).
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const wasNearBottomRef = useRef(true);
+  const handleTranscriptScroll = () => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    wasNearBottomRef.current = distanceFromBottom < 120;
+  };
+
+  // Always snap when the conversation switches, regardless of prior position.
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    wasNearBottomRef.current = true;
+  }, [activeConv]);
+
   useEffect(() => {
     const last = events[events.length - 1];
     if (last?.type === "assistant_complete" && activeConv != null) {
@@ -176,6 +196,17 @@ export default function Chat() {
     }
     return buf;
   }, [events]);
+
+  // Auto-scroll to bottom when content changes — only if the user is already
+  // near the bottom (so we don't yank them away when they've scrolled up to
+  // read history).
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    if (wasNearBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [rendered, streaming, awaitingReply, pendingForAgent]);
 
   const firstTokenAtRef = useRef<number | null>(null);
   useEffect(() => {
@@ -467,7 +498,11 @@ export default function Chat() {
         </header>
 
         {/* TRANSCRIPT */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-10 py-6 divide-y divide-line">
+        <div
+          ref={transcriptRef}
+          onScroll={handleTranscriptScroll}
+          className="flex-1 min-h-0 overflow-y-auto px-10 py-6 divide-y divide-line"
+        >
           {!activeAgent && (
             <div className="py-16 text-center">
               <div className="font-display font-semibold text-2xl text-textStrong mb-2 [letter-spacing:-0.02em]">
