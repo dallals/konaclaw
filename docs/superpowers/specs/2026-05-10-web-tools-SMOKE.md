@@ -128,18 +128,20 @@ This mode tests every code path that the supervisor would reach. It does NOT ver
 - No approval prompts at any point.
 - Audit log shows the tool calls with `tier=SAFE`.
 
-**Actual:** **OUTSTANDING.** Requires:
-1. Sammy PATCHes `KC_FIRECRAWL_API_KEY` to the supervisor secrets via Dashboard.
-2. Sammy sets `KC_WEB_ENABLED=true` in the supervisor env.
-3. Supervisor restarted to pick up both the new env AND the post-`5bd476f` code.
-4. A real chat with Kona asking the weather question.
-
-Cannot be exercised programmatically from outside the supervisor — by design, this gate covers the wiring + agent-routing path.
+**Actual (2026-05-10 22:53, dashboard chat with Kona-AI):**
+- ✅ PASS. Sammy asked "what's the weather in Brooklyn right now?" — Kona called `web_search` once with `query="weather Brooklyn New York right now"`, `max_results=3`. Audit row 96, `decision=tier` (auto-allowed, no approval prompt). 1221ms.
+- Search returned weather.com / accuweather.com / news12.com snippets; Kona synthesized them into a structured answer (65°F partly cloudy, 10-20 mph WNW, 22-30% rain) without needing a `web_fetch`.
+- Budget DB at `~/.kona/web_budget.sqlite` created fresh on this call — session `8b220600fc94...`, 1 row, `blocked=0`.
+- Note: an earlier attempt produced "(no reply — model returned empty content; try rephrasing)" with NO tool call recorded in the audit log. That's a model-side quirk (minimax-m2.7 returning an empty assistant turn before deciding to invoke a tool), unrelated to Phase B wiring. Retry worked.
 
 ## Result
 
-- [x] Gates 1, 2, 3, 4, 5, 6 PASS (direct invocation against package, plus 3 live Firecrawl calls and 2 bonus Critical-fix verifications).
-- [ ] Gate 7 OUTSTANDING — requires supervisor restart with `KC_FIRECRAWL_API_KEY` PATCHed and `KC_WEB_ENABLED=true`, then a Kona chat round-trip.
-- [x] Memory updated with smoke status (this commit).
-- [x] No critical defects surfaced. The reviewer's Important issue #3 (Firecrawl v2 metadata silently empty if not a dict) did NOT manifest in practice — `status_code=200`, `title="Example Domain"` came through cleanly.
-- [ ] After gate 7 passes, flip the box on Phase B as fully shipped.
+- [x] **All 7 gates PASS.** Phase B is fully shipped 2026-05-10.
+- [x] Memory updated with smoke status.
+- [x] No critical defects surfaced. The reviewer's Important issue #3 (Firecrawl v2 metadata silently empty if not a dict) did NOT manifest — `status_code=200`, `title` came through cleanly on real responses.
+- [x] Refactor commit `94835eb` corrected the wiring so the Firecrawl key flows from `~/KonaClaw/config/secrets.yaml.enc` through `main.py` → `assembly.py`, mirroring the news/telegram/zapier convention. The original env-var design discovered during preflight would have left gate 7 unrunnable without the refactor.
+
+## Followups (not blocking)
+
+- Empty-completion behavior from minimax-m2.7 when switching topics mid-conversation. Worth a separate ticket if it recurs.
+- Important items deferred from final review remain (`include_links` advertised but dropped; `BudgetStore` docstring says "module-level" instead of "per-instance"; `https://` returns `url_blocked` not `url_invalid` per spec contract). None block any gate.
