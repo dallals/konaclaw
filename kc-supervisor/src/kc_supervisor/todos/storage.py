@@ -106,9 +106,15 @@ class TodoStorage:
         return row
 
     def complete(self, *, agent: str, conversation_id: int, todo_id: int) -> dict:
-        now = time.time()
         with self._storage.connect() as c:
-            self._load_and_authz(c, agent=agent, conversation_id=conversation_id, todo_id=todo_id)
+            row = self._load_and_authz(c, agent=agent, conversation_id=conversation_id, todo_id=todo_id)
+            if row["status"] == "done":
+                # Idempotent: already done, return current state without
+                # touching updated_at.
+                d = _row_to_dict(row)
+                d["_was_noop"] = True
+                return d
+            now = time.time()
             c.execute("UPDATE todos SET status='done', updated_at=? WHERE id=?", (now, todo_id))
             row = c.execute("SELECT * FROM todos WHERE id=?", (todo_id,)).fetchone()
         return _row_to_dict(row)

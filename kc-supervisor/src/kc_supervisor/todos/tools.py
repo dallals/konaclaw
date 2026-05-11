@@ -120,7 +120,10 @@ def build_todo_tools(
         except PermissionError as e:
             msg = str(e).split(":")[0]
             return _json({"error": msg, "id": int(id)})
-        _emit("updated", item=item)
+        if not item.get("_was_noop"):
+            _emit("updated", item=item)
+        # Strip the internal flag before returning to the agent.
+        item.pop("_was_noop", None)
         return _json({"id": item["id"], "status": item["status"], "completed_at": item["updated_at"]})
 
     def _update(id: Optional[int] = None, title: Optional[str] = None, notes: Optional[str] = None) -> str:

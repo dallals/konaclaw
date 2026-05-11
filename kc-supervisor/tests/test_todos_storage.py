@@ -116,9 +116,14 @@ def test_list_status_filter(todo_store):
 def test_complete_idempotent(todo_store):
     a = todo_store.add(agent="Kona-AI", conversation_id=40, title="A", persist=False)
     r1 = todo_store.complete(agent="Kona-AI", conversation_id=40, todo_id=a["id"])
-    r2 = todo_store.complete(agent="Kona-AI", conversation_id=40, todo_id=a["id"])  # already done
+    # Sleep tiny bit so any second UPDATE would show a different timestamp.
+    import time
+    time.sleep(0.01)
+    r2 = todo_store.complete(agent="Kona-AI", conversation_id=40, todo_id=a["id"])
     assert r1["status"] == "done"
     assert r2["status"] == "done"
+    # Critical: updated_at MUST NOT be re-stamped on a re-complete.
+    assert r1["updated_at"] == r2["updated_at"]
 
 
 def test_complete_not_found(todo_store):
