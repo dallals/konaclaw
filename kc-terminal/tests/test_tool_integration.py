@@ -99,11 +99,19 @@ async def test_tool_impl_safe_returns_success_json(cfg, tmp_path):
 
 @pytest.mark.asyncio
 async def test_tool_impl_records_raw_tier_in_result(cfg, tmp_path):
+    """RawTier value appears in the result JSON for audit clarity."""
     tool = build_terminal_tool(cfg)
-    # MUTATING command (echo is SAFE in argv-mode actually — use `git commit` for MUTATING)
-    # git is MUTATING with `commit` as subcommand
-    result = json.loads(await tool.impl(argv=["echo", "hi"], cwd=str(tmp_path)))
+    # SAFE example (echo is in SAFE_COMMANDS for argv mode).
+    result = json.loads(await tool.impl(argv=["echo", "x"], cwd=str(tmp_path)))
     assert result["tier"] == "SAFE"
+    # MUTATING example (git commit is MUTATING via git subcommand rule).
+    result = json.loads(await tool.impl(
+        argv=["git", "commit", "-m", "x"],
+        cwd=str(tmp_path),
+    ))
+    # Engine maps MUTATING -> DESTRUCTIVE but the impl preserves the rich
+    # RawTier label in the result.
+    assert result["tier"] == "MUTATING"
 
 
 @pytest.mark.asyncio
@@ -119,6 +127,14 @@ async def test_tool_impl_both_argv_and_command(cfg, tmp_path):
     tool = build_terminal_tool(cfg)
     result = json.loads(await tool.impl(argv=["ls"], command="ls", cwd=str(tmp_path)))
     assert result["error"] == "both_argv_and_command_provided"
+
+
+@pytest.mark.asyncio
+async def test_resolver_fails_closed_on_both_argv_and_command():
+    """Regression: when both argv and command are set, the resolver must NOT
+    silently classify the argv path. Engine must see DESTRUCTIVE."""
+    tier = terminal_tier_resolver({"argv": ["ls"], "command": "ls", "cwd": "/tmp"})
+    assert tier == Tier.DESTRUCTIVE
 
 
 @pytest.mark.asyncio
@@ -199,3 +215,67 @@ async def test_resolver_returns_destructive_for_destructive_argv():
 async def test_resolver_command_mode_destructive():
     tier = terminal_tier_resolver({"command": "rm -rf x"})
     assert tier == Tier.DESTRUCTIVE
+
+
+@pytest.mark.asyncio
+async def test_tool_impl_timeout(cfg, tmp_path):
+    """Timeout under the full impl flow returns timed_out=True with tier annotated."""
+    tool = build_terminal_tool(cfg)
+    result = json.loads(await tool.impl(
+        argv=["sleep", "5"],
+        cwd=str(tmp_path),
+        timeout_seconds=1,
+    ))
+    assert result["timed_out"] is True
+    assert result["exit_code"] == -1
+    assert result["tier"] == "MUTATING"  # sleep isn't in SAFE_COMMANDS
+
+
+@pytest.mark.asyncio
+async def test_tool_impl_shell_mode_success(cfg, tmp_path):
+    """Shell-mode (command=...) success path through the impl."""
+    tool = build_terminal_tool(cfg)
+    result = json.loads(await tool.impl(
+        command="echo $((1+1))",
+        cwd=str(tmp_path),
+    ))
+    assert result["exit_code"] == 0
+    assert result["stdout"].strip() == "2"
+    assert result["mode"] == "command"
+    # Shell mode is never SAFE.
+    assert result["tier"] in ("MUTATING", "DESTRUCTIVE")
+
+
+@pytest.mark.asyncio
+async def test_tool_impl_truncation_under_cap(cfg, tmp_path):
+    """Output longer than cfg.output_cap_bytes gets head+tail truncated by the runner."""
+    small_cap_cfg = TerminalConfig(
+        roots=cfg.roots,
+        secret_prefixes=cfg.secret_prefixes,
+        default_timeout_seconds=cfg.default_timeout_seconds,
+        max_timeout_seconds=cfg.max_timeout_seconds,
+        output_cap_bytes=1024,  # small cap
+    )
+    tool = build_terminal_tool(small_cap_cfg)
+    result = json.loads(await tool.impl(
+        command="python3 -c \"import sys; sys.stdout.write('A'*4000); sys.stdout.write('B'*4000)\"",
+        cwd=str(tmp_path),
+    ))
+    assert result["exit_code"] == 0
+    assert result["stdout_truncated"] is True
+    assert "[TRUNCATED" in result["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_tool_impl_description_echoed(cfg, tmp_path):
+    """description parameter is echoed into the result JSON when provided."""
+    tool = build_terminal_tool(cfg)
+    result = json.loads(await tool.impl(
+        argv=["ls"],
+        cwd=str(tmp_path),
+        description="list workdir",
+    ))
+    assert result["description"] == "list workdir"
+    # When description is not provided, it should not appear in the result.
+    result2 = json.loads(await tool.impl(argv=["ls"], cwd=str(tmp_path)))
+    assert "description" not in result2

@@ -321,22 +321,30 @@ Head-and-tail truncation, not head-only. The end of stderr is typically where th
 
 ### Tool `impl` flow
 
-```
+The tool's `impl` does NOT call `ApprovalBroker.request_approval` directly.
+Approval is handled by `PermissionEngine` via a per-call `tier_resolver`
+registered for `terminal_run` (see "Dynamic tier resolution" above).
+
+The impl runs after the engine has already gated the call:
+
 1. Parse + validate args (return error JSON on bad input).
 2. validate_cwd(cwd, cfg.roots).
 3. tier = classify_argv(argv) if argv else classify_command(command).
-4. If tier != SAFE:
-     allowed, reason = await broker.request_approval(
-         agent, "terminal_run",
-         {"argv|command": ..., "cwd": ..., "tier": tier.name, "description": ...}
-     )
-     If not allowed: return {"error": "approval_denied", "reason": reason}.
-5. env = build_child_env(os.environ, cfg.secret_prefixes).
-6. result = await asyncio.to_thread(runner.run, ...).
-7. Return result | {"tier": tier.name}.
-```
+4. env = build_child_env(os.environ, cfg.secret_prefixes).
+5. result = await asyncio.to_thread(runner.run, ...).
+6. Annotate result with tier (always), cwd echo (on success), description (if provided).
+7. Return JSON.
 
-Step 4's approval call is what `tier_resolver` (Section: Dynamic tier resolution) feeds into. `AuditingToolRegistry`'s wrapper sees the per-call tier and gates accordingly. SAFE skips approval entirely.
+The `tier_resolver` runs BEFORE step 1 (the engine calls it during the agent
+runtime's `permission_check`). It performs minimal arg validation and runs the
+same classifier to produce a tier, then maps:
+- RawTier.SAFE        -> Tier.SAFE        (engine auto-allows)
+- RawTier.MUTATING    -> Tier.DESTRUCTIVE (engine prompts)
+- RawTier.DESTRUCTIVE -> Tier.DESTRUCTIVE (engine prompts)
+
+The resolver fails closed: any classifier exception (BadArgvError, ValueError,
+TypeError) yields Tier.DESTRUCTIVE so malformed calls cannot bypass approval.
+PermissionEngine ALSO catches resolver exceptions (defense in depth).
 
 ## Testing
 

@@ -80,9 +80,12 @@ _DESCRIPTION = (
 
 
 def _raw_tier_for(args: dict[str, Any]) -> RawTier:
-    """Classify based on argv or command. Raises BadArgvError on malformed args."""
+    """Classify based on argv or command. Raises BadArgvError on malformed args
+    (empty, both-set, neither-set, wrong types)."""
     argv = args.get("argv")
     command = args.get("command")
+    if argv is not None and command is not None:
+        raise BadArgvError("both argv and command provided")
     if argv is not None:
         if not isinstance(argv, list) or not argv:
             raise BadArgvError("argv must be a non-empty list")
@@ -124,31 +127,31 @@ def build_terminal_tool(cfg: TerminalConfig) -> Tool:
     ) -> str:
         # 1. Validate arg shape (mutual exclusion, required cwd).
         if argv is None and command is None:
-            return json.dumps({"error": "must_provide_argv_or_command"})
+            return json.dumps({"error": "must_provide_argv_or_command"}, ensure_ascii=False)
         if argv is not None and command is not None:
-            return json.dumps({"error": "both_argv_and_command_provided"})
+            return json.dumps({"error": "both_argv_and_command_provided"}, ensure_ascii=False)
         if argv is not None and len(argv) == 0:
-            return json.dumps({"error": "empty_argv"})
+            return json.dumps({"error": "empty_argv"}, ensure_ascii=False)
         if cwd is None:
-            return json.dumps({"error": "cwd_required"})
+            return json.dumps({"error": "cwd_required"}, ensure_ascii=False)
 
         # 2. Validate cwd against allowlisted roots.
         try:
             cwd_path = validate_cwd(cwd, list(cfg.roots))
         except CwdNotAbsolute:
-            return json.dumps({"error": "cwd_not_absolute", "cwd": cwd})
+            return json.dumps({"error": "cwd_not_absolute", "cwd": cwd}, ensure_ascii=False)
         except CwdDoesNotExist:
-            return json.dumps({"error": "cwd_does_not_exist", "cwd": cwd})
+            return json.dumps({"error": "cwd_does_not_exist", "cwd": cwd}, ensure_ascii=False)
         except CwdNotADirectory:
-            return json.dumps({"error": "cwd_not_a_directory", "cwd": cwd})
+            return json.dumps({"error": "cwd_not_a_directory", "cwd": cwd}, ensure_ascii=False)
         except CwdOutsideRoots:
-            return json.dumps({"error": "cwd_outside_roots", "cwd": cwd})
+            return json.dumps({"error": "cwd_outside_roots", "cwd": cwd}, ensure_ascii=False)
 
         # 3. Classify -- record the RawTier in the result JSON for audit clarity.
         try:
             raw_tier = _raw_tier_for({"argv": argv, "command": command})
         except BadArgvError as e:
-            return json.dumps({"error": "bad_args", "detail": str(e)})
+            return json.dumps({"error": "bad_args", "detail": str(e)}, ensure_ascii=False)
 
         # 4. Build child env + clamp timeout.
         child_env = build_child_env(dict(os.environ), cfg.secret_prefixes)
@@ -165,11 +168,13 @@ def build_terminal_tool(cfg: TerminalConfig) -> Tool:
             output_cap_bytes=cfg.output_cap_bytes,
         )
 
-        # 6. Annotate result with cwd echo + raw tier (only on success path).
+        # 6. Annotate tier on both success and runner-error paths (classification ran).
+        result["tier"] = raw_tier.value
         if "error" not in result:
             result["cwd"] = str(cwd_path)
-            result["tier"] = raw_tier.value
-        return json.dumps(result)
+        if description is not None:
+            result["description"] = description
+        return json.dumps(result, ensure_ascii=False)
 
     return Tool(
         name="terminal_run",
