@@ -391,35 +391,34 @@ def test_terminal_tier_resolver_registered_when_enabled(home, monkeypatch, tmp_p
 # (kc-web integration — phase B)
 
 
-def test_web_tools_absent_when_disabled(home, monkeypatch):
-    """When KC_WEB_ENABLED is unset (or false), web tools are not registered."""
-    monkeypatch.delenv("KC_WEB_ENABLED", raising=False)
-    monkeypatch.delenv("KC_FIRECRAWL_API_KEY", raising=False)
+def test_web_tools_absent_when_web_config_none(home, tmp_path):
+    """When web_config kwarg is None (the default), web tools are not registered."""
     a = assemble_agent(**_basic_assemble_kwargs(home))
     assert "web_search" not in a.registry.names()
     assert "web_fetch" not in a.registry.names()
 
 
-def test_web_tools_present_when_enabled(home, monkeypatch, tmp_path):
-    """When KC_WEB_ENABLED=true and KC_FIRECRAWL_API_KEY is set, both web tools
-    are registered at Tier.SAFE."""
-    monkeypatch.setenv("KC_WEB_ENABLED", "true")
-    monkeypatch.setenv("KC_FIRECRAWL_API_KEY", "sk-test-fake")
-    monkeypatch.setenv("KC_WEB_BUDGET_DB", str(tmp_path / "web_budget.sqlite"))
-    a = assemble_agent(**_basic_assemble_kwargs(home))
+def test_web_tools_present_when_web_config_provided(home, tmp_path):
+    """When a WebConfig is supplied (which main.py builds iff KC_WEB_ENABLED=true
+    AND firecrawl_api_key is in the secrets store), both tools register at SAFE."""
+    from kc_web import WebConfig
+    web_config = WebConfig(
+        firecrawl_api_key="sk-test-fake",
+        session_soft_cap=10,
+        daily_hard_cap=100,
+        fetch_cap_bytes=1024,
+        default_search_max_results=5,
+        default_fetch_timeout_s=30,
+        budget_db_path=tmp_path / "web_budget.sqlite",
+        extra_blocked_hosts=(),
+        session_id="test-session",
+    )
+    a = assemble_agent(**_basic_assemble_kwargs(home), web_config=web_config)
     names = a.registry.names()
     assert "web_search" in names
     assert "web_fetch" in names
     assert a.engine.tier_map["web_search"] == Tier.SAFE
     assert a.engine.tier_map["web_fetch"] == Tier.SAFE
-
-
-def test_web_tools_fail_fast_when_enabled_without_api_key(home, monkeypatch):
-    """Enabling without an API key should raise at startup, not silently disable."""
-    monkeypatch.setenv("KC_WEB_ENABLED", "true")
-    monkeypatch.delenv("KC_FIRECRAWL_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="KC_FIRECRAWL_API_KEY"):
-        assemble_agent(**_basic_assemble_kwargs(home))
 
 
 def test_zapier_mcp_tools_are_mutating_not_destructive(home):

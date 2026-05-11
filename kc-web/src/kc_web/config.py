@@ -35,12 +35,19 @@ class WebConfig:
         )
 
     @classmethod
-    def from_env(cls) -> "WebConfig":
-        api_key = os.environ.get("KC_FIRECRAWL_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "KC_FIRECRAWL_API_KEY is required when KC_WEB_ENABLED=true"
-            )
+    def from_env(cls, *, api_key: str) -> "WebConfig":
+        """Build WebConfig from required api_key + optional KC_WEB_* env overrides.
+
+        api_key is supplied by the caller (typically main.py reading from the
+        encrypted secrets store at ~/KonaClaw/config/secrets.yaml.enc). It is
+        NOT read from env — the rest of KonaClaw's secrets follow the same
+        pattern (see main.py for newsapi_api_key, telegram_bot_token, etc).
+
+        Raises:
+            ValueError: if api_key is empty or whitespace-only.
+        """
+        if not api_key or not api_key.strip():
+            raise ValueError("api_key must be a non-empty string")
         base = cls.with_defaults(api_key=api_key)
         blocked_raw = os.environ.get("KC_WEB_BLOCKED_HOSTS", "")
         blocked = tuple(h.strip() for h in blocked_raw.split(",") if h.strip())

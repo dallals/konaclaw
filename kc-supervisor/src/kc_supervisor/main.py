@@ -50,6 +50,25 @@ def main() -> None:
             import logging
             logging.getLogger(__name__).warning("news client disabled: %s", e)
 
+    # Web tools (web_search + web_fetch) — gated by KC_WEB_ENABLED env flag,
+    # requires firecrawl_api_key in the encrypted secrets store. Built here
+    # (not in assembly) to keep the secrets-store read centralized in main.py
+    # alongside the other supervisor secrets.
+    web_config = None
+    if os.environ.get("KC_WEB_ENABLED", "").lower() in ("1", "true", "yes"):
+        firecrawl_key = secrets.get("firecrawl_api_key")
+        if not firecrawl_key:
+            raise RuntimeError(
+                "KC_WEB_ENABLED=true but firecrawl_api_key is not in the secrets store. "
+                "Add it via the supervisor secrets store, then restart."
+            )
+        try:
+            from kc_web import WebConfig
+            web_config = WebConfig.from_env(api_key=firecrawl_key)
+        except Exception as e:
+            # Fail-fast: don't silently disable web tools when explicitly enabled.
+            raise RuntimeError(f"failed to build WebConfig: {e}") from e
+
     # MCP integration is optional — if kc-mcp is installed, instantiate the
     # bookkeeping objects here so AgentRegistry sees them. The actual MCP
     # subprocess spawning happens on the FastAPI startup hook in service.py
@@ -224,6 +243,7 @@ def main() -> None:
         news_client=news_client,
         ollama_api_key=ollama_api_key,
         skill_index=skill_index,
+        web_config=web_config,
     )
     registry.load_all()
 

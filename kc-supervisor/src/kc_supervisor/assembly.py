@@ -66,6 +66,9 @@ def assemble_agent(
     ollama_api_key: Optional[str] = None,
     schedule_service: Optional[Any] = None,
     skill_index: Optional[Any] = None,
+    # Expected type: kc_web.WebConfig. Kept as Any to avoid a hard import of
+    # kc_web at supervisor startup — mirrors how news_client uses Any.
+    web_config: Optional[Any] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -233,15 +236,13 @@ def assemble_agent(
         tier_map[terminal_tool.name] = Tier.DESTRUCTIVE
         terminal_tier_resolvers[terminal_tool.name] = terminal_tier_resolver
 
-    # Web tools (web_search + web_fetch) — gated by KC_WEB_ENABLED (default disabled).
-    # Lazy-imports kc_web so kc-supervisor doesn't hard-depend on the package.
-    # Both tools are static SAFE (no per-call tier_resolver). The URL guard and
-    # per-session/per-day budget counters live inside each tool's impl as
-    # pre-checks, not approval-time gates.
-    if os.environ.get("KC_WEB_ENABLED", "").lower() in ("1", "true", "yes"):
-        from kc_web import build_web_tools, WebConfig
-        web_cfg = WebConfig.from_env()
-        for web_tool in build_web_tools(web_cfg):
+    # Web tools (web_search + web_fetch) — wired up only when main.py supplied
+    # a WebConfig (which it does iff KC_WEB_ENABLED=true and firecrawl_api_key
+    # is in the secrets store). Both tools are static SAFE — no per-call
+    # tier_resolver because URL guard + budget caps live inside each impl.
+    if web_config is not None:
+        from kc_web import build_web_tools
+        for web_tool in build_web_tools(web_config):
             registry.register(web_tool)
             tier_map[web_tool.name] = Tier.SAFE
 

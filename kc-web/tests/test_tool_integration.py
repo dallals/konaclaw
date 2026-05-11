@@ -71,11 +71,3 @@ def test_factory_idempotent_no_shared_state(cfg):
     b = build_web_tools(cfg, client=FakeClient())
     # Different Tool instances:
     assert a[0] is not b[0]
-
-
-def test_disabled_via_missing_api_key(tmp_path, monkeypatch):
-    """If from_env() is the entry point and the api key is missing, it raises.
-    build_web_tools itself doesn't gate on enable -- the supervisor does that."""
-    monkeypatch.delenv("KC_FIRECRAWL_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="KC_FIRECRAWL_API_KEY"):
-        WebConfig.from_env()
