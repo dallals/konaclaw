@@ -113,10 +113,54 @@ def classify_argv(argv: list[str]) -> RawTier:
 
 
 # Tokens that, on their own, mean "redirecting output to a real file" - DESTRUCTIVE.
-_REDIRECT_TOKENS = frozenset({">", ">>", ">|"})
+_REDIRECT_TOKENS = frozenset({
+    ">", ">>", ">|",
+    "1>", "1>>",
+    "2>", "2>>",
+    "&>", "&>>",
+    "<>",
+})
 
 # Shell separators we split sub-commands on (so we can tier each segment).
 _SEGMENT_SEPS = frozenset({"|", "||", "&&", ";", "&"})
+
+# Tools whose first non-flag arg is itself a command to run. We recurse into them.
+_WRAPPER_COMMANDS = frozenset({
+    "xargs", "nohup", "time", "nice", "exec", "command",
+})
+
+# Shells. We recursively classify their `-c PAYLOAD` argument as a shell command.
+_SHELL_RUNNERS = frozenset({
+    "bash", "sh", "zsh", "dash", "ksh", "fish",
+})
+
+# Language interpreters. If invoked with -c / -e, they execute arbitrary code.
+_LANG_RUNNERS = frozenset({
+    "python", "python3", "node", "perl", "ruby",
+})
+
+
+def _looks_like_env_assignment(token: str) -> bool:
+    """Recognize VAR=value or VAR_NAME=value tokens used to set env before a command."""
+    if "=" not in token or token.startswith("-") or token.startswith("="):
+        return False
+    name = token.split("=", 1)[0]
+    if not name:
+        return False
+    # Env var names: letters, digits, underscores; first char not a digit.
+    if not (name[0].isalpha() or name[0] == "_"):
+        return False
+    return all(c.isalnum() or c == "_" for c in name)
+
+
+def _strip_leading_flags(tokens: list[str]) -> list[str]:
+    """Drop leading `-flag` / `-flag value` tokens until first non-flag.
+    Conservative: assumes flags don't take values needing whitespace separation.
+    For our use (xargs/nohup/time/nice/exec/command) this is sufficient."""
+    i = 0
+    while i < len(tokens) and tokens[i].startswith("-"):
+        i += 1
+    return tokens[i:]
 
 
 def _split_segments(tokens: list[str]) -> list[list[str]]:
@@ -137,40 +181,165 @@ def _split_segments(tokens: list[str]) -> list[list[str]]:
 def _segment_tier(segment: list[str]) -> RawTier:
     if not segment:
         return RawTier.MUTATING
-    # Redirect operators inside a segment -> DESTRUCTIVE (unless to /dev/null).
+
+    # Token-level escalations (apply regardless of command position).
+    # 1. Backticks or $(...) -- can't safely classify the substitution, escalate.
+    for tok in segment:
+        if tok.startswith("`") or tok.startswith("$("):
+            return RawTier.DESTRUCTIVE
+    # 2. Redirect operators with non-/dev/null target.
     for i, tok in enumerate(segment):
         if tok in _REDIRECT_TOKENS:
             target = segment[i + 1] if i + 1 < len(segment) else ""
             if target != "/dev/null":
                 return RawTier.DESTRUCTIVE
-    # `tee` writing to a non-/dev/null path -> DESTRUCTIVE.
-    if "tee" in segment:
-        tee_idx = segment.index("tee")
-        # Find first non-flag arg after tee.
-        target = next(
-            (a for a in segment[tee_idx + 1:] if not a.startswith("-")),
-            None,
-        )
+
+    # Find the command position: skip leading FOO=bar env assignments.
+    cmd_idx = 0
+    while cmd_idx < len(segment) and _looks_like_env_assignment(segment[cmd_idx]):
+        cmd_idx += 1
+    if cmd_idx >= len(segment):
+        return RawTier.MUTATING
+
+    cmd_tok = _basename(segment[cmd_idx])
+    rest = segment[cmd_idx + 1:]
+
+    # Wrapper recursion -- the wrapper itself is benign; classify the wrapped command.
+    if cmd_tok in _WRAPPER_COMMANDS:
+        # Strip wrapper-specific flags before recursing. Conservative: skip everything
+        # starting with `-` until first non-flag token.
+        inner = _strip_leading_flags(rest)
+        return _segment_tier(inner)
+
+    # eval evaluates a shell string -- conservative DESTRUCTIVE.
+    if cmd_tok == "eval":
+        return RawTier.DESTRUCTIVE
+
+    # env [VAR=value ...] CMD args -- skip env assignments and recurse.
+    if cmd_tok == "env":
+        idx = 0
+        while idx < len(rest) and _looks_like_env_assignment(rest[idx]):
+            idx += 1
+        return _segment_tier(rest[idx:])
+
+    # Shell runners with -c PAYLOAD -- recursively classify the payload as a shell command.
+    if cmd_tok in _SHELL_RUNNERS:
+        for i, tok in enumerate(rest):
+            if tok == "-c" and i + 1 < len(rest):
+                inner = classify_command(rest[i + 1])
+                return RawTier.DESTRUCTIVE if inner == RawTier.DESTRUCTIVE else RawTier.MUTATING
+        # Shell launched without -c -- it'd hang on stdin DEVNULL anyway. MUTATING.
+        return RawTier.MUTATING
+
+    # Language runners with -c / -e -- arbitrary code, DESTRUCTIVE.
+    if cmd_tok in _LANG_RUNNERS:
+        if any(t in ("-c", "-e") for t in rest):
+            return RawTier.DESTRUCTIVE
+        return RawTier.MUTATING
+
+    # find -delete / -exec rm ... -- destructive forms of find.
+    if cmd_tok == "find":
+        if "-delete" in rest:
+            return RawTier.DESTRUCTIVE
+        for i, tok in enumerate(rest):
+            if tok == "-exec" and i + 1 < len(rest):
+                if _basename(rest[i + 1]) in DESTRUCTIVE_COMMANDS:
+                    return RawTier.DESTRUCTIVE
+        return RawTier.MUTATING
+
+    # tee: writes to a real file -> DESTRUCTIVE; else MUTATING.
+    if cmd_tok == "tee":
+        target = next((a for a in rest if not a.startswith("-")), None)
         if target is not None and target != "/dev/null":
             return RawTier.DESTRUCTIVE
-    # Any DESTRUCTIVE command token in the segment.
-    for tok in segment:
-        cmd = _basename(tok)
-        if cmd in DESTRUCTIVE_COMMANDS:
-            return RawTier.DESTRUCTIVE
-    # Adjacent `git push` -> DESTRUCTIVE.
-    for i in range(len(segment) - 1):
-        if _basename(segment[i]) == "git" and segment[i + 1] == "push":
-            return RawTier.DESTRUCTIVE
-    # Shell mode is never SAFE.
-    return RawTier.MUTATING
+        return RawTier.MUTATING
+
+    # Default: delegate to argv-mode classifier. Shell-never-SAFE downgrade applies.
+    try:
+        raw = classify_argv([segment[cmd_idx], *rest])
+    except BadArgvError:
+        return RawTier.MUTATING
+    if raw == RawTier.SAFE:
+        return RawTier.MUTATING
+    return raw
+
+
+def _pad_shell_metachars(s: str) -> str:
+    """Insert spaces around shell metacharacters (|, ;, &, >, <) outside quotes
+    and backslash-escapes, so a subsequent shlex.split yields each operator as
+    its own token. Multi-char operators (&&, ||, >>, 2>, &>, &>>, 1>>, 2>>) are
+    kept intact."""
+    out: list[str] = []
+    i = 0
+    n = len(s)
+    in_squote = False
+    in_dquote = False
+    while i < n:
+        c = s[i]
+        if in_squote:
+            out.append(c)
+            if c == "'":
+                in_squote = False
+            i += 1
+            continue
+        if in_dquote:
+            if c == "\\" and i + 1 < n:
+                out.append(c)
+                out.append(s[i + 1])
+                i += 2
+                continue
+            out.append(c)
+            if c == '"':
+                in_dquote = False
+            i += 1
+            continue
+        # Backslash escape outside quotes: pass next char through verbatim
+        # so that e.g. `find ... \;` does not get its semicolon padded.
+        if c == "\\" and i + 1 < n:
+            out.append(c)
+            out.append(s[i + 1])
+            i += 2
+            continue
+        if c == "'":
+            in_squote = True
+            out.append(c)
+            i += 1
+            continue
+        if c == '"':
+            in_dquote = True
+            out.append(c)
+            i += 1
+            continue
+        three = s[i:i + 3]
+        if three in ("&>>", "1>>", "2>>"):
+            out.append(" ")
+            out.append(three)
+            out.append(" ")
+            i += 3
+            continue
+        two = s[i:i + 2]
+        if two in ("&&", "||", ">>", ">|", "<>", "&>", "1>", "2>"):
+            out.append(" ")
+            out.append(two)
+            out.append(" ")
+            i += 2
+            continue
+        if c in "|;&<>":
+            out.append(" ")
+            out.append(c)
+            out.append(" ")
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def classify_command(command: str) -> RawTier:
     if not command or not command.strip():
         raise BadArgvError("empty command")
     try:
-        tokens = shlex.split(command, posix=True)
+        tokens = shlex.split(_pad_shell_metachars(command), posix=True)
     except ValueError as e:
         # Unterminated quote etc. Be conservative.
         raise BadArgvError(f"unparseable command: {e}") from e

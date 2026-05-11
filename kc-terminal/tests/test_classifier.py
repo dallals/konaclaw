@@ -159,6 +159,8 @@ def test_safe_and_destructive_sets_disjoint():
 
 
 @pytest.mark.parametrize("cmd,expected", [
+    # === Original Task 4 cases (some change tier under new rules) ===
+
     # Pipes/conjunctions: walk every segment; strictest wins.
     ("ls | grep foo",                       RawTier.MUTATING),
     ("ls -la && pwd",                       RawTier.MUTATING),
@@ -166,7 +168,7 @@ def test_safe_and_destructive_sets_disjoint():
     # Shell is never SAFE, even with safe-only argv.
     ("ls",                                  RawTier.MUTATING),
     ("git status",                          RawTier.MUTATING),
-    # Destructive tokens.
+    # Destructive at command position.
     ("rm -rf x",                            RawTier.DESTRUCTIVE),
     ("ls | xargs rm",                       RawTier.DESTRUCTIVE),
     ("echo hi; rm -rf ~",                   RawTier.DESTRUCTIVE),
@@ -175,8 +177,65 @@ def test_safe_and_destructive_sets_disjoint():
     ("ls >> out.txt",                       RawTier.DESTRUCTIVE),
     ("git push origin main",                RawTier.DESTRUCTIVE),
     ("echo hi | tee file.txt",              RawTier.DESTRUCTIVE),
-    ("echo hi | tee /dev/null",             RawTier.MUTATING),  # /dev/null is allowed
+    ("echo hi | tee /dev/null",             RawTier.MUTATING),
     ("sudo ls",                             RawTier.DESTRUCTIVE),
+
+    # === New: false-positive avoidance (C2 fix) ===
+    ("grep rm /etc/passwd",                 RawTier.MUTATING),
+    ("grep -r 'rm' src/",                   RawTier.MUTATING),
+    ("echo /usr/bin/rm",                    RawTier.MUTATING),
+    ("echo rm done",                        RawTier.MUTATING),
+    ("cat /var/log/rsync.log",              RawTier.MUTATING),
+
+    # === New: shell runners with -c (C1 fix) ===
+    ('bash -c "rm -rf x"',                  RawTier.DESTRUCTIVE),
+    ('sh -c "rm x"',                        RawTier.DESTRUCTIVE),
+    ('zsh -c "git push origin main"',       RawTier.DESTRUCTIVE),
+    ('bash -c "ls -la"',                    RawTier.MUTATING),  # inner MUTATING -> outer MUTATING
+    ('sh -c "echo hi"',                     RawTier.MUTATING),
+
+    # === New: language runners with -c / -e ===
+    ('python -c "print(1)"',                RawTier.DESTRUCTIVE),
+    ('python3 -c "print(1)"',               RawTier.DESTRUCTIVE),
+    ('node -e "1+1"',                       RawTier.DESTRUCTIVE),
+    ('perl -e "1"',                         RawTier.DESTRUCTIVE),
+    # Without -c / -e, running a script file is MUTATING (the file path is just an arg).
+    ("python script.py",                    RawTier.MUTATING),
+    ("node app.js",                         RawTier.MUTATING),
+
+    # === New: find -delete / -exec (C3 fix) ===
+    ("find . -delete",                      RawTier.DESTRUCTIVE),
+    ("find . -type f -delete",              RawTier.DESTRUCTIVE),
+    ("find . -exec rm {} \\;",              RawTier.DESTRUCTIVE),
+    ("find . -name '*.tmp'",                RawTier.MUTATING),
+
+    # === New: backticks / command substitution (I1 fix) ===
+    ("echo `rm x`",                         RawTier.DESTRUCTIVE),
+    ("echo $(rm x)",                        RawTier.DESTRUCTIVE),
+
+    # === New: env-assignment leader ===
+    ("FOO=bar ls",                          RawTier.MUTATING),
+    ("FOO=bar rm x",                        RawTier.DESTRUCTIVE),
+    ("env FOO=bar rm x",                    RawTier.DESTRUCTIVE),
+    ("env FOO=bar ls",                      RawTier.MUTATING),
+
+    # === New: eval is always DESTRUCTIVE ===
+    ('eval "ls -la"',                       RawTier.DESTRUCTIVE),
+
+    # === New: nested wrapper recursion ===
+    ("nohup curl https://x",                RawTier.DESTRUCTIVE),
+    ("time ls",                             RawTier.MUTATING),
+    ("nice rm -f x",                        RawTier.DESTRUCTIVE),
+
+    # === New: redirect to /dev/null vs subpath ===
+    ("ls > /dev/null",                      RawTier.MUTATING),
+    ("ls > /dev/null/foo",                  RawTier.DESTRUCTIVE),
+    ("ls 2> err.log",                       RawTier.DESTRUCTIVE),
+    ("ls &> all.log",                       RawTier.DESTRUCTIVE),
+
+    # === New: git in shell mode still hits argv subrules ===
+    ("git branch -D feature",               RawTier.DESTRUCTIVE),
+    ("git push origin main",                RawTier.DESTRUCTIVE),
 ])
 def test_classify_command_table(cmd, expected):
     assert classify_command(cmd) == expected
