@@ -236,6 +236,22 @@ def test_safe_and_destructive_sets_disjoint():
     # === New: git in shell mode still hits argv subrules ===
     ("git branch -D feature",               RawTier.DESTRUCTIVE),
     ("git push origin main",                RawTier.DESTRUCTIVE),
+
+    # === Wrapper commands with -flag VALUE pairs (regression coverage) ===
+    ("nice -n 10 rm -rf x",                 RawTier.DESTRUCTIVE),
+    ("nice -n 10 ls",                       RawTier.MUTATING),
+    ("xargs -P 4 rm",                       RawTier.DESTRUCTIVE),
+    ("xargs -n 1 rm",                       RawTier.DESTRUCTIVE),
+    ("xargs -I {} rm {}",                   RawTier.DESTRUCTIVE),
+    ("xargs -I {} echo {}",                 RawTier.MUTATING),
+    ("xargs -- rm",                         RawTier.DESTRUCTIVE),
+    ("xargs --max-procs=4 rm",              RawTier.DESTRUCTIVE),
+    # Safety net: numeric token in command position after wrapper -> DESTRUCTIVE.
+    ("nice 10",                             RawTier.DESTRUCTIVE),
+    # Documented limitation: unknown wrapper flag without value leaves
+    # `unknown` in command position (passes _looks_like_command_name);
+    # recursion then yields MUTATING because `unknown` isn't a known command.
+    ("xargs -Z unknown rm",                 RawTier.MUTATING),
 ])
 def test_classify_command_table(cmd, expected):
     assert classify_command(cmd) == expected

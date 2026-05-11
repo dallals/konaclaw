@@ -153,14 +153,52 @@ def _looks_like_env_assignment(token: str) -> bool:
     return all(c.isalnum() or c == "_" for c in name)
 
 
-def _strip_leading_flags(tokens: list[str]) -> list[str]:
-    """Drop leading `-flag` / `-flag value` tokens until first non-flag.
-    Conservative: assumes flags don't take values needing whitespace separation.
-    For our use (xargs/nohup/time/nice/exec/command) this is sufficient."""
+# Per-wrapper: which flags take a separate VALUE token. We skip both flag and value
+# when finding the command position. Conservative — if a wrapper's flag isn't listed
+# here we treat it as bare (no value).
+_WRAPPER_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    "nice":  frozenset({"-n"}),
+    "xargs": frozenset({"-P", "-n", "-I", "-L", "-a", "-d", "-E", "-s"}),
+    # `time`, `nohup`, `exec`, `command` don't take value-flags in their common forms.
+    "time":  frozenset(),
+    "nohup": frozenset(),
+    "exec":  frozenset(),
+    "command": frozenset(),
+}
+
+
+def _strip_wrapper_flags(wrapper: str, tokens: list[str]) -> list[str]:
+    """For a wrapper command (xargs/nohup/time/nice/exec/command), return the
+    tokens starting at the wrapped command's position. Skips leading flags,
+    consuming a value-token after any flag in _WRAPPER_VALUE_FLAGS[wrapper]."""
+    value_flags = _WRAPPER_VALUE_FLAGS.get(wrapper, frozenset())
     i = 0
     while i < len(tokens) and tokens[i].startswith("-"):
+        # `--` terminates flag parsing.
+        if tokens[i] == "--":
+            i += 1
+            break
+        flag = tokens[i]
         i += 1
+        # Long-form `--flag=value` self-contained -- no extra consume.
+        if flag.startswith("--") and "=" in flag:
+            continue
+        # If this is a value-taking flag (and we're not already done), consume next.
+        if flag in value_flags and i < len(tokens):
+            i += 1
     return tokens[i:]
+
+
+def _looks_like_command_name(tok: str) -> bool:
+    """True if `tok` plausibly is a command name (not a number, not empty,
+    not a flag-leftover). Conservative: a command must start with a letter
+    or underscore and contain only command-name-safe chars."""
+    if not tok:
+        return False
+    if not (tok[0].isalpha() or tok[0] == "_"):
+        return False
+    # Allow letters, digits, hyphens, underscores, dots (e.g. `python3.11`).
+    return all(c.isalnum() or c in "-_." for c in tok)
 
 
 def _split_segments(tokens: list[str]) -> list[list[str]]:
@@ -206,9 +244,17 @@ def _segment_tier(segment: list[str]) -> RawTier:
 
     # Wrapper recursion -- the wrapper itself is benign; classify the wrapped command.
     if cmd_tok in _WRAPPER_COMMANDS:
-        # Strip wrapper-specific flags before recursing. Conservative: skip everything
-        # starting with `-` until first non-flag token.
-        inner = _strip_leading_flags(rest)
+        inner = _strip_wrapper_flags(cmd_tok, rest)
+        # Safety: if flag-stripping leaves us with an empty list or a token that
+        # doesn't look like a command (e.g. a numeric value left over from a
+        # missing flag entry), escalate to DESTRUCTIVE rather than silently
+        # downgrading. This prevents "_strip_wrapper_flags didn't know about
+        # this flag" from becoming a permission bypass.
+        if not inner:
+            return RawTier.MUTATING
+        head = _basename(inner[0])
+        if not _looks_like_command_name(head):
+            return RawTier.DESTRUCTIVE
         return _segment_tier(inner)
 
     # eval evaluates a shell string -- conservative DESTRUCTIVE.
