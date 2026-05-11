@@ -1,4 +1,5 @@
 from __future__ import annotations
+import shlex
 from enum import Enum
 from pathlib import PurePath
 
@@ -111,5 +112,74 @@ def classify_argv(argv: list[str]) -> RawTier:
     return RawTier.MUTATING
 
 
+# Tokens that, on their own, mean "redirecting output to a real file" - DESTRUCTIVE.
+_REDIRECT_TOKENS = frozenset({">", ">>", ">|"})
+
+# Shell separators we split sub-commands on (so we can tier each segment).
+_SEGMENT_SEPS = frozenset({"|", "||", "&&", ";", "&"})
+
+
+def _split_segments(tokens: list[str]) -> list[list[str]]:
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for tok in tokens:
+        if tok in _SEGMENT_SEPS:
+            if current:
+                segments.append(current)
+            current = []
+        else:
+            current.append(tok)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _segment_tier(segment: list[str]) -> RawTier:
+    if not segment:
+        return RawTier.MUTATING
+    # Redirect operators inside a segment -> DESTRUCTIVE (unless to /dev/null).
+    for i, tok in enumerate(segment):
+        if tok in _REDIRECT_TOKENS:
+            target = segment[i + 1] if i + 1 < len(segment) else ""
+            if target != "/dev/null":
+                return RawTier.DESTRUCTIVE
+    # `tee` writing to a non-/dev/null path -> DESTRUCTIVE.
+    if "tee" in segment:
+        tee_idx = segment.index("tee")
+        # Find first non-flag arg after tee.
+        target = next(
+            (a for a in segment[tee_idx + 1:] if not a.startswith("-")),
+            None,
+        )
+        if target is not None and target != "/dev/null":
+            return RawTier.DESTRUCTIVE
+    # Any DESTRUCTIVE command token in the segment.
+    for tok in segment:
+        cmd = _basename(tok)
+        if cmd in DESTRUCTIVE_COMMANDS:
+            return RawTier.DESTRUCTIVE
+    # Adjacent `git push` -> DESTRUCTIVE.
+    for i in range(len(segment) - 1):
+        if _basename(segment[i]) == "git" and segment[i + 1] == "push":
+            return RawTier.DESTRUCTIVE
+    # Shell mode is never SAFE.
+    return RawTier.MUTATING
+
+
 def classify_command(command: str) -> RawTier:
-    raise NotImplementedError  # filled in Task 4
+    if not command or not command.strip():
+        raise BadArgvError("empty command")
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError as e:
+        # Unterminated quote etc. Be conservative.
+        raise BadArgvError(f"unparseable command: {e}") from e
+    segments = _split_segments(tokens)
+    tier = RawTier.MUTATING
+    for seg in segments:
+        seg_tier = _segment_tier(seg)
+        if seg_tier == RawTier.DESTRUCTIVE:
+            return RawTier.DESTRUCTIVE
+        if seg_tier == RawTier.MUTATING:
+            tier = RawTier.MUTATING
+    return tier

@@ -156,3 +156,34 @@ def test_safe_and_destructive_sets_disjoint():
     DESTRUCTIVE>SAFE>MUTATING priority order from masking accidental overlap."""
     from kc_terminal.classifier import SAFE_COMMANDS, DESTRUCTIVE_COMMANDS
     assert SAFE_COMMANDS.isdisjoint(DESTRUCTIVE_COMMANDS)
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    # Pipes/conjunctions: walk every segment; strictest wins.
+    ("ls | grep foo",                       RawTier.MUTATING),
+    ("ls -la && pwd",                       RawTier.MUTATING),
+    ("echo hi ; echo bye",                  RawTier.MUTATING),
+    # Shell is never SAFE, even with safe-only argv.
+    ("ls",                                  RawTier.MUTATING),
+    ("git status",                          RawTier.MUTATING),
+    # Destructive tokens.
+    ("rm -rf x",                            RawTier.DESTRUCTIVE),
+    ("ls | xargs rm",                       RawTier.DESTRUCTIVE),
+    ("echo hi; rm -rf ~",                   RawTier.DESTRUCTIVE),
+    ("curl https://x",                      RawTier.DESTRUCTIVE),
+    ("ls > out.txt",                        RawTier.DESTRUCTIVE),
+    ("ls >> out.txt",                       RawTier.DESTRUCTIVE),
+    ("git push origin main",                RawTier.DESTRUCTIVE),
+    ("echo hi | tee file.txt",              RawTier.DESTRUCTIVE),
+    ("echo hi | tee /dev/null",             RawTier.MUTATING),  # /dev/null is allowed
+    ("sudo ls",                             RawTier.DESTRUCTIVE),
+])
+def test_classify_command_table(cmd, expected):
+    assert classify_command(cmd) == expected
+
+
+def test_classify_command_empty_raises():
+    with pytest.raises(BadArgvError):
+        classify_command("")
+    with pytest.raises(BadArgvError):
+        classify_command("   ")
