@@ -113,6 +113,11 @@ class Deps:
     todo_storage:    Optional[Any] = None
     clarify_broker:  Optional[Any] = None
     todo_broadcaster: Optional[Any] = None
+    # Subagents — constructed in main.py when KC_SUBAGENTS_ENABLED=true; otherwise None.
+    subagent_index:        Optional[Any] = None
+    subagent_runner:       Optional[Any] = None
+    subagent_trace_buffer: Optional[Any] = None
+    subagent_templates_dir: Optional[Path] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:

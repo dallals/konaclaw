@@ -131,7 +131,11 @@ class EphemeralInstance:
         self.tool_calls_used = 0
 
     def _emit(self, frame: dict) -> None:
-        self._on_frame({**frame, "subagent_id": self.id})
+        self._on_frame({
+            **frame,
+            "subagent_id": self.id,
+            "parent_conversation_id": self.parent_conversation_id,
+        })
 
     def _compose_message(self) -> str:
         if not self.context:

@@ -320,3 +320,26 @@ async def test_max_tool_calls_cap_short_circuits():
     assert result.tool_calls_used == 3
     # Only the first 3 calls actually executed; calls 4 & 5 short-circuited.
     assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_emit_tags_frames_with_parent_conversation_id():
+    """Every emitted frame must carry parent_conversation_id so the WS
+    layer can route to the right chat surface."""
+    t = SubagentTemplate(name="x", model="m", system_prompt="y",
+                         source_path=Path("/tmp/x.yaml"))
+    fake = FakeAssembledAgent("done")
+    emitted: list[dict] = []
+    inst = EphemeralInstance(
+        instance_id="ep_z", template=t, parent_agent="Kona-AI",
+        parent_conversation_id="conv_42",
+        task="x", context=None, label=None,
+        effective_timeout=5, assembled=fake,
+        on_frame=emitted.append,
+        audit_start=lambda **kw: None, audit_finish=lambda **kw: None,
+    )
+    await inst.run()
+    assert len(emitted) >= 2  # at least started + finished
+    for frame in emitted:
+        assert frame["parent_conversation_id"] == "conv_42"
+        assert frame["subagent_id"] == "ep_z"

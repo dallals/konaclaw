@@ -15,6 +15,13 @@ from kc_supervisor.skill_slash import resolve_slash_command
 logger = logging.getLogger(__name__)
 
 
+def _handle_subagent_stop_frame(deps, inbound: dict) -> None:
+    """Route a subagent_stop inbound frame to the runner's stop() method."""
+    sid = inbound.get("subagent_id")
+    if isinstance(sid, str) and deps.subagent_runner is not None:
+        deps.subagent_runner.stop(sid)
+
+
 def register_ws_routes(app: FastAPI) -> None:
 
     @app.websocket("/ws/chat/{conversation_id}")
@@ -95,6 +102,11 @@ def register_ws_routes(app: FastAPI) -> None:
             for frame in clarify_broker.pending_for_conversation(conversation_id):
                 await ws.send_json(frame)
 
+        # Replay any buffered subagent frames for this conversation (reconnect).
+        if deps.subagent_trace_buffer is not None:
+            for frame in deps.subagent_trace_buffer.snapshot(str(conversation_id)):
+                await ws.send_json(frame)
+
         try:
             while True:
                 inbound = await ws.receive_json()
@@ -106,6 +118,9 @@ def register_ws_routes(app: FastAPI) -> None:
                     reason = inbound.get("reason", "answered" if choice is not None else "skipped")
                     if isinstance(rid, str):
                         clarify_broker.resolve(rid, choice=choice, reason=reason)
+                    continue
+                if inbound.get("type") == "subagent_stop":
+                    _handle_subagent_stop_frame(deps, inbound)
                     continue
                 if inbound.get("type") != "user_message":
                     await ws.send_json({
