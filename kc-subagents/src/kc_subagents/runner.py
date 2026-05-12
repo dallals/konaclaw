@@ -47,6 +47,41 @@ import asyncio, secrets, time
 from typing import Callable, Optional
 
 
+def _wrap_tools_with_counter(tools: list, instance: "EphemeralInstance") -> list:
+    """Return a NEW list of Tool objects whose impls bump instance.tool_calls_used
+    and short-circuit once the template's max_tool_calls cap is reached.
+
+    The synthetic 'cap reached' error string is returned as the tool result so
+    the parent agent's loop stays alive and produces a final assistant turn.
+
+    NOTE: This wiring satisfies the test's fake-agent shape (assembled.tools as a
+    plain list). Real AssembledAgent uses core_agent.tools (a ToolRegistry); Task 17
+    will adapt this for that shape when wiring assemble_agent() in main.py.
+    """
+    from kc_core.tools import Tool
+
+    wrapped: list = []
+    for t in tools:
+        original_impl = t.impl
+        async def _counted_impl(_orig=original_impl, _inst=instance, _tname=t.name, **kwargs):
+            if _inst.tool_calls_used >= _inst.template.max_tool_calls:
+                return (
+                    f"error: max_tool_calls cap reached "
+                    f"({_inst.template.max_tool_calls})"
+                )
+            _inst.tool_calls_used += 1
+            result = _orig(**kwargs)
+            # Some impls are async, some sync — await if needed.
+            if hasattr(result, "__await__"):
+                result = await result
+            return result
+        wrapped.append(Tool(
+            name=t.name, description=t.description,
+            parameters=t.parameters, impl=_counted_impl,
+        ))
+    return wrapped
+
+
 @dataclass
 class InstanceResult:
     subagent_id: str
@@ -118,6 +153,21 @@ class EphemeralInstance:
             "label": self.label,
             "task_preview": self.task[:200],
         })
+
+        # Lazy import: subagent_attribution_var lives in kc_supervisor.approvals.
+        # We accept a None fallback if kc_supervisor isn't installed (test isolation).
+        token = None
+        _attrib_var = None
+        try:
+            from kc_supervisor.approvals import subagent_attribution_var as _sv
+            _attrib_var = _sv
+            token = _attrib_var.set({
+                "parent_agent": self.parent_agent,
+                "subagent_id":  self.id,
+            })
+        except ImportError:
+            pass
+
         reply: str | None = None
         status = "ok"
         error: str | None = None
@@ -140,6 +190,13 @@ class EphemeralInstance:
             error  = str(e)
         else:
             raise_after = False
+        finally:
+            if token is not None and _attrib_var is not None:
+                try:
+                    _attrib_var.reset(token)
+                except (LookupError, ValueError):
+                    pass   # contextvar token reset can fail in unusual paths; safe to ignore
+
         duration_ms = int((time.monotonic() - started) * 1000)
         result = InstanceResult(
             subagent_id=self.id, status=status, reply=reply,
@@ -244,6 +301,14 @@ class SubagentRunner:
             on_frame=self._on_frame,
             audit_start=self._audit_start, audit_finish=self._audit_finish,
         )
+
+        # Wrap the tools so they bump inst.tool_calls_used and short-circuit at cap.
+        # NOTE: This covers fake-agent shape (assembled.tools as a list). Real
+        # AssembledAgent uses core_agent.tools (a ToolRegistry); Task 17 will adapt
+        # this for that shape when wiring assemble_agent() in main.py.
+        if hasattr(assembled, "tools") and assembled.tools:
+            assembled.tools = _wrap_tools_with_counter(assembled.tools, inst)
+
         self._instances[instance_id] = inst
 
         async def _run_and_clean():

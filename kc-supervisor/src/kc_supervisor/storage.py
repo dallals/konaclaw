@@ -338,12 +338,19 @@ class Storage:
         self, *,
         agent: str, tool: str, args_json: str,
         decision: str, result: Optional[str], undoable: bool,
+        parent_agent: Optional[str] = None,
+        subagent_id: Optional[str] = None,
+        subagent_template: Optional[str] = None,
     ) -> int:
         with self.connect() as c:
             cur = c.execute(
-                "INSERT INTO audit (ts, agent, tool, args_json, decision, result, undoable) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (time.time(), agent, tool, args_json, decision, result, 1 if undoable else 0),
+                "INSERT INTO audit "
+                "(ts, agent, tool, args_json, decision, result, undoable, "
+                "parent_agent, subagent_id, subagent_template) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (time.time(), agent, tool, args_json, decision, result,
+                 1 if undoable else 0,
+                 parent_agent, subagent_id, subagent_template),
             )
             return int(cur.lastrowid)
 

@@ -59,7 +59,15 @@ class AuditingToolRegistry(ToolRegistry):
         tool_name = tool.name
 
         def _write_audit(result_str: str, decision_source: str, args_json: str) -> None:
+            from kc_supervisor.approvals import subagent_attribution_var
             captured_eid = _eid_contextvar.get()
+            attrib = subagent_attribution_var.get()
+            parent_agent      = (attrib or {}).get("parent_agent")
+            subagent_id       = (attrib or {}).get("subagent_id")
+            subagent_template = None
+            if attrib and parent_agent and "/" in agent_name:
+                # Synthetic ephemeral name: "<parent>/<instance_id>/<template>"
+                subagent_template = agent_name.rsplit("/", 1)[-1]
             audit_id = storage.append_audit(
                 agent=agent_name,
                 tool=tool_name,
@@ -67,6 +75,9 @@ class AuditingToolRegistry(ToolRegistry):
                 decision=decision_source,
                 result=result_str,
                 undoable=captured_eid is not None,
+                parent_agent=parent_agent,
+                subagent_id=subagent_id,
+                subagent_template=subagent_template,
             )
             if captured_eid is not None:
                 storage.link_audit_undo(audit_id, captured_eid)
