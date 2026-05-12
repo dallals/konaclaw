@@ -113,6 +113,27 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 CREATE INDEX IF NOT EXISTS idx_todos_agent_conv ON todos (agent, conversation_id);
 CREATE INDEX IF NOT EXISTS idx_todos_status     ON todos (status);
+
+CREATE TABLE IF NOT EXISTS subagent_runs (
+  id                     TEXT PRIMARY KEY,
+  parent_conversation_id TEXT NOT NULL,
+  parent_agent           TEXT NOT NULL,
+  template               TEXT NOT NULL,
+  label                  TEXT,
+  task_preview           TEXT,
+  context_keys           TEXT,
+  started_ts             REAL NOT NULL,
+  ended_ts               REAL,
+  status                 TEXT NOT NULL DEFAULT 'running',
+  duration_ms            INTEGER,
+  tool_calls_used        INTEGER NOT NULL DEFAULT 0,
+  reply_chars            INTEGER,
+  error_message          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent
+  ON subagent_runs(parent_conversation_id, started_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_subagent_runs_template
+  ON subagent_runs(template, started_ts DESC);
 """
 
 
@@ -159,6 +180,10 @@ class Storage:
             job_cols = {r["name"] for r in c.execute("PRAGMA table_info(scheduled_jobs)").fetchall()}
             if "mode" not in job_cols:
                 c.execute("ALTER TABLE scheduled_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'literal'")
+            audit_cols = {r["name"] for r in c.execute("PRAGMA table_info(audit)").fetchall()}
+            for new_col in ("parent_agent", "subagent_id", "subagent_template"):
+                if new_col not in audit_cols:
+                    c.execute(f"ALTER TABLE audit ADD COLUMN {new_col} TEXT")
 
     @contextmanager
     def connect(self):
@@ -522,3 +547,70 @@ class Storage:
                 "SELECT channel, default_chat_id, enabled FROM channel_routing ORDER BY channel ASC"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ----- subagent runs -----
+
+    def start_subagent_run(
+        self,
+        *,
+        id: str,
+        parent_conversation_id: str,
+        parent_agent: str,
+        template: str,
+        label: Optional[str],
+        task_preview: Optional[str],
+        context_keys: Optional[list[str]],
+    ) -> None:
+        import json as _json
+        now = time.time()
+        with self.connect() as c:
+            c.execute(
+                """INSERT INTO subagent_runs
+                   (id, parent_conversation_id, parent_agent, template, label,
+                    task_preview, context_keys, started_ts, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running')""",
+                (
+                    id, parent_conversation_id, parent_agent, template, label,
+                    (task_preview or "")[:200] or None,
+                    _json.dumps(context_keys) if context_keys else None,
+                    now,
+                ),
+            )
+
+    def finish_subagent_run(
+        self,
+        *,
+        id: str,
+        status: str,
+        duration_ms: int,
+        tool_calls_used: int,
+        reply_chars: Optional[int],
+        error_message: Optional[str],
+    ) -> None:
+        now = time.time()
+        with self.connect() as c:
+            c.execute(
+                """UPDATE subagent_runs
+                   SET ended_ts=?, status=?, duration_ms=?, tool_calls_used=?,
+                       reply_chars=?, error_message=?
+                   WHERE id=?""",
+                (now, status, duration_ms, tool_calls_used, reply_chars, error_message, id),
+            )
+
+    def reap_running_subagent_runs(self) -> int:
+        """Mark any rows left in status='running' as 'interrupted'.
+
+        Called on supervisor startup to clean up state left by a prior crashed
+        or Ctrl-C'd process. Returns the number of rows reaped.
+        """
+        now = time.time()
+        with self.connect() as c:
+            cur = c.execute(
+                """UPDATE subagent_runs
+                   SET status='interrupted',
+                       ended_ts=?,
+                       error_message='supervisor restarted mid-run'
+                   WHERE status='running'""",
+                (now,),
+            )
+            return cur.rowcount
