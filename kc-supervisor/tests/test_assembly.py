@@ -495,3 +495,92 @@ def test_clarify_tool_absent_on_research_agent(home):
     broker = ClarifyBroker()
     a = assemble_agent(**_basic_assemble_kwargs(home), clarify_broker=broker)
     assert "clarify" not in a.registry.names()
+
+
+# ------------------------------------------------------------------ Subagents
+# (kc-subagents integration — Task 13)
+
+
+def test_kona_gets_subagent_tools_when_enabled(home):
+    """When subagent_index + subagent_runner are supplied and agent is Kona-AI,
+    spawn_subagent and await_subagents are registered."""
+    from unittest.mock import MagicMock
+    storage = Storage(home / "data" / "kc.db"); storage.init()
+    broker = ApprovalBroker()
+    shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
+    cfg = AgentConfig(name="Kona-AI", model="qwen2.5:7b", system_prompt="I am Kona.")
+
+    fake_index = MagicMock()
+    fake_runner = MagicMock()
+
+    a = assemble_agent(
+        cfg=cfg,
+        shares=shares,
+        audit_storage=storage,
+        broker=broker,
+        ollama_url="http://localhost:11434",
+        default_model="qwen2.5:7b",
+        undo_db_path=home / "data" / "undo.db",
+        subagent_index=fake_index,
+        subagent_runner=fake_runner,
+    )
+    names = a.registry.names()
+    assert "spawn_subagent" in names
+    assert "await_subagents" in names
+
+
+def test_non_kona_does_not_get_subagent_tools(home):
+    """Non-kona agents (e.g. 'Research-Agent') must NOT get spawn/await tools
+    even when subagent_index + subagent_runner are supplied."""
+    from unittest.mock import MagicMock
+    storage = Storage(home / "data" / "kc.db"); storage.init()
+    broker = ApprovalBroker()
+    shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
+    cfg = AgentConfig(name="Research-Agent", model="qwen2.5:7b", system_prompt="I do research.")
+
+    a = assemble_agent(
+        cfg=cfg,
+        shares=shares,
+        audit_storage=storage,
+        broker=broker,
+        ollama_url="http://localhost:11434",
+        default_model="qwen2.5:7b",
+        undo_db_path=home / "data" / "undo.db",
+        subagent_index=MagicMock(),
+        subagent_runner=MagicMock(),
+    )
+    names = a.registry.names()
+    assert "spawn_subagent" not in names
+    assert "await_subagents" not in names
+
+
+def test_ephemeral_instance_does_not_get_subagent_or_delegate_tools(home):
+    """Ephemeral subagents (cfg.name contains '/ep_') must NOT get spawn_subagent,
+    await_subagents, OR delegate_to_agent, even when all deps are provided."""
+    from unittest.mock import MagicMock
+    storage = Storage(home / "data" / "kc.db"); storage.init()
+    broker = ApprovalBroker()
+    shares = SharesRegistry.from_yaml(home / "config" / "shares.yaml")
+    # Synthetic ephemeral agent name — the pattern used by Task 14's runner.
+    cfg = AgentConfig(
+        name="Kona-AI/ep_abc/web-researcher",
+        model="qwen2.5:7b",
+        system_prompt="I am an ephemeral web researcher.",
+    )
+
+    a = assemble_agent(
+        cfg=cfg,
+        shares=shares,
+        audit_storage=storage,
+        broker=broker,
+        ollama_url="http://localhost:11434",
+        default_model="qwen2.5:7b",
+        undo_db_path=home / "data" / "undo.db",
+        resolve_agent=lambda n: (None, "unknown"),   # provided so delegate WOULD register otherwise
+        subagent_index=MagicMock(),
+        subagent_runner=MagicMock(),
+    )
+    names = a.registry.names()
+    assert "spawn_subagent"    not in names
+    assert "await_subagents"   not in names
+    assert "delegate_to_agent" not in names

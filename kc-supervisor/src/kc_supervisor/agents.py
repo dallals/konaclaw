@@ -73,6 +73,8 @@ class AgentRegistry:
         todo_storage:     "Optional[Any]" = None,
         clarify_broker:   "Optional[Any]" = None,
         todo_broadcaster: "Optional[Any]" = None,
+        subagent_index:   "Optional[Any]" = None,
+        subagent_runner:  "Optional[Any]" = None,
     ) -> None:
         self.agents_dir = Path(agents_dir)
         self.shares = shares
@@ -94,6 +96,8 @@ class AgentRegistry:
         self.todo_storage     = todo_storage
         self.clarify_broker   = clarify_broker
         self.todo_broadcaster = todo_broadcaster
+        self.subagent_index   = subagent_index
+        self.subagent_runner  = subagent_runner
         self._by_name: dict[str, AgentRuntime] = {}
 
     def load_all(self) -> None:
@@ -150,6 +154,8 @@ class AgentRegistry:
                     todo_storage=self.todo_storage,
                     clarify_broker=self.clarify_broker,
                     todo_broadcaster=self.todo_broadcaster,
+                    subagent_index=self.subagent_index,
+                    subagent_runner=self.subagent_runner,
                 )
                 new_by_name[cfg.name] = AgentRuntime(
                     name=cfg.name,

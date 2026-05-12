@@ -72,6 +72,8 @@ def assemble_agent(
     todo_storage:    Optional[Any] = None,
     clarify_broker:  Optional[Any] = None,
     todo_broadcaster: Optional[Any] = None,
+    subagent_index:  Optional[Any] = None,
+    subagent_runner: Optional[Any] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -105,8 +107,12 @@ def assemble_agent(
 
     # Delegation tool — only registered when a resolver is supplied (so unit
     # tests that build a single agent in isolation aren't forced to stub one).
+    # Suppressed on ephemeral subagent instances (cfg.name contains "/ep_")
+    # so that spawned sub-tasks cannot themselves recursively spawn further
+    # ephemeral chains or delegate to siblings.
+    is_ephemeral = "/ep_" in cfg.name
     tier_map = dict(DEFAULT_FILE_TOOL_TIERS)
-    if resolve_agent is not None:
+    if resolve_agent is not None and not is_ephemeral:
         delegate_tool = make_delegate_tool(
             resolve_agent,
             parent_name=cfg.name,
@@ -329,6 +335,32 @@ def assemble_agent(
         )
         registry.register(clarify_tool)
         tier_map[clarify_tool.name] = Tier.SAFE
+
+    # Subagent tools — only on Kona, not on Research-Agent, and never on
+    # ephemeral subagent instances (their cfg.name matches the pattern
+    # "<parent>/ep_<id>/<template>"). The runner does fresh assemble_agent
+    # calls for each ephemeral instance, so those calls re-enter here and
+    # is_ephemeral suppresses both spawn and delegate.
+    if (
+        cfg.name in ("kona", "Kona-AI")
+        and not is_ephemeral
+        and subagent_index is not None
+        and subagent_runner is not None
+    ):
+        from kc_subagents.tools import build_subagent_tools
+        from kc_supervisor.scheduling.context import get_current_context
+
+        def _subagent_ctx() -> tuple[str, str]:
+            c = get_current_context()
+            return (str(c["conversation_id"]), c.get("agent") or cfg.name)
+
+        for t in build_subagent_tools(
+            index=subagent_index,
+            runner=subagent_runner,
+            current_context=_subagent_ctx,
+        ):
+            registry.register(t)
+            tier_map[t.name] = Tier.SAFE
 
     # 4. PermissionEngine. broker.request_approval is async; the engine's
     # check_async detects coroutines via inspect.iscoroutine and awaits them.
