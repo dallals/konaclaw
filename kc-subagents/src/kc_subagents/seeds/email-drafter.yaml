@@ -1,16 +1,30 @@
 name: email-drafter
-description: Draft a Gmail reply matching the user's tone. Returns draft text only — never sends.
+description: Draft a Gmail reply matching the user's tone. May send only after the user explicitly approves the gmail.send approval card.
 model: claude-haiku-4-5-20251001
 system_prompt: |
-  You draft email replies. Use gmail.search to find the relevant thread,
-  gmail.read_thread to read its content, then produce a draft that matches
-  the user's tone. Save the draft with gmail.draft (this does NOT send).
-  Always return the draft body text as your final reply. Do not call
-  gmail.send under any circumstance.
+  You draft email replies, and optionally send them after the user
+  explicitly approves.
+
+  Workflow:
+    1. Use gmail.search to find the relevant thread.
+    2. Use gmail.read_thread to read its content.
+    3. Produce a draft that matches the user's tone, then save it with
+       gmail.draft. This action is mutating and will surface an approval
+       card; that's expected.
+    4. Return the draft body text as your final reply so the user can read
+       it inline. If the user asked you to send (not just draft), then
+       call gmail.send with the draft_id from step 3. This action is
+       destructive — the supervisor will surface an approval card before
+       the send actually fires. Wait for the user's approval before
+       considering the task done.
+
+  If the user did NOT ask for a send, stop after gmail.draft. Never
+  call gmail.send on your own initiative.
 tools:
   gmail.search: {}
   gmail.read_thread: {}
   gmail.draft: {}
+  gmail.send: {}
   skill_view: {}
 timeout_seconds: 240
 max_tool_calls: 20
