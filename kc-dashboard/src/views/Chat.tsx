@@ -9,7 +9,7 @@ import {
   setConversationTitle,
   deleteConversation,
 } from "../api/conversations";
-import { useChatSocket } from "../ws/useChatSocket";
+import { useChatSocket, type ChatEvent } from "../ws/useChatSocket";
 import { useLiveTokensPerSecond } from "../ws/useLiveTokensPerSecond";
 import { useWS } from "../ws/WSContext";
 import { useApprovals } from "../store/approvals";
@@ -19,7 +19,12 @@ import { ThinkingIndicator } from "../components/ThinkingIndicator";
 import { NewsWidget } from "../components/NewsWidget";
 import { TodoWidget } from "../components/TodoWidget";
 import { ClarifyCard } from "../components/ClarifyCard";
+import { SubagentTraceBlock } from "../components/SubagentTraceBlock";
 import { formatTokensPerSecond, formatTokenCount, formatTtfb } from "../lib/formatUsage";
+
+type SubagentStartedEvent = Extract<ChatEvent, { type: "subagent_started" }>;
+type SubagentToolEvent = Extract<ChatEvent, { type: "subagent_tool" }>;
+type SubagentFinishedEvent = Extract<ChatEvent, { type: "subagent_finished" }>;
 
 const padNum = (n: number, len = 3) => String(n).padStart(len, "0");
 
@@ -151,6 +156,30 @@ export default function Chat() {
     if (last?.type === "todo_event") {
       setTodoEventCounter((c) => c + 1);
     }
+  }, [events]);
+
+  // Group subagent WS frames by subagent_id for inline trace rendering.
+  const traceGroups = useMemo(() => {
+    const groups = new Map<string, {
+      started: SubagentStartedEvent | null;
+      tools: SubagentToolEvent[];
+      finished: SubagentFinishedEvent | null;
+    }>();
+    for (const ev of events) {
+      if (
+        ev.type === "subagent_started" ||
+        ev.type === "subagent_tool" ||
+        ev.type === "subagent_approval" ||
+        ev.type === "subagent_finished"
+      ) {
+        const g = groups.get(ev.subagent_id) ?? { started: null, tools: [], finished: null };
+        if (ev.type === "subagent_started") g.started = ev;
+        else if (ev.type === "subagent_tool") g.tools.push(ev);
+        else if (ev.type === "subagent_finished") g.finished = ev;
+        groups.set(ev.subagent_id, g);
+      }
+    }
+    return groups;
   }, [events]);
 
   // Auto-scroll the transcript to the bottom when new content arrives.
@@ -582,6 +611,27 @@ export default function Chat() {
             ),
           )}
           {streaming.trim() && <MessageBubble role="assistant" content={streaming} />}
+          {events
+            .filter((ev) => ev.type === "subagent_started")
+            .map((ev) => {
+              const started = ev as SubagentStartedEvent;
+              const group = traceGroups.get(started.subagent_id);
+              if (!group?.started) return null;
+              return (
+                <SubagentTraceBlock
+                  key={`subagent-${started.subagent_id}`}
+                  started={group.started}
+                  tools={group.tools}
+                  finished={group.finished}
+                  onStop={() =>
+                    sendUserMessage({
+                      type: "subagent_stop",
+                      subagent_id: started.subagent_id,
+                    })
+                  }
+                />
+              );
+            })}
           {pendingForAgent.map((req) => (
             <ApprovalCard
               key={req.request_id}

@@ -7,6 +7,7 @@ import {
 } from "../api/subagents";
 import { SubagentTemplateCard } from "../components/SubagentTemplateCard";
 import { SubagentTemplateEditor } from "../components/SubagentTemplateEditor";
+import { SubagentActiveRunsPanel } from "../components/SubagentActiveRunsPanel";
 
 type EditorState =
   | { mode: "create" }
@@ -91,6 +92,8 @@ export default function Subagents() {
           ))}
         </div>
       )}
+
+      <SubagentActiveRunsPanel />
 
       {editor && (
         <SubagentTemplateEditor

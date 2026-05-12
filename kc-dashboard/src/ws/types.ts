@@ -3,4 +3,6 @@ export type ApprovalRequest = {
   agent: string;
   tool: string;
   arguments: Record<string, unknown>;
+  parent_agent?: string | null;
+  subagent_id?: string | null;
 };

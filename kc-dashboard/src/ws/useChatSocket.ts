@@ -42,6 +42,42 @@ export type ChatEvent =
         scope?: "conversation" | "agent";
       };
       deleted_count?: number;
+    }
+  | {
+      type: "subagent_started";
+      subagent_id: string;
+      parent_conversation_id: string;
+      template: string;
+      label?: string | null;
+      task_preview: string;
+    }
+  | {
+      type: "subagent_tool";
+      subagent_id: string;
+      parent_conversation_id: string;
+      tool: string;
+      args_preview?: string;
+      result_preview?: string;
+      tier?: string;
+    }
+  | {
+      type: "subagent_approval";
+      subagent_id: string;
+      parent_conversation_id: string;
+      approval_id: string;
+      tool: string;
+      args_preview?: string;
+      attributed_to: string;
+    }
+  | {
+      type: "subagent_finished";
+      subagent_id: string;
+      parent_conversation_id: string;
+      status: "ok" | "error" | "timeout" | "stopped" | "interrupted";
+      reply_preview: string;
+      duration_ms: number;
+      tool_calls_used: number;
+      error_message?: string | null;
     };
 
 export function useChatSocket(conversationId: number | null) {

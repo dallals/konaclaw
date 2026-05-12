@@ -7,7 +7,17 @@ export function ApprovalCard({
     <div className="my-3 ml-[120px] max-w-[64ch] border border-accent bg-panel" style={{ background: "rgb(var(--panel))" }}>
       <div className="bg-accent text-bgDeep px-3.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.18em] font-bold flex items-center justify-between gap-3">
         <span>⚠ Tool call · awaiting approval</span>
-        <span className="font-medium tracking-[0.06em]">{req.tool}</span>
+        <span className="flex items-center gap-2">
+          {req.subagent_id && (
+            <span
+              className="px-1.5 py-0.5 bg-bgDeep text-accent border border-accent tracking-[0.1em]"
+              title={`Requested by subagent ${req.subagent_id} (child of ${req.parent_agent ?? "?"})`}
+            >
+              via subagent
+            </span>
+          )}
+          <span className="font-medium tracking-[0.06em]">{req.tool}</span>
+        </span>
       </div>
       <div className="px-4 py-3 font-mono text-[12px] text-text leading-[1.55]">
         <div className="mb-2">
