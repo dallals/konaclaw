@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re
+import threading
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -108,3 +109,75 @@ def load_template_file(path: Path) -> SubagentTemplate:
         max_tool_calls=max_calls,
         source_path=path,
     )
+
+
+class SubagentIndex:
+    """In-memory cache of templates loaded from a directory.
+
+    Mtime-invalidated per file; lock-guarded against concurrent readers.
+    Mirrors the SkillIndex pattern from kc-skills.
+    """
+
+    def __init__(self, templates_dir: Path) -> None:
+        self._dir = Path(templates_dir)
+        self._lock = threading.Lock()
+        # name -> (template, mtime). Degraded entries store None template + error in _errors.
+        self._cache: dict[str, tuple[SubagentTemplate, float]] = {}
+        self._errors: dict[str, str] = {}
+        self._dir_mtime: float = 0.0
+        self._refresh_if_changed()
+
+    def _refresh_if_changed(self) -> None:
+        with self._lock:
+            if not self._dir.exists():
+                self._cache.clear()
+                self._errors.clear()
+                self._dir_mtime = 0.0
+                return
+            current_dir_mtime = self._dir.stat().st_mtime
+            paths = sorted(self._dir.glob("*.yaml"))
+            seen: set[str] = set()
+            for p in paths:
+                stem = p.stem
+                seen.add(stem)
+                mtime = p.stat().st_mtime
+                cached = self._cache.get(stem)
+                if cached and cached[1] == mtime and stem not in self._errors:
+                    continue
+                try:
+                    t = load_template_file(p)
+                    self._cache[stem] = (t, mtime)
+                    self._errors.pop(stem, None)
+                except TemplateLoadError as e:
+                    self._cache.pop(stem, None)
+                    self._errors[stem] = str(e)
+            # Drop entries whose files vanished.
+            for stale in set(self._cache.keys()) - seen:
+                self._cache.pop(stale, None)
+            for stale in set(self._errors.keys()) - seen:
+                self._errors.pop(stale, None)
+            self._dir_mtime = current_dir_mtime
+
+    def names(self) -> list[str]:
+        self._refresh_if_changed()
+        with self._lock:
+            return sorted(self._cache.keys())
+
+    def get(self, name: str) -> SubagentTemplate | None:
+        self._refresh_if_changed()
+        with self._lock:
+            entry = self._cache.get(name)
+            return entry[0] if entry else None
+
+    def degraded(self) -> dict[str, str]:
+        self._refresh_if_changed()
+        with self._lock:
+            return dict(self._errors)
+
+    def reload(self) -> None:
+        """Force a full re-scan, e.g. after a dashboard write."""
+        with self._lock:
+            self._cache.clear()
+            self._errors.clear()
+            self._dir_mtime = 0.0
+        self._refresh_if_changed()

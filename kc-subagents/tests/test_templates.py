@@ -1,7 +1,8 @@
+import threading, time
 from pathlib import Path
 import textwrap
 import pytest
-from kc_subagents.templates import SubagentTemplate, load_template_file, TemplateLoadError
+from kc_subagents.templates import SubagentTemplate, load_template_file, TemplateLoadError, SubagentIndex
 
 def write(tmp_path: Path, name: str, body: str) -> Path:
     p = tmp_path / f"{name}.yaml"
@@ -120,3 +121,49 @@ def test_memory_scope_escape_rejected(tmp_path):
     """)
     with pytest.raises(TemplateLoadError, match="memory.scope"):
         load_template_file(p)
+
+
+def test_index_lists_templates(tmp_path):
+    write(tmp_path, "web-researcher", "name: web-researcher\nmodel: m\nsystem_prompt: x")
+    write(tmp_path, "coder",          "name: coder\nmodel: m\nsystem_prompt: x")
+    idx = SubagentIndex(tmp_path)
+    assert sorted(idx.names()) == ["coder", "web-researcher"]
+    assert idx.get("coder").name == "coder"
+
+def test_index_unknown_returns_none(tmp_path):
+    idx = SubagentIndex(tmp_path)
+    assert idx.get("missing") is None
+
+def test_index_degraded_surfaces_error(tmp_path):
+    (tmp_path / "bad.yaml").write_text("name: bad\nmodel: m\nsystem_prompt: x\nunknown_key: 1")
+    idx = SubagentIndex(tmp_path)
+    degraded = idx.degraded()
+    assert "bad" in degraded
+    assert "unknown keys" in degraded["bad"]
+
+def test_index_reloads_on_mtime_change(tmp_path):
+    p = write(tmp_path, "x", "name: x\nmodel: m1\nsystem_prompt: a")
+    idx = SubagentIndex(tmp_path)
+    assert idx.get("x").model == "m1"
+    time.sleep(0.01)
+    p.write_text("name: x\nmodel: m2\nsystem_prompt: a")
+    # Bump mtime explicitly to defeat coarse-grained filesystem mtimes.
+    new_mtime = p.stat().st_mtime + 1
+    import os; os.utime(p, (new_mtime, new_mtime))
+    assert idx.get("x").model == "m2"
+
+def test_index_thread_safe(tmp_path):
+    write(tmp_path, "x", "name: x\nmodel: m\nsystem_prompt: a")
+    idx = SubagentIndex(tmp_path)
+    errors = []
+    def hammer():
+        for _ in range(100):
+            try:
+                idx.get("x")
+                idx.names()
+            except Exception as e:
+                errors.append(e)
+    ts = [threading.Thread(target=hammer) for _ in range(8)]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    assert not errors
