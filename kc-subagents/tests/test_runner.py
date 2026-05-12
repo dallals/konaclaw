@@ -152,3 +152,53 @@ async def test_runner_stop_yields_stopped_status():
     assert runner.stop(handle) is True
     result = await runner.await_one(handle, ceiling_seconds=5)
     assert result.status == "stopped"
+
+@pytest.mark.asyncio
+async def test_per_conversation_cap(monkeypatch):
+    t = SubagentTemplate(name="x", model="m", system_prompt="y",
+                         source_path=Path("/tmp/x.yaml"))
+
+    class HangAgent:
+        def __init__(self):
+            self.core_agent = MagicMock()
+            async def send(message):
+                await asyncio.sleep(60)
+            self.core_agent.send = send
+            self.core_agent.history = []
+
+    runner = SubagentRunner(
+        build_assembled=lambda cfg: HangAgent(),
+        audit_start=lambda **kw: None, audit_finish=lambda **kw: None,
+        on_frame=lambda f: None,
+    )
+    handles = []
+    for _ in range(runner.PER_CONV_CAP):
+        handles.append(runner.spawn(
+            template=t, task="x", context=None, label=None,
+            parent_conversation_id="conv_1", parent_agent="Kona-AI",
+            timeout_override=None,
+        ))
+    with pytest.raises(RuntimeError, match="too many in-flight"):
+        runner.spawn(
+            template=t, task="x", context=None, label=None,
+            parent_conversation_id="conv_1", parent_agent="Kona-AI",
+            timeout_override=None,
+        )
+    # Cleanup so test process exits cleanly.
+    for h in handles:
+        runner.stop(h)
+
+def test_timeout_override_too_large_rejected():
+    t = SubagentTemplate(name="x", model="m", system_prompt="y",
+                         timeout_seconds=120, source_path=Path("/tmp/x.yaml"))
+    runner = SubagentRunner(
+        build_assembled=lambda cfg: MagicMock(),
+        audit_start=lambda **kw: None, audit_finish=lambda **kw: None,
+        on_frame=lambda f: None,
+    )
+    with pytest.raises(RuntimeError, match="exceeds template max"):
+        runner.spawn(
+            template=t, task="x", context=None, label=None,
+            parent_conversation_id="conv_1", parent_agent="Kona-AI",
+            timeout_override=999,
+        )
