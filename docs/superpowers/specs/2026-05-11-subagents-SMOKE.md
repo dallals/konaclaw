@@ -39,7 +39,7 @@
 **Expected:**
 - Modal closes; new `gate1-test` card appears in the grid.
 - `~/KonaClaw/subagent-templates/gate1-test.yaml` exists on disk with the body you typed.
-- In a fresh chat conversation, ask Kona: "What subagent templates do you have?" — `gate1-test` is in the answer.
+- In a fresh chat conversation, ask Kona: "What subagent templates do you have?" — Kona calls `list_subagent_templates`; the response lists `gate1-test` alongside the four seed templates.
 
 **Actual:**
 

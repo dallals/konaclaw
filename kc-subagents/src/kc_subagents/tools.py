@@ -14,6 +14,27 @@ def build_subagent_tools(
     current_context: CurrentContext,
 ) -> list[Tool]:
 
+    async def list_impl() -> str:
+        rows = []
+        for name in index.names():
+            t = index.get(name)
+            if t is None:
+                continue
+            rows.append({
+                "name": t.name,
+                "description": t.description,
+                "model": t.model,
+            })
+        for bad_name, err in index.degraded().items():
+            rows.append({
+                "name": bad_name,
+                "description": "",
+                "model": "?",
+                "status": "degraded",
+                "last_error": err,
+            })
+        return json.dumps(rows)
+
     async def spawn_impl(
         template: str, task: str,
         context: dict | None = None,
@@ -105,4 +126,16 @@ def build_subagent_tools(
         },
         impl=await_impl,
     )
-    return [spawn_tool, await_tool]
+    list_tool = Tool(
+        name="list_subagent_templates",
+        description=(
+            "List the subagent templates currently registered with this supervisor. "
+            "Returns a JSON array of {name, description, model} rows you can pass "
+            "as the `template` argument to spawn_subagent. Call this first when the "
+            "user asks what subagents are available, or when you're unsure which "
+            "template fits a task."
+        ),
+        parameters={"type": "object", "properties": {}, "required": []},
+        impl=list_impl,
+    )
+    return [list_tool, spawn_tool, await_tool]
