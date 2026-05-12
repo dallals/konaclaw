@@ -1,9 +1,10 @@
 from __future__ import annotations
 import re
 import time
+import yaml as _yaml
 from dataclasses import asdict
 from typing import Literal, Optional
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -58,6 +59,10 @@ class _TodoPatch(BaseModel):
 class UpdateConversationRequest(BaseModel):
     pinned: Optional[bool] = None
     title: Optional[str] = None  # explicit "" clears the title
+
+
+class _SubagentTemplateBody(BaseModel):
+    yaml: str
 
 
 def _message_to_dict(m, usage: Optional[dict] = None) -> dict:
@@ -638,3 +643,114 @@ def register_http_routes(app: FastAPI) -> None:
         except ValueError as e:
             raise HTTPException(422, detail=str(e))
         return {"deleted_count": n}
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Subagents — templates CRUD + active runs + stop. Surfaced to dashboard tab 09.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _require_subagents_enabled() -> None:
+        deps = app.state.deps
+        if (
+            deps.subagent_index is None
+            or deps.subagent_templates_dir is None
+        ):
+            raise HTTPException(503, detail="subagents disabled (set KC_SUBAGENTS_ENABLED=true)")
+
+    @app.get("/subagent-templates")
+    def list_subagent_templates():
+        deps = app.state.deps
+        if deps.subagent_index is None:
+            return []
+        rows = []
+        degraded = deps.subagent_index.degraded()
+        for name in deps.subagent_index.names():
+            t = deps.subagent_index.get(name)
+            if t is None:
+                continue
+            rows.append({
+                "name": t.name,
+                "description": t.description,
+                "model": t.model,
+                "tool_count": len(t.tools),
+                "mcp_count": len(t.mcp_servers),
+                "status": "ok",
+                "last_error": None,
+            })
+        for bad_name, err in degraded.items():
+            rows.append({
+                "name": bad_name, "description": "", "model": "?",
+                "tool_count": 0, "mcp_count": 0,
+                "status": "degraded", "last_error": err,
+            })
+        return rows
+
+    @app.get("/subagent-templates/{name}")
+    def get_subagent_template(name: str):
+        _require_subagents_enabled()
+        deps = app.state.deps
+        p = deps.subagent_templates_dir / f"{name}.yaml"
+        if not p.exists():
+            raise HTTPException(404, detail=f"template {name!r} not found")
+        return {"name": name, "yaml": p.read_text()}
+
+    @app.post("/subagent-templates", status_code=201)
+    def create_subagent_template(req: _SubagentTemplateBody):
+        _require_subagents_enabled()
+        deps = app.state.deps
+        try:
+            parsed = _yaml.safe_load(req.yaml) or {}
+        except _yaml.YAMLError as e:
+            raise HTTPException(422, detail=f"bad yaml: {e}")
+        if not isinstance(parsed, dict):
+            raise HTTPException(422, detail="bad yaml: top-level must be a mapping")
+        name = parsed.get("name")
+        if not name or not isinstance(name, str):
+            raise HTTPException(422, detail="name required")
+        p = deps.subagent_templates_dir / f"{name}.yaml"
+        if p.exists():
+            raise HTTPException(409, detail=f"template {name!r} already exists")
+        p.write_text(req.yaml)
+        deps.subagent_index.reload()
+        return {"name": name}
+
+    @app.patch("/subagent-templates/{name}")
+    def update_subagent_template(name: str, req: _SubagentTemplateBody):
+        _require_subagents_enabled()
+        deps = app.state.deps
+        p = deps.subagent_templates_dir / f"{name}.yaml"
+        if not p.exists():
+            raise HTTPException(404, detail=f"template {name!r} not found")
+        # Validate parse before writing.
+        try:
+            _yaml.safe_load(req.yaml)
+        except _yaml.YAMLError as e:
+            raise HTTPException(422, detail=f"bad yaml: {e}")
+        p.write_text(req.yaml)
+        deps.subagent_index.reload()
+        return {"name": name}
+
+    @app.delete("/subagent-templates/{name}", status_code=204)
+    def delete_subagent_template(name: str):
+        _require_subagents_enabled()
+        deps = app.state.deps
+        p = deps.subagent_templates_dir / f"{name}.yaml"
+        if not p.exists():
+            raise HTTPException(404, detail=f"template {name!r} not found")
+        p.unlink()
+        deps.subagent_index.reload()
+        return Response(status_code=204)
+
+    @app.get("/subagents/active")
+    def active_subagents():
+        deps = app.state.deps
+        if deps.subagent_runner is None:
+            return []
+        return deps.subagent_runner.active()
+
+    @app.post("/subagents/{subagent_id}/stop")
+    def stop_subagent(subagent_id: str):
+        deps = app.state.deps
+        if deps.subagent_runner is None:
+            raise HTTPException(503, detail="subagents disabled")
+        ok = deps.subagent_runner.stop(subagent_id)
+        return {"stopped": bool(ok)}
