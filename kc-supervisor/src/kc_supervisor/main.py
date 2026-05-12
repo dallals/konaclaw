@@ -139,6 +139,108 @@ def main() -> None:
     except ImportError:
         pass
 
+    # Subagents — gated by KC_SUBAGENTS_ENABLED. Builds the templates index,
+    # trace buffer, and runner. The runner's build_assembled closure re-enters
+    # assemble_agent() for each spawn (without subagent_index/runner kwargs, so
+    # the ephemeral instance can't recursively spawn its own subagents; the
+    # is_ephemeral guard in assembly.py is the belt-and-suspenders backup).
+    subagent_index = None
+    subagent_trace_buffer = None
+    subagent_runner = None
+    subagent_templates_dir = None
+
+    if os.environ.get("KC_SUBAGENTS_ENABLED", "").lower() in ("1", "true", "yes"):
+        try:
+            from kc_subagents.templates import SubagentIndex
+            from kc_subagents.runner import SubagentRunner
+            from kc_subagents.trace import TraceBuffer
+            from kc_subagents.seeds.install import install_seeds_if_empty
+            from kc_core.config import AgentConfig
+
+            subagent_templates_dir = home / "subagent-templates"
+            install_seeds_if_empty(subagent_templates_dir)
+            subagent_index = SubagentIndex(subagent_templates_dir)
+            subagent_trace_buffer = TraceBuffer()
+
+            # build_assembled closure: re-enters assemble_agent() with the same
+            # singletons used for static agents. Does NOT pass subagent_index/runner
+            # so the ephemeral instance won't get spawn tools. The is_ephemeral
+            # detection in assembly.py is the redundant guard.
+            def _build_assembled_for_subagent(eph_cfg):
+                from kc_supervisor.assembly import assemble_agent
+
+                # Convert EphemeralAgentConfig (kc_subagents.runner) to AgentConfig
+                # (kc_core.config) that assemble_agent expects.
+                cfg = AgentConfig(
+                    name=eph_cfg.name,
+                    model=eph_cfg.model,
+                    system_prompt=eph_cfg.system_prompt,
+                )
+                # Permission overrides on the template are scoped to this instance
+                # only — convert string tier names ("MUTATING") to Tier enum values.
+                from kc_sandbox.permissions import Tier
+                perm_overrides = None
+                if eph_cfg.permission_overrides:
+                    perm_overrides = {}
+                    for tool_name, tier_name in eph_cfg.permission_overrides.items():
+                        try:
+                            perm_overrides[tool_name] = Tier[tier_name]
+                        except KeyError:
+                            pass  # unknown tier value — silently skip
+
+                return assemble_agent(
+                    cfg=cfg,
+                    shares=shares,
+                    audit_storage=storage,
+                    broker=broker,
+                    ollama_url=ollama_url,
+                    default_model=default_model,
+                    undo_db_path=home / "data" / "undo.db",
+                    permission_overrides=perm_overrides,
+                    mcp_manager=mcp_manager,
+                    mcp_install_store=mcp_install_store,
+                    memory_root=memory_root,
+                    gmail_service=gmail_service,
+                    gcal_service=gcal_service,
+                    news_client=news_client,
+                    ollama_api_key=ollama_api_key,
+                    skill_index=skill_index,
+                    web_config=web_config,
+                    # Intentionally NOT passing subagent_index / subagent_runner /
+                    # resolve_agent — ephemeral instances cannot delegate or spawn.
+                )
+
+            def _on_subagent_frame(frame: dict) -> None:
+                """Append every emitted frame to the trace buffer for WS reconnect
+                replay. Live WS broadcast to connected clients is intentionally not
+                wired here yet — a future task can add a SubagentBroadcaster
+                mirroring TodoBroadcaster."""
+                # TODO: wire live WS broadcast
+                cid = frame.get("parent_conversation_id")
+                if cid is not None and subagent_trace_buffer is not None:
+                    subagent_trace_buffer.append(str(cid), frame)
+
+            subagent_runner = SubagentRunner(
+                build_assembled=_build_assembled_for_subagent,
+                audit_start=storage.start_subagent_run,
+                audit_finish=storage.finish_subagent_run,
+                on_frame=_on_subagent_frame,
+            )
+
+            # Reap any rows left in 'running' from a prior interrupted process.
+            reaped = storage.reap_running_subagent_runs()
+            if reaped:
+                import logging
+                logging.getLogger(__name__).info(
+                    "Reaped %d in-flight subagent_runs row(s) on startup", reaped
+                )
+
+        except ImportError as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "KC_SUBAGENTS_ENABLED=true but kc-subagents not importable: %s", e
+            )
+
     # Google OAuth paths — read here so they reach Deps even when kc-connectors
     # isn't importable (the dashboard's Connect-with-Google flow only needs the
     # paths + google-auth-oauthlib, not kc_connectors).
@@ -305,6 +407,8 @@ def main() -> None:
         todo_storage=todo_storage,
         clarify_broker=clarify_broker,
         todo_broadcaster=todo_broadcaster,
+        subagent_index=subagent_index,
+        subagent_runner=subagent_runner,
     )
     registry.load_all()
 
@@ -327,6 +431,10 @@ def main() -> None:
         todo_storage=todo_storage,
         clarify_broker=clarify_broker,
         todo_broadcaster=todo_broadcaster,
+        subagent_index=subagent_index,
+        subagent_runner=subagent_runner,
+        subagent_trace_buffer=subagent_trace_buffer,
+        subagent_templates_dir=subagent_templates_dir,
     )
     # Always wire the registry to deps so ReminderRunner.fire() can call
     # connector_registry.get(channel) at fire time. The InboundRouter still

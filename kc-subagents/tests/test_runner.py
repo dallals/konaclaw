@@ -343,3 +343,46 @@ async def test_emit_tags_frames_with_parent_conversation_id():
     for frame in emitted:
         assert frame["parent_conversation_id"] == "conv_42"
         assert frame["subagent_id"] == "ep_z"
+
+
+@pytest.mark.asyncio
+async def test_wrap_tools_with_counter_handles_registry_shape():
+    """When the assembled agent's tools live in a kc_core ToolRegistry
+    (real AssembledAgent shape), the counter wrap must mutate the registered
+    tools in-place rather than replacing assembled.tools (which doesn't exist)."""
+    from kc_core.tools import Tool, ToolRegistry
+    from kc_subagents.runner import _wrap_tools_with_counter, EphemeralInstance
+
+    calls = []
+    async def real_impl(**kw): calls.append(kw); return "ok"
+    t = Tool(name="fake_tool", description="", parameters={"type": "object"}, impl=real_impl)
+    registry = ToolRegistry()
+    registry.register(t)
+
+    class FakeAssembled:
+        def __init__(self, reg):
+            self.core_agent = type("FakeCore", (), {"tools": reg})()
+
+    assembled = FakeAssembled(registry)
+
+    template = SubagentTemplate(name="x", model="m", system_prompt="y",
+                                max_tool_calls=2, source_path=Path("/tmp/x.yaml"))
+    instance = EphemeralInstance(
+        instance_id="ep_r", template=template, parent_agent="Kona-AI",
+        parent_conversation_id="conv_1", task="t", context=None, label=None,
+        effective_timeout=10, assembled=assembled,
+        on_frame=lambda f: None,
+        audit_start=lambda **kw: None, audit_finish=lambda **kw: None,
+    )
+
+    _wrap_tools_with_counter(assembled, instance)
+
+    # First two calls succeed and bump counter; third returns cap error.
+    r1 = await registry.get("fake_tool").impl()
+    r2 = await registry.get("fake_tool").impl()
+    r3 = await registry.get("fake_tool").impl()
+    assert r1 == "ok"
+    assert r2 == "ok"
+    assert "max_tool_calls cap reached" in r3
+    assert instance.tool_calls_used == 2
+    assert len(calls) == 2

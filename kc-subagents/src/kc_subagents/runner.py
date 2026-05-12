@@ -47,39 +47,61 @@ import asyncio, secrets, time
 from typing import Callable, Optional
 
 
-def _wrap_tools_with_counter(tools: list, instance: "EphemeralInstance") -> list:
-    """Return a NEW list of Tool objects whose impls bump instance.tool_calls_used
-    and short-circuit once the template's max_tool_calls cap is reached.
+def _make_counted_impl(original_impl, instance: "EphemeralInstance", tool_name: str):
+    """Return an async impl that wraps the original with counter + cap check."""
+    async def _counted_impl(**kwargs):
+        if instance.tool_calls_used >= instance.template.max_tool_calls:
+            return (
+                f"error: max_tool_calls cap reached "
+                f"({instance.template.max_tool_calls})"
+            )
+        instance.tool_calls_used += 1
+        result = original_impl(**kwargs)
+        if hasattr(result, "__await__"):
+            result = await result
+        return result
+    return _counted_impl
 
-    The synthetic 'cap reached' error string is returned as the tool result so
-    the parent agent's loop stays alive and produces a final assistant turn.
 
-    NOTE: This wiring satisfies the test's fake-agent shape (assembled.tools as a
-    plain list). Real AssembledAgent uses core_agent.tools (a ToolRegistry); Task 17
-    will adapt this for that shape when wiring assemble_agent() in main.py.
+def _wrap_tools_with_counter(assembled, instance: "EphemeralInstance") -> None:
+    """Mutate the assembled agent's tools so each call bumps instance.tool_calls_used
+    and short-circuits with an error string after max_tool_calls.
+
+    Handles two shapes:
+      - Fake agents (used in tests): a plain list at `assembled.tools`.
+        Replaces that list with a list of new Tool objects wrapping the impls.
+      - Real AssembledAgent: tools live in `assembled.core_agent.tools` as a
+        ToolRegistry. Mutates each registered Tool's `.impl` in place (Tool is
+        a mutable dataclass).
     """
     from kc_core.tools import Tool
 
-    wrapped: list = []
-    for t in tools:
-        original_impl = t.impl
-        async def _counted_impl(_orig=original_impl, _inst=instance, _tname=t.name, **kwargs):
-            if _inst.tool_calls_used >= _inst.template.max_tool_calls:
-                return (
-                    f"error: max_tool_calls cap reached "
-                    f"({_inst.template.max_tool_calls})"
-                )
-            _inst.tool_calls_used += 1
-            result = _orig(**kwargs)
-            # Some impls are async, some sync — await if needed.
-            if hasattr(result, "__await__"):
-                result = await result
-            return result
-        wrapped.append(Tool(
-            name=t.name, description=t.description,
-            parameters=t.parameters, impl=_counted_impl,
-        ))
-    return wrapped
+    # Shape detection
+    has_list = hasattr(assembled, "tools") and isinstance(getattr(assembled, "tools", None), list)
+    has_registry = (
+        hasattr(assembled, "core_agent")
+        and hasattr(assembled.core_agent, "tools")
+        and hasattr(assembled.core_agent.tools, "names")   # ToolRegistry shape
+    )
+
+    if has_list:
+        wrapped: list = []
+        for t in assembled.tools:
+            wrapped.append(Tool(
+                name=t.name, description=t.description, parameters=t.parameters,
+                impl=_make_counted_impl(t.impl, instance, t.name),
+            ))
+        assembled.tools = wrapped
+        return
+
+    if has_registry:
+        registry = assembled.core_agent.tools
+        for name in list(registry.names()):
+            tool = registry.get(name)
+            tool.impl = _make_counted_impl(tool.impl, instance, name)
+        return
+
+    # Unknown shape — silently skip; tool count stays 0 but instance still runs.
 
 
 @dataclass
@@ -307,11 +329,10 @@ class SubagentRunner:
         )
 
         # Wrap the tools so they bump inst.tool_calls_used and short-circuit at cap.
-        # NOTE: This covers fake-agent shape (assembled.tools as a list). Real
-        # AssembledAgent uses core_agent.tools (a ToolRegistry); Task 17 will adapt
-        # this for that shape when wiring assemble_agent() in main.py.
-        if hasattr(assembled, "tools") and assembled.tools:
-            assembled.tools = _wrap_tools_with_counter(assembled.tools, inst)
+        # Handles both list shape (fake agents in tests) and ToolRegistry shape
+        # (real AssembledAgent with core_agent.tools). Shape detection is inside
+        # _wrap_tools_with_counter; unknown shapes are silently skipped.
+        _wrap_tools_with_counter(assembled, inst)
 
         self._instances[instance_id] = inst
 
