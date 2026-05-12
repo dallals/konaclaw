@@ -386,3 +386,88 @@ async def test_wrap_tools_with_counter_handles_registry_shape():
     assert "max_tool_calls cap reached" in r3
     assert instance.tool_calls_used == 2
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_counter_wrap_emits_subagent_tool_frame_per_call():
+    """Every call through the wrapped impl must emit one subagent_tool frame.
+    The dashboard's SubagentTraceBlock groups these by subagent_id and renders
+    a row per frame inside the trace card."""
+    from kc_core.tools import Tool, ToolRegistry
+    from kc_subagents.runner import _wrap_tools_with_counter, EphemeralInstance
+
+    async def impl(**kw): return {"ok": True, "echo": kw}
+    t = Tool(name="echo_tool", description="", parameters={"type": "object"}, impl=impl)
+    registry = ToolRegistry()
+    registry.register(t)
+
+    class FakeAssembled:
+        def __init__(self, reg):
+            self.core_agent = type("FakeCore", (), {"tools": reg})()
+
+    assembled = FakeAssembled(registry)
+
+    template = SubagentTemplate(name="x", model="m", system_prompt="y",
+                                max_tool_calls=5, source_path=Path("/tmp/x.yaml"))
+    emitted: list[dict] = []
+    instance = EphemeralInstance(
+        instance_id="ep_emit", template=template, parent_agent="Kona-AI",
+        parent_conversation_id="conv_1", task="t", context=None, label=None,
+        effective_timeout=10, assembled=assembled,
+        on_frame=emitted.append,
+        audit_start=lambda **kw: None, audit_finish=lambda **kw: None,
+    )
+    _wrap_tools_with_counter(assembled, instance)
+
+    await registry.get("echo_tool").impl(q="berlin")
+    await registry.get("echo_tool").impl(q="tokyo")
+    await registry.get("echo_tool").impl(q="nyc")
+
+    tool_frames = [f for f in emitted if f.get("type") == "subagent_tool"]
+    assert len(tool_frames) == 3
+    assert all(f["tool"] == "echo_tool" for f in tool_frames)
+    assert all(f["subagent_id"] == "ep_emit" for f in tool_frames)
+    # The args_preview must contain something distinguishing each call.
+    assert "berlin" in tool_frames[0]["args_preview"]
+    assert "tokyo"  in tool_frames[1]["args_preview"]
+    assert "nyc"    in tool_frames[2]["args_preview"]
+    # The result_preview includes the return value.
+    assert "ok" in tool_frames[0]["result_preview"]
+
+
+@pytest.mark.asyncio
+async def test_counter_wrap_emits_cap_error_frame_when_short_circuiting():
+    """When the cap fires, the subagent_tool frame should still emit with the
+    synthetic cap-error string as result_preview, so the dashboard can show
+    why no more tools ran."""
+    from kc_core.tools import Tool, ToolRegistry
+    from kc_subagents.runner import _wrap_tools_with_counter, EphemeralInstance
+
+    async def impl(**kw): return "ok"
+    t = Tool(name="t", description="", parameters={"type": "object"}, impl=impl)
+    registry = ToolRegistry()
+    registry.register(t)
+
+    class FakeAssembled:
+        def __init__(self, reg):
+            self.core_agent = type("FakeCore", (), {"tools": reg})()
+    assembled = FakeAssembled(registry)
+
+    template = SubagentTemplate(name="x", model="m", system_prompt="y",
+                                max_tool_calls=1, source_path=Path("/tmp/x.yaml"))
+    emitted: list[dict] = []
+    instance = EphemeralInstance(
+        instance_id="ep_cap", template=template, parent_agent="Kona-AI",
+        parent_conversation_id="conv_1", task="t", context=None, label=None,
+        effective_timeout=10, assembled=assembled,
+        on_frame=emitted.append,
+        audit_start=lambda **kw: None, audit_finish=lambda **kw: None,
+    )
+    _wrap_tools_with_counter(assembled, instance)
+
+    await registry.get("t").impl()  # call 1 — passes
+    await registry.get("t").impl()  # call 2 — cap
+
+    tool_frames = [f for f in emitted if f.get("type") == "subagent_tool"]
+    assert len(tool_frames) == 2
+    assert "cap reached" in tool_frames[1]["result_preview"]

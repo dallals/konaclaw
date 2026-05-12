@@ -48,17 +48,45 @@ from typing import Callable, Optional
 
 
 def _make_counted_impl(original_impl, instance: "EphemeralInstance", tool_name: str):
-    """Return an async impl that wraps the original with counter + cap check."""
+    """Return an async impl that wraps the original with counter + cap check
+    + subagent_tool frame emission.
+
+    The frame is emitted AFTER the call returns so we can include both the
+    args preview and a short result preview. The dashboard's SubagentTraceBlock
+    groups these by subagent_id and renders them as tool rows inside the trace.
+    """
+    import json as _json
+
+    def _preview(value, cap: int = 200) -> str:
+        try:
+            s = _json.dumps(value, default=str)
+        except Exception:
+            s = str(value)
+        return s if len(s) <= cap else s[: cap - 1] + "…"
+
     async def _counted_impl(**kwargs):
         if instance.tool_calls_used >= instance.template.max_tool_calls:
-            return (
+            cap_msg = (
                 f"error: max_tool_calls cap reached "
                 f"({instance.template.max_tool_calls})"
             )
+            instance._emit({
+                "type": "subagent_tool",
+                "tool": tool_name,
+                "args_preview": _preview(kwargs),
+                "result_preview": cap_msg,
+            })
+            return cap_msg
         instance.tool_calls_used += 1
         result = original_impl(**kwargs)
         if hasattr(result, "__await__"):
             result = await result
+        instance._emit({
+            "type": "subagent_tool",
+            "tool": tool_name,
+            "args_preview": _preview(kwargs),
+            "result_preview": _preview(result),
+        })
         return result
     return _counted_impl
 
