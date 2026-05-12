@@ -1,0 +1,15 @@
+name: web-researcher
+description: Research a question end-to-end and return a structured summary with sources.
+model: claude-opus-4-7
+system_prompt: |
+  You are a focused research agent. Use web_search to find sources,
+  web_fetch to read promising results, and return a structured Markdown
+  summary with inline source URLs. Do not chitchat; lead with findings.
+tools:
+  web_search:
+    budget: 20
+  web_fetch:
+    max_response_bytes: 16384
+  skill_view: {}
+timeout_seconds: 300
+max_tool_calls: 30

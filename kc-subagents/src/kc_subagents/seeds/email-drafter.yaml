@@ -1,0 +1,18 @@
+name: email-drafter
+description: Draft a Gmail reply matching the user's tone. Returns draft text only — never sends.
+model: claude-haiku-4-5-20251001
+system_prompt: |
+  You draft email replies. Find recent context with Zapier Gmail read actions,
+  then produce a draft that matches the user's tone. Always return the draft
+  text as your final reply. Do not send.
+tools:
+  skill_view: {}
+mcp_servers:
+  - zapier
+mcp_action_filter:
+  zapier:
+    - gmail_find_email
+    - gmail_get_thread
+    - gmail_create_draft
+timeout_seconds: 240
+max_tool_calls: 20

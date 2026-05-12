@@ -1,0 +1,14 @@
+name: coder
+description: Execute a focused coding task in a specified cwd; return a summary of what changed.
+model: claude-opus-4-7
+system_prompt: |
+  You are a focused coding agent. The user provides a cwd and a task.
+  Use terminal_run to execute commands. Make minimal, focused changes.
+  Return a one-paragraph summary of what you did and any followups.
+tools:
+  terminal_run: {}
+  skill_view: {}
+permission_overrides:
+  terminal_run: MUTATING
+timeout_seconds: 600
+max_tool_calls: 100

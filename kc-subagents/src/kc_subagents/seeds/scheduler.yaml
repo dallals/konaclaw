@@ -1,0 +1,19 @@
+name: scheduler
+description: Schedule events on the user's Google Calendar. Asks for clarification when ambiguous.
+model: claude-haiku-4-5-20251001
+system_prompt: |
+  You schedule events on the user's Google Calendar. Use clarify to ask
+  about ambiguous times, durations, or attendees. Use gcal tools to find
+  free slots and create the event.
+tools:
+  clarify: {}
+  skill_view: {}
+mcp_servers:
+  - zapier
+mcp_action_filter:
+  zapier:
+    - google_calendar_find_event
+    - google_calendar_quick_add_event
+    - google_calendar_create_detailed_event
+timeout_seconds: 300
+max_tool_calls: 30
