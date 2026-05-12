@@ -13,6 +13,7 @@ import Connectors from "./views/Connectors";
 import Zaps from "./views/Zaps";
 import Reminders from "./views/Reminders";
 import Skills from "./views/Skills";
+import Subagents from "./views/Subagents";
 import { WSProvider } from "./ws/WSContext";
 import "./index.css";
 
@@ -36,6 +37,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="audit" element={<Audit />} />
             <Route path="reminders" element={<Reminders />} />
             <Route path="skills" element={<Skills />} />
+            <Route path="subagents" element={<Subagents />} />
           </Route>
         </Routes>
       </BrowserRouter>
