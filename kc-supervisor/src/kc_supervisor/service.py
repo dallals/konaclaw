@@ -44,6 +44,37 @@ class TodoBroadcaster:
                 pass
 
 
+class SubagentBroadcaster:
+    """Pub-sub for subagent_* frames. Built once in main.py; subscribed to
+    by each WS chat connection. EphemeralInstance's on_frame callback fans
+    out via .publish() so live frame streaming reaches connected dashboards
+    in addition to the per-conversation TraceBuffer used for reconnect replay.
+
+    Same shape as TodoBroadcaster — kept separate so subagents don't have
+    to import the todos module. Subscribers must filter by
+    frame['parent_conversation_id'] themselves; the broadcaster does no
+    routing."""
+
+    def __init__(self) -> None:
+        self._subscribers: list = []
+
+    def subscribe(self, fn):
+        self._subscribers.append(fn)
+        def unsubscribe():
+            try:
+                self._subscribers.remove(fn)
+            except ValueError:
+                pass
+        return unsubscribe
+
+    def publish(self, frame: dict) -> None:
+        for sub in list(self._subscribers):
+            try:
+                sub(frame)
+            except Exception:
+                pass
+
+
 @dataclass
 class GoogleOAuthState:
     """Tracks the in-process state of a Google OAuth installed-app flow.
@@ -118,6 +149,7 @@ class Deps:
     subagent_runner:       Optional[Any] = None
     subagent_trace_buffer: Optional[Any] = None
     subagent_templates_dir: Optional[Path] = None
+    subagent_broadcaster:  Optional[Any] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:

@@ -148,6 +148,7 @@ def main() -> None:
     subagent_trace_buffer = None
     subagent_runner = None
     subagent_templates_dir = None
+    subagent_broadcaster = None
 
     if os.environ.get("KC_SUBAGENTS_ENABLED", "").lower() in ("1", "true", "yes"):
         try:
@@ -156,11 +157,13 @@ def main() -> None:
             from kc_subagents.trace import TraceBuffer
             from kc_subagents.seeds.install import install_seeds_if_empty
             from kc_core.config import AgentConfig
+            from kc_supervisor.service import SubagentBroadcaster
 
             subagent_templates_dir = home / "subagent-templates"
             install_seeds_if_empty(subagent_templates_dir)
             subagent_index = SubagentIndex(subagent_templates_dir)
             subagent_trace_buffer = TraceBuffer()
+            subagent_broadcaster = SubagentBroadcaster()
 
             # build_assembled closure: re-enters assemble_agent() with the same
             # singletons used for static agents. Does NOT pass subagent_index/runner
@@ -211,14 +214,20 @@ def main() -> None:
                 )
 
             def _on_subagent_frame(frame: dict) -> None:
-                """Append every emitted frame to the trace buffer for WS reconnect
-                replay. Live WS broadcast to connected clients is intentionally not
-                wired here yet — a future task can add a SubagentBroadcaster
-                mirroring TodoBroadcaster."""
-                # TODO: wire live WS broadcast
+                """Fan out an emitted subagent frame to two destinations:
+
+                  1. TraceBuffer — keyed by parent_conversation_id; used for WS
+                     reconnect replay so a client that disconnects mid-spawn
+                     catches up on resume.
+                  2. SubagentBroadcaster — pub-sub for live WS streaming; each
+                     connected ws_chat handler subscribes and filters by its
+                     own conversation_id.
+                """
                 cid = frame.get("parent_conversation_id")
                 if cid is not None and subagent_trace_buffer is not None:
                     subagent_trace_buffer.append(str(cid), frame)
+                if subagent_broadcaster is not None:
+                    subagent_broadcaster.publish(frame)
 
             subagent_runner = SubagentRunner(
                 build_assembled=_build_assembled_for_subagent,
@@ -435,6 +444,7 @@ def main() -> None:
         subagent_runner=subagent_runner,
         subagent_trace_buffer=subagent_trace_buffer,
         subagent_templates_dir=subagent_templates_dir,
+        subagent_broadcaster=subagent_broadcaster,
     )
     # Always wire the registry to deps so ReminderRunner.fire() can call
     # connector_registry.get(channel) at fire time. The InboundRouter still

@@ -85,6 +85,22 @@ def register_ws_routes(app: FastAPI) -> None:
                     pass
             todo_unsubscribe = todo_broadcaster.subscribe(_forward_todo)
 
+        # Subagents: subscribe to subagent_* frames for this conversation. The
+        # broadcaster fans out every emitted frame; we filter by
+        # parent_conversation_id (stringified to match what the runner emits).
+        subagent_broadcaster = app.state.deps.subagent_broadcaster
+        subagent_unsubscribe = None
+        if subagent_broadcaster is not None:
+            cid_str = str(conversation_id)
+            def _forward_subagent(frame: dict) -> None:
+                if frame.get("parent_conversation_id") != cid_str:
+                    return
+                try:
+                    asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
+                except Exception:
+                    pass
+            subagent_unsubscribe = subagent_broadcaster.subscribe(_forward_subagent)
+
         # Phase C: subscribe to clarify_request frames for this conversation.
         clarify_broker = deps.clarify_broker
         clarify_unsubscribe = None
@@ -305,6 +321,8 @@ def register_ws_routes(app: FastAPI) -> None:
                 todo_unsubscribe()
             if clarify_unsubscribe is not None:
                 clarify_unsubscribe()
+            if subagent_unsubscribe is not None:
+                subagent_unsubscribe()
 
     @app.websocket("/ws/approvals")
     async def ws_approvals(ws: WebSocket):
