@@ -1,11 +1,17 @@
 from __future__ import annotations
 import asyncio
+import contextvars
 import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+subagent_attribution_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "kc_supervisor_subagent_attribution",
+    default=None,
+)
 
 
 @dataclass
@@ -14,6 +20,8 @@ class ApprovalRequest:
     agent: str
     tool: str
     arguments: dict[str, Any]
+    parent_agent: Optional[str] = None
+    subagent_id: Optional[str] = None
 
 
 class _Subscription:
@@ -65,8 +73,12 @@ class ApprovalBroker:
         self, agent: str, tool: str, arguments: dict[str, Any],
     ) -> tuple[bool, Optional[str]]:
         request_id = uuid.uuid4().hex
+        attrib = subagent_attribution_var.get()
+        parent_agent = attrib.get("parent_agent") if attrib else None
+        subagent_id  = attrib.get("subagent_id")  if attrib else None
         req = ApprovalRequest(
-            request_id=request_id, agent=agent, tool=tool, arguments=arguments
+            request_id=request_id, agent=agent, tool=tool, arguments=arguments,
+            parent_agent=parent_agent, subagent_id=subagent_id,
         )
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
