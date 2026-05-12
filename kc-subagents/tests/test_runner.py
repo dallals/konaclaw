@@ -76,3 +76,79 @@ async def test_runner_spawn_and_get_future():
     result = await runner.await_one(handle, ceiling_seconds=5)
     assert result.status == "ok"
     assert result.reply == "done"
+
+@pytest.mark.asyncio
+async def test_instance_run_error_path():
+    t = SubagentTemplate(name="x", model="m", system_prompt="y",
+                         source_path=Path("/tmp/x.yaml"))
+
+    class BadAgent:
+        def __init__(self):
+            self.core_agent = MagicMock()
+            async def send(message):
+                raise RuntimeError("boom")
+            self.core_agent.send = send
+            self.core_agent.history = []
+
+    inst = EphemeralInstance(
+        instance_id="ep_e", template=t, parent_agent="Kona-AI",
+        parent_conversation_id="conv_1", task="x", context=None, label=None,
+        effective_timeout=5, assembled=BadAgent(),
+        on_frame=lambda f: None,
+        audit_start=lambda **kw: None, audit_finish=lambda **kw: None,
+    )
+    result = await inst.run()
+    assert result.status == "error"
+    assert "boom" in (result.error or "")
+
+@pytest.mark.asyncio
+async def test_instance_run_timeout_path():
+    t = SubagentTemplate(name="x", model="m", system_prompt="y",
+                         source_path=Path("/tmp/x.yaml"))
+
+    class SlowAgent:
+        def __init__(self):
+            self.core_agent = MagicMock()
+            async def send(message):
+                await asyncio.sleep(10)
+            self.core_agent.send = send
+            self.core_agent.history = []
+
+    inst = EphemeralInstance(
+        instance_id="ep_t", template=t, parent_agent="Kona-AI",
+        parent_conversation_id="conv_1", task="x", context=None, label=None,
+        effective_timeout=1, assembled=SlowAgent(),
+        on_frame=lambda f: None,
+        audit_start=lambda **kw: None, audit_finish=lambda **kw: None,
+    )
+    result = await inst.run()
+    assert result.status == "timeout"
+    assert "1s" in (result.error or "")
+
+@pytest.mark.asyncio
+async def test_runner_stop_yields_stopped_status():
+    t = SubagentTemplate(name="x", model="m", system_prompt="y",
+                         source_path=Path("/tmp/x.yaml"))
+
+    class HangAgent:
+        def __init__(self):
+            self.core_agent = MagicMock()
+            async def send(message):
+                await asyncio.sleep(60)
+            self.core_agent.send = send
+            self.core_agent.history = []
+
+    runner = SubagentRunner(
+        build_assembled=lambda cfg: HangAgent(),
+        audit_start=lambda **kw: None, audit_finish=lambda **kw: None,
+        on_frame=lambda f: None,
+    )
+    handle = runner.spawn(
+        template=t, task="x", context=None, label=None,
+        parent_conversation_id="conv_1", parent_agent="Kona-AI",
+        timeout_override=None,
+    )
+    await asyncio.sleep(0.05)
+    assert runner.stop(handle) is True
+    result = await runner.await_one(handle, ceiling_seconds=5)
+    assert result.status == "stopped"
