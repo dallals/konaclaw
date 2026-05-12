@@ -193,6 +193,7 @@ class SubagentRunner:
         self._audit_finish = audit_finish
         self._on_frame = on_frame
         self._instances: dict[str, EphemeralInstance] = {}
+        self._completed: dict[str, InstanceResult] = {}  # result cache for already-finished instances
 
     def _count_in_flight(self, parent_conversation_id: str | None = None) -> int:
         if parent_conversation_id is None:
@@ -247,7 +248,8 @@ class SubagentRunner:
 
         async def _run_and_clean():
             try:
-                await inst.run()
+                result = await inst.run()
+                self._completed[instance_id] = result
             finally:
                 self._instances.pop(instance_id, None)
 
@@ -255,6 +257,10 @@ class SubagentRunner:
         return instance_id
 
     async def await_one(self, instance_id: str, *, ceiling_seconds: int | None) -> InstanceResult:
+        # Fast path: already completed.
+        cached = self._completed.get(instance_id)
+        if cached is not None:
+            return cached
         inst = self._instances.get(instance_id)
         if inst is None:
             return InstanceResult(
