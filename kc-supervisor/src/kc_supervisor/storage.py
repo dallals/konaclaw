@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS subagent_runs (
   duration_ms            INTEGER,
   tool_calls_used        INTEGER NOT NULL DEFAULT 0,
   reply_chars            INTEGER,
+  reply_text             TEXT,
   error_message          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent
@@ -184,6 +185,9 @@ class Storage:
             for new_col in ("parent_agent", "subagent_id", "subagent_template"):
                 if new_col not in audit_cols:
                     c.execute(f"ALTER TABLE audit ADD COLUMN {new_col} TEXT")
+            sr_cols = {r["name"] for r in c.execute("PRAGMA table_info(subagent_runs)").fetchall()}
+            if "reply_text" not in sr_cols:
+                c.execute("ALTER TABLE subagent_runs ADD COLUMN reply_text TEXT")
 
     @contextmanager
     def connect(self):
@@ -584,6 +588,8 @@ class Storage:
                 ),
             )
 
+    _REPLY_TEXT_CAP = 32000
+
     def finish_subagent_run(
         self,
         *,
@@ -593,15 +599,25 @@ class Storage:
         tool_calls_used: int,
         reply_chars: Optional[int],
         error_message: Optional[str],
+        reply_text: Optional[str] = None,
     ) -> None:
         now = time.time()
+        stored_reply: Optional[str] = None
+        if reply_text:
+            if len(reply_text) > self._REPLY_TEXT_CAP:
+                stored_reply = (
+                    reply_text[: self._REPLY_TEXT_CAP]
+                    + f"... [TRUNCATED {len(reply_text) - self._REPLY_TEXT_CAP} bytes]"
+                )
+            else:
+                stored_reply = reply_text
         with self.connect() as c:
             c.execute(
                 """UPDATE subagent_runs
                    SET ended_ts=?, status=?, duration_ms=?, tool_calls_used=?,
-                       reply_chars=?, error_message=?
+                       reply_chars=?, reply_text=?, error_message=?
                    WHERE id=?""",
-                (now, status, duration_ms, tool_calls_used, reply_chars, error_message, id),
+                (now, status, duration_ms, tool_calls_used, reply_chars, stored_reply, error_message, id),
             )
 
     def reap_running_subagent_runs(self) -> int:

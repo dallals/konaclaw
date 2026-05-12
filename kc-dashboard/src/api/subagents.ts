@@ -10,6 +10,29 @@ export type TemplateRow = {
   last_error: string | null;
 };
 
+export type SubagentRunRow = {
+  id: string;
+  parent_agent: string;
+  template: string;
+  label: string | null;
+  task_preview: string | null;
+  context_keys: string | null;   // JSON-string array
+  started_ts: number;             // REAL epoch
+  ended_ts: number | null;
+  status: "running" | "ok" | "error" | "timeout" | "stopped" | "interrupted";
+  duration_ms: number | null;
+  tool_calls_used: number;
+  reply_text: string | null;
+  error_message: string | null;
+  tools: Array<{
+    ts: number;
+    tool: string;
+    args_json: string;
+    decision: string;
+    result: string | null;
+  }>;
+};
+
 export type TemplateDetail = {
   name: string;
   yaml: string;
@@ -45,3 +68,6 @@ export const listActiveSubagents = () =>
 
 export const stopSubagent = (subagent_id: string) =>
   apiPost<{ stopped: boolean }>(`/subagents/${encodeURIComponent(subagent_id)}/stop`, {});
+
+export const listConversationSubagentRuns = (cid: number) =>
+  apiGet<{ runs: SubagentRunRow[] }>(`/conversations/${cid}/subagent-runs`);

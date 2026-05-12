@@ -7,6 +7,7 @@ import {
   deleteSubagentTemplate,
   listActiveSubagents,
   stopSubagent,
+  listConversationSubagentRuns,
 } from "./subagents";
 
 describe("subagents api", () => {
@@ -100,5 +101,34 @@ describe("subagents api", () => {
     expect(call[0]).toContain("/subagents/abc-123/stop");
     expect((call[1] as RequestInit).method).toBe("POST");
     expect(result).toEqual({ stopped: true });
+  });
+
+  it("listConversationSubagentRuns calls GET /conversations/{cid}/subagent-runs", async () => {
+    const runs = [
+      {
+        id: "ep_aabbcc",
+        parent_agent: "Kona-AI",
+        template: "web-researcher",
+        label: "test run",
+        task_preview: "do something",
+        context_keys: '["key1"]',
+        started_ts: 1700000000.0,
+        ended_ts: 1700000001.2,
+        status: "ok",
+        duration_ms: 1200,
+        tool_calls_used: 2,
+        reply_text: "The answer is 42.",
+        error_message: null,
+        tools: [
+          { ts: 1700000000.5, tool: "web_fetch", args_json: '{"url":"http://example.com"}', decision: "tier", result: "<html>" },
+        ],
+      },
+    ];
+    const fetchMock = vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ runs }), { status: 200 }) as Response,
+    );
+    const result = await listConversationSubagentRuns(40);
+    expect(fetchMock.mock.calls[0][0]).toContain("/conversations/40/subagent-runs");
+    expect(result).toEqual({ runs });
   });
 });

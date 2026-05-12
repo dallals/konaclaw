@@ -20,6 +20,7 @@ import { NewsWidget } from "../components/NewsWidget";
 import { TodoWidget } from "../components/TodoWidget";
 import { ClarifyCard } from "../components/ClarifyCard";
 import { SubagentTraceBlock } from "../components/SubagentTraceBlock";
+import { listConversationSubagentRuns, type SubagentRunRow } from "../api/subagents";
 import { formatTokensPerSecond, formatTokenCount, formatTtfb } from "../lib/formatUsage";
 
 type SubagentStartedEvent = Extract<ChatEvent, { type: "subagent_started" }>;
@@ -60,6 +61,11 @@ export default function Chat() {
     queryFn: () => listMessages(activeConv!),
     enabled: activeConv != null,
     refetchInterval: awaitingReply ? 1500 : false,
+  });
+  const runsQ = useQuery({
+    queryKey: ["conv-subagent-runs", activeConv],
+    queryFn: () => listConversationSubagentRuns(activeConv!),
+    enabled: activeConv != null,
   });
 
   const newConv = useMutation({
@@ -276,6 +282,126 @@ export default function Chat() {
     return buf;
   }, [events]);
 
+  // Build an ordered list interleaving messages and trace blocks by timestamp.
+  // Three sources:
+  //   1. persisted messages (with ts from API)
+  //   2. `runsQ` (persisted subagent runs with started_ts)
+  //   3. `traceGroups` (live WS runs — placed after persisted items since no ts)
+  // Dedupe rule: live run (traceGroups) wins over persisted run with same id.
+  type MessageItem = {
+    role: "user" | "assistant";
+    content: string;
+    usage?: BubbleUsage;
+    scheduled_job_id?: number | null;
+  };
+  type TraceShape = {
+    started: { subagent_id: string; template: string; label?: string | null; task_preview: string };
+    tools: Array<{ tool: string; args_preview?: string; result_preview?: string; tier?: string }>;
+    finished: {
+      status: "ok" | "error" | "timeout" | "stopped" | "interrupted";
+      reply_preview: string;
+      duration_ms: number;
+      tool_calls_used: number;
+      error_message?: string | null;
+    } | null;
+  };
+  type TranscriptItem =
+    | { kind: "message"; data: MessageItem }
+    | { kind: "trace"; subagentId: string; trace: TraceShape; onStop?: () => void };
+
+  const orderedTranscript = useMemo((): TranscriptItem[] => {
+    const msgs = msgsQ.data?.messages ?? [];
+    const persistedRuns = runsQ.data?.runs ?? [];
+    // Set of live subagent ids (from WS events).
+    const liveIds = new Set(traceGroups.keys());
+
+    // Build message sortable items with ts for ordering.
+    type Sortable = { _ts: number; item: TranscriptItem };
+    const sortable: Sortable[] = [];
+    let assistantIdx = 0;
+    let tsFallback = 0;
+    for (const m of msgs) {
+      const ts: number = (m as { ts?: number }).ts ?? (tsFallback += 0.0001);
+      if (m.type === "UserMessage") {
+        sortable.push({
+          _ts: ts,
+          item: { kind: "message", data: { role: "user", content: m.content ?? "" } },
+        });
+      } else if (m.type === "AssistantMessage") {
+        const content = m.content ?? "";
+        if (!content.trim()) { assistantIdx++; continue; }
+        sortable.push({
+          _ts: ts,
+          item: {
+            kind: "message",
+            data: {
+              role: "assistant",
+              content,
+              usage: bubbleUsageByIdx.get(assistantIdx),
+              scheduled_job_id: (m as { scheduled_job_id?: number | null }).scheduled_job_id ?? null,
+            },
+          },
+        });
+        assistantIdx++;
+      }
+    }
+
+    // Add persisted trace items, skip those that have a live counterpart.
+    for (const row of persistedRuns) {
+      if (liveIds.has(row.id)) continue;
+      sortable.push({
+        _ts: row.started_ts,
+        item: {
+          kind: "trace",
+          subagentId: row.id,
+          trace: {
+            started: {
+              subagent_id: row.id,
+              template: row.template,
+              label: row.label,
+              task_preview: row.task_preview ?? "",
+            },
+            tools: row.tools.map((t) => ({
+              tool: t.tool,
+              args_preview: t.args_json,
+              result_preview: t.result ?? "",
+              tier: t.decision,
+            })),
+            finished: row.status === "running" ? null : {
+              status: row.status as "ok" | "error" | "timeout" | "stopped" | "interrupted",
+              reply_preview: row.reply_text ?? "",
+              duration_ms: row.duration_ms ?? 0,
+              tool_calls_used: row.tool_calls_used,
+              error_message: row.error_message,
+            },
+          },
+          onStop: undefined,
+        },
+      });
+    }
+
+    sortable.sort((a, b) => a._ts - b._ts);
+    const merged: TranscriptItem[] = sortable.map((s) => s.item);
+
+    // Append live trace blocks at the end (no stable ts; these are in-flight).
+    for (const [subagentId, group] of traceGroups.entries()) {
+      if (!group.started) continue;
+      merged.push({
+        kind: "trace",
+        subagentId,
+        trace: {
+          started: group.started,
+          tools: group.tools,
+          finished: group.finished,
+        },
+        onStop: () => sendUserMessage({ type: "subagent_stop", subagent_id: subagentId }),
+      });
+    }
+
+    return merged;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [msgsQ.data, runsQ.data, traceGroups, bubbleUsageByIdx, sendUserMessage]);
+
   // Auto-scroll to bottom when content changes — only if the user is already
   // near the bottom (so we don't yank them away when they've scrolled up to
   // read history).
@@ -285,7 +411,7 @@ export default function Chat() {
     if (wasNearBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [rendered, streaming, awaitingReply, pendingForAgent]);
+  }, [orderedTranscript, streaming, awaitingReply, pendingForAgent]);
 
   const firstTokenAtRef = useRef<number | null>(null);
   useEffect(() => {
@@ -598,40 +724,32 @@ export default function Chat() {
               <div className="font-body text-base text-muted">Open one from the sidebar or start a new drawing.</div>
             </div>
           )}
-          {rendered.map((m, i) =>
-            m.role === "assistant" ? (
-              <AssistantBubble
-                key={i}
-                content={m.content}
-                usage={m.usage}
-                scheduled_job_id={m.scheduled_job_id}
-              />
-            ) : (
-              <MessageBubble key={i} role={m.role} content={m.content} usage={m.usage} />
-            ),
-          )}
-          {streaming.trim() && <MessageBubble role="assistant" content={streaming} />}
-          {events
-            .filter((ev) => ev.type === "subagent_started")
-            .map((ev) => {
-              const started = ev as SubagentStartedEvent;
-              const group = traceGroups.get(started.subagent_id);
-              if (!group?.started) return null;
-              return (
-                <SubagentTraceBlock
-                  key={`subagent-${started.subagent_id}`}
-                  started={group.started}
-                  tools={group.tools}
-                  finished={group.finished}
-                  onStop={() =>
-                    sendUserMessage({
-                      type: "subagent_stop",
-                      subagent_id: started.subagent_id,
-                    })
-                  }
+          {orderedTranscript.map((item, i) => {
+            if (item.kind === "message") {
+              const m = item.data;
+              return m.role === "assistant" ? (
+                <AssistantBubble
+                  key={`msg-${i}`}
+                  content={m.content}
+                  usage={m.usage}
+                  scheduled_job_id={m.scheduled_job_id}
                 />
+              ) : (
+                <MessageBubble key={`msg-${i}`} role={m.role} content={m.content} usage={m.usage} />
               );
-            })}
+            }
+            // kind === "trace"
+            return (
+              <SubagentTraceBlock
+                key={`subagent-${item.subagentId}`}
+                started={item.trace.started}
+                tools={item.trace.tools}
+                finished={item.trace.finished}
+                onStop={item.onStop}
+              />
+            );
+          })}
+          {streaming.trim() && <MessageBubble role="assistant" content={streaming} />}
           {pendingForAgent.map((req) => (
             <ApprovalCard
               key={req.request_id}

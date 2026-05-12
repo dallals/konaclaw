@@ -265,8 +265,41 @@ def register_http_routes(app: FastAPI) -> None:
             sjid = row.get("scheduled_job_id")
             if sjid is not None:
                 d["scheduled_job_id"] = sjid
+            ts_val = row.get("ts")
+            if ts_val is not None:
+                d["ts"] = ts_val
             out.append(d)
         return {"messages": out}
+
+    @app.get("/conversations/{cid}/subagent-runs")
+    def list_subagent_runs_for_conv(cid: int):
+        deps = app.state.deps
+        # Verify the conversation exists (return [] if not, to match the empty case).
+        if deps.storage.get_conversation(cid) is None:
+            return {"runs": []}
+        with deps.storage.connect() as c:
+            # Fetch the runs for this conversation in chronological order.
+            run_rows = c.execute(
+                """SELECT id, parent_agent, template, label, task_preview, context_keys,
+                          started_ts, ended_ts, status, duration_ms, tool_calls_used,
+                          reply_text, error_message
+                   FROM subagent_runs
+                   WHERE parent_conversation_id = ?
+                   ORDER BY started_ts ASC""",
+                (str(cid),),
+            ).fetchall()
+            run_dicts = [dict(r) for r in run_rows]
+            # Fetch the per-tool audit rows for each run.
+            for r in run_dicts:
+                tool_rows = c.execute(
+                    """SELECT ts, tool, args_json, decision, result
+                       FROM audit
+                       WHERE subagent_id = ?
+                       ORDER BY ts ASC""",
+                    (r["id"],),
+                ).fetchall()
+                r["tools"] = [dict(tr) for tr in tool_rows]
+        return {"runs": run_dicts}
 
     @app.get("/audit")
     def list_audit(

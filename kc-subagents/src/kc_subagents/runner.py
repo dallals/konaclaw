@@ -268,6 +268,7 @@ class EphemeralInstance:
             id=self.id, status=status, duration_ms=duration_ms,
             tool_calls_used=self.tool_calls_used,
             reply_chars=len(reply) if reply else 0, error_message=error,
+            reply_text=reply,
         )
         if not self._result_future.done():
             self._result_future.set_result(result)
