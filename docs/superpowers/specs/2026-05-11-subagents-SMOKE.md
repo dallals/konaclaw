@@ -216,6 +216,26 @@ Run each seed template once on a representative prompt. All four should reach `�
 
 ---
 
+## Results table
+
+| Gate | Date | Verdict | Evidence |
+|------|------|---------|----------|
+| 1. Authoring round-trip | 2026-05-12 | PASS | gate1-test created via dashboard; `list_subagent_templates` returns it (audit id 121). |
+| 2. Inline trace block | 2026-05-12 | PASS | Trace block rendered live in Sammy's session; `subagent_runs.ep_5dd77b` status=ok, 113.3s, 3 tools; audit rows 125-127 attributed correctly. Per-tool emit + markdown reply fix shipped mid-gate (commits `98484fd`, `abc2ed1`). |
+| 3. Attributed approval | 2026-05-12 | DATA PROVEN / UI UNVERIFIED | Audit rows 125-131 confirm `parent_agent="Kona-AI"`, `subagent_id`, `subagent_template` columns populate correctly when subagent fires a tool. The "via subagent" approval card badge is not yet exercised live because `KC_TERMINAL_ENABLED=false` — coder template's `terminal_run` tool isn't registered on the supervisor. To complete: flip `KC_TERMINAL_ENABLED=true`, spawn `coder`, approve. |
+| 4. Parallel spawn + await | 2026-05-12 | UNIT-PROVEN | `test_runner_spawn_and_get_future` + `test_per_conversation_cap` cover the parallel-handle + cap behaviors. End-to-end chat-driven exercise pending. |
+| 5. Stop button | 2026-05-12 | PASS | Sammy clicked Stop on `ep_25a66e` mid-run; trace transitioned to `■ STOPPED · 3 TOOLS · 57.4S`; `subagent_runs` row reflects `status=stopped`, `error_message="stopped by user"`. |
+| 6. Timeout | 2026-05-12 | UNIT-PROVEN | `test_instance_run_timeout_path` exercises the timeout path end-to-end at the runtime layer. Live chat-driven verification pending. |
+| 7. max_tool_calls cap | 2026-05-12 | UNIT-PROVEN | `test_max_tool_calls_cap_short_circuits` + `test_counter_wrap_emits_cap_error_frame_when_short_circuiting` cover the cap behavior + frame emission. Live chat-driven verification pending. |
+| 8. Seed templates end-to-end | — | PENDING | Requires chat-driven exercise of each seed (`web-researcher` covered by gate 2; `coder` blocked by terminal flag; `email-drafter`/`scheduler` need live Zapier creds). |
+| 9. Restart resilience | — | PENDING | Requires supervisor kill+restart with in-flight run. |
+
+**Verdict legend:**
+- **PASS** — exercised end-to-end via live SMOKE flow; evidence in DB or screenshot.
+- **DATA PROVEN / UI UNVERIFIED** — underlying plumbing demonstrated in DB; user-facing UI element not yet clicked.
+- **UNIT-PROVEN** — same behavior covered by unit tests at the runtime layer; chat-driven exercise pending.
+- **PENDING** — not yet exercised.
+
 ## Closeout
 
 When all 9 gates pass:
