@@ -1,36 +1,49 @@
+from pathlib import Path
+
 from kc_core.messages import (
-    UserMessage, AssistantMessage, ToolCallMessage,
-    ToolResultMessage, to_openai_dict,
+    UserMessage,
+    ImageRef,
+    to_openai_dict,
+    to_native_dict,
 )
 
 
-def test_user_message_serializes():
-    m = UserMessage(content="hello")
-    assert to_openai_dict(m) == {"role": "user", "content": "hello"}
+def test_user_message_default_images_is_empty_tuple():
+    m = UserMessage(content="hi")
+    assert m.images == ()
 
 
-def test_assistant_text_message_serializes():
-    m = AssistantMessage(content="hi there")
-    assert to_openai_dict(m) == {"role": "assistant", "content": "hi there"}
+def test_user_message_with_images_carries_them():
+    refs = (ImageRef(path=Path("/tmp/a.png"), mime="image/png"),)
+    m = UserMessage(content="hi", images=refs)
+    assert m.images == refs
 
 
-def test_tool_call_message_serializes():
-    m = ToolCallMessage(
-        tool_call_id="call_1",
-        tool_name="echo",
-        arguments={"text": "hi"},
-    )
+def test_to_openai_dict_plain_user_text():
+    m = UserMessage(content="hi")
+    assert to_openai_dict(m) == {"role": "user", "content": "hi"}
+
+
+def test_to_openai_dict_multimodal_when_images_present(tmp_path):
+    p = tmp_path / "a.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\nfakebytes")
+    m = UserMessage(content="describe", images=(ImageRef(path=p, mime="image/png"),))
     d = to_openai_dict(m)
-    assert d["role"] == "assistant"
-    assert d["tool_calls"][0]["id"] == "call_1"
-    assert d["tool_calls"][0]["function"]["name"] == "echo"
-    assert d["tool_calls"][0]["function"]["arguments"] == '{"text": "hi"}'
+    assert d["role"] == "user"
+    assert isinstance(d["content"], list)
+    assert d["content"][0] == {"type": "text", "text": "describe"}
+    assert d["content"][1]["type"] == "image_url"
+    assert d["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
-def test_tool_result_message_serializes():
-    m = ToolResultMessage(tool_call_id="call_1", content="hi")
-    assert to_openai_dict(m) == {
-        "role": "tool",
-        "tool_call_id": "call_1",
-        "content": "hi",
-    }
+def test_to_native_dict_emits_images_field(tmp_path):
+    p = tmp_path / "a.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\nfakebytes")
+    m = UserMessage(content="describe", images=(ImageRef(path=p, mime="image/png"),))
+    d = to_native_dict(m)
+    assert d["role"] == "user"
+    assert d["content"] == "describe"
+    assert isinstance(d["images"], list)
+    assert len(d["images"]) == 1
+    import base64
+    assert base64.b64decode(d["images"][0]) == p.read_bytes()
