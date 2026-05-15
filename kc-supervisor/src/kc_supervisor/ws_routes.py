@@ -304,6 +304,11 @@ def register_ws_routes(app: FastAPI) -> None:
                             pass
                         post_names = set(rt.assembled.core_agent.tools.names())
                         _att_tools_added = list(post_names - pre_names)
+                        # Also flag the attachment tools as SAFE in the engine's
+                        # tier_map so they don't trigger an approval prompt.
+                        from kc_sandbox.permissions import Tier as _Tier
+                        rt.assembled.engine.tier_map["read_attachment"] = _Tier.SAFE
+                        rt.assembled.engine.tier_map["list_attachments"] = _Tier.SAFE
 
                     # Track whether the WS is still receiving us. If the client
                     # closes mid-stream, we keep iterating send_stream so the
