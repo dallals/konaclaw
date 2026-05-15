@@ -58,9 +58,8 @@ def build_read_attachment_tool(
 ) -> Callable[[dict[str, Any]], Awaitable[str]]:
     """Returns the `read_attachment` tool implementation, scoped to one conversation."""
 
-    async def impl(args: dict[str, Any]) -> str:
-        att_id = args.get("attachment_id", "")
-        page_range = args.get("page_range")
+    async def impl(attachment_id: str = "", page_range: str | None = None) -> str:
+        att_id = attachment_id
         try:
             rec = store.get(att_id)
         except AttachmentNotFound:
@@ -103,7 +102,7 @@ def build_list_attachments_tool(
 ) -> Callable[[dict[str, Any]], Awaitable[str]]:
     """Returns the `list_attachments` tool implementation, scoped to one conversation."""
 
-    async def impl(_args: dict[str, Any]) -> str:
+    async def impl() -> str:
         records = store.list_for_conversation(conversation_id)
         out = [
             {

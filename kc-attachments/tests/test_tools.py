@@ -25,7 +25,7 @@ async def test_read_attachment_returns_text_payload(store_with_text):
     s, att_id = store_with_text
     impl = build_read_attachment_tool(store=s, conversation_id="conv_1",
                                        vision_for_active_model=False)
-    out = await impl({"attachment_id": att_id})
+    out = await impl(attachment_id=att_id)
     parsed = json.loads(out)
     assert parsed["type"] == "text"
     assert "Hello attachment." in parsed["markdown"]
@@ -36,7 +36,7 @@ async def test_read_attachment_rejects_other_conversation(store_with_text):
     s, att_id = store_with_text
     impl = build_read_attachment_tool(store=s, conversation_id="conv_99",
                                        vision_for_active_model=False)
-    out = await impl({"attachment_id": att_id})
+    out = await impl(attachment_id=att_id)
     parsed = json.loads(out)
     assert parsed["error"] == "out_of_scope"
 
@@ -46,7 +46,7 @@ async def test_read_attachment_not_found(store_with_text):
     s, _ = store_with_text
     impl = build_read_attachment_tool(store=s, conversation_id="conv_1",
                                        vision_for_active_model=False)
-    out = await impl({"attachment_id": "att_doesnotexist"})
+    out = await impl(attachment_id="att_doesnotexist")
     parsed = json.loads(out)
     assert parsed["error"] == "not_found"
 
@@ -59,7 +59,7 @@ async def test_read_attachment_truncates_long_text(tmp_path):
     rec = s.save(conversation_id="conv_1", source=src, filename="long.txt")
     impl = build_read_attachment_tool(store=s, conversation_id="conv_1",
                                        vision_for_active_model=False)
-    out = await impl({"attachment_id": rec.id})
+    out = await impl(attachment_id=rec.id)
     parsed = json.loads(out)
     assert len(parsed["markdown"].encode("utf-8")) <= 32 * 1024 + 200
     assert "[truncated" in parsed["markdown"]
@@ -82,7 +82,7 @@ async def test_read_attachment_paginates_pdf_by_page_range(tmp_path):
 
     impl = build_read_attachment_tool(store=s, conversation_id="conv_1",
                                        vision_for_active_model=False)
-    out = await impl({"attachment_id": rec.id, "page_range": "2-3"})
+    out = await impl(attachment_id=rec.id, page_range="2-3")
     parsed = json.loads(out)
     assert "Page 2" in parsed["markdown"]
     assert "Page 3" in parsed["markdown"]
@@ -98,7 +98,7 @@ async def test_read_attachment_image_returns_sentinel_when_vision_supported(tmp_
     rec = s.save(conversation_id="conv_1", source=src, filename="sample.png")
     impl = build_read_attachment_tool(store=s, conversation_id="conv_1",
                                        vision_for_active_model=True)
-    out = await impl({"attachment_id": rec.id})
+    out = await impl(attachment_id=rec.id)
     payload = json.loads(out)
     assert payload["type"] == "image"
     assert payload["path"].endswith("original.png")
@@ -114,7 +114,7 @@ async def test_read_attachment_image_returns_ocr_when_vision_unsupported(tmp_pat
     rec = s.save(conversation_id="conv_1", source=src, filename="sample.png")
     impl = build_read_attachment_tool(store=s, conversation_id="conv_1",
                                        vision_for_active_model=False)
-    out = await impl({"attachment_id": rec.id})
+    out = await impl(attachment_id=rec.id)
     payload = json.loads(out)
     assert payload["type"] == "text"
     assert "markdown" in payload
@@ -130,7 +130,7 @@ async def test_list_attachments_returns_only_current_conversation(tmp_path):
     s.save(conversation_id="conv_2", source=src, filename="b.txt")
 
     impl = build_list_attachments_tool(store=s, conversation_id="conv_1")
-    out = await impl({})
+    out = await impl()
     parsed = json.loads(out)
     assert isinstance(parsed, list)
     assert len(parsed) == 1
