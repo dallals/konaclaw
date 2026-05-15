@@ -39,13 +39,22 @@ class WebClient(Protocol):
     ) -> ScrapeResult: ...
 
 
-class FirecrawlError(Exception):
-    """Wraps any error from the Firecrawl SDK with status + message."""
+class WebClientError(Exception):
+    """Generic error raised by any WebClient implementation.
+
+    `status` is an HTTP status code when the backend returned a non-2xx
+    response, or 0 for network/JSON/other errors that have no HTTP status.
+    """
 
     def __init__(self, status: int, message: str) -> None:
-        super().__init__(f"firecrawl status={status}: {message}")
+        super().__init__(f"web backend error status={status}: {message}")
         self.status = status
         self.message = message
+
+
+# Kept as an alias for one cycle so external imports / isinstance checks
+# don't break. New code should use WebClientError directly.
+FirecrawlError = WebClientError
 
 
 class FirecrawlClient:
