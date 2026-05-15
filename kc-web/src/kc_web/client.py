@@ -247,3 +247,36 @@ class OllamaClient:
             )
             for r in items
         ]
+
+    async def scrape(
+        self,
+        url: str,
+        timeout_seconds: int,
+        include_links: bool,
+    ) -> ScrapeResult:
+        body: dict[str, Any] = {"url": url}  # include_links intentionally ignored
+        http = await self._client()
+        try:
+            resp = await http.post(
+                f"{self._base_url}/web_fetch",
+                json=body,
+                headers=self._headers(),
+                timeout=float(timeout_seconds),
+            )
+        except httpx.TimeoutException:
+            raise asyncio.TimeoutError() from None
+        except httpx.HTTPError as e:
+            raise WebClientError(0, str(e)) from e
+        if resp.status_code >= 400:
+            raise WebClientError(resp.status_code, resp.text[:512])
+        try:
+            data = resp.json()
+        except (_json_mod.JSONDecodeError, ValueError) as e:
+            raise WebClientError(0, f"invalid_json: {e}") from e
+        return ScrapeResult(
+            url=url,
+            final_url=url,
+            status_code=0,
+            title=str(data.get("title", "")),
+            markdown=str(data.get("content", "")),
+        )

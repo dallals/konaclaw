@@ -56,3 +56,56 @@ async def test_search_empty_results_returns_empty_list():
     client = _make_client(handler)
     results = await client.search("nothing here", max_results=5, freshness="any")
     assert results == []
+
+
+from kc_web.client import ScrapeResult
+
+
+@pytest.mark.asyncio
+async def test_scrape_happy_path_maps_response():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "title": "Example",
+                "content": "# Hello\n\nWorld.",
+                "links": ["https://a.example", "https://b.example"],
+            },
+        )
+
+    client = _make_client(handler)
+    result = await client.scrape(
+        "https://example.org/page",
+        timeout_seconds=15,
+        include_links=False,
+    )
+
+    assert captured["url"] == "https://ollama.example/api/web_fetch"
+    assert captured["body"] == {"url": "https://example.org/page"}
+    assert result == ScrapeResult(
+        url="https://example.org/page",
+        final_url="https://example.org/page",
+        status_code=0,
+        title="Example",
+        markdown="# Hello\n\nWorld.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_scrape_include_links_silently_ignored():
+    """Ollama always returns links; we don't surface them. Passing include_links=True
+    must not change the request or raise."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"title": "T", "content": "C", "links": []})
+
+    client = _make_client(handler)
+    await client.scrape("https://example.org/", timeout_seconds=10, include_links=True)
+    assert "include_links" not in captured["body"]
+    assert captured["body"] == {"url": "https://example.org/"}
