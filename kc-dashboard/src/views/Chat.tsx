@@ -20,6 +20,8 @@ import { NewsWidget } from "../components/NewsWidget";
 import { TodoWidget } from "../components/TodoWidget";
 import { ClarifyCard } from "../components/ClarifyCard";
 import { SubagentTraceBlock } from "../components/SubagentTraceBlock";
+import { AttachmentChip } from "../components/AttachmentChip";
+import { useAttachmentUpload } from "../hooks/useAttachmentUpload";
 import { listConversationSubagentRuns, type SubagentRunRow } from "../api/subagents";
 import { formatTokensPerSecond, formatTokenCount, formatTtfb } from "../lib/formatUsage";
 
@@ -115,6 +117,17 @@ export default function Chat() {
 
   const { events, sendUserMessage } = useChatSocket(activeConv);
   const [draft, setDraft] = useState("");
+  const {
+    chips,
+    addFiles,
+    remove: removeChip,
+    clear: clearChips,
+    allReady,
+    readyAttachmentIds,
+  } = useAttachmentUpload(activeConv);
+  const [dragActive, setDragActive] = useState(false);
+  const dropRootRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // Per-message reasoning toggle. Defaults off — gemma4 and other reasoning
   // models over-think trivial prompts; user opts in when depth is wanted.
   // Only honored by the supervisor when the agent's model is reasoning-capable
@@ -473,7 +486,51 @@ export default function Chat() {
     : null;
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div
+      ref={dropRootRef}
+      data-testid="chat-root"
+      className="flex h-full overflow-hidden"
+      style={{ position: "relative" }}
+      onDragEnter={(e) => {
+        e.preventDefault();
+        if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes("Files")) {
+          setDragActive(true);
+        }
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+      }}
+      onDragLeave={(e) => {
+        if (e.target === dropRootRef.current) setDragActive(false);
+      }}
+      onDrop={async (e) => {
+        e.preventDefault();
+        setDragActive(false);
+        const files = Array.from(e.dataTransfer?.files || []);
+        if (files.length) await addFiles(files);
+      }}
+    >
+      {dragActive && (
+        <div
+          className="chat-drop-overlay"
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 100,
+            background: "rgba(64, 96, 192, 0.15)",
+            border: "2px dashed rgba(64, 96, 192, 0.7)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+            fontSize: 18,
+            fontWeight: 600,
+            color: "rgba(40, 60, 140, 0.9)",
+          }}
+        >
+          Drop to attach
+        </div>
+      )}
       {/* SIDEBAR — ROSTER */}
       <aside className="w-[304px] shrink-0 border-r border-line bg-panel overflow-y-auto pb-6">
         <div className="px-6 pt-5 pb-3 flex items-center justify-between">
@@ -815,17 +872,20 @@ export default function Chat() {
             className="shrink-0 px-10 py-5 border-t border-line bg-panel relative"
             onSubmit={(e) => {
               e.preventDefault();
-              if (!draft.trim()) return;
+              if (!draft.trim() && chips.length === 0) return;
+              if (!allReady) return;
               sendUserMessage({
                 type: "user_message",
                 content: draft,
                 think: thinkOn,
+                attachment_ids: readyAttachmentIds,
               });
               qc.setQueryData(["messages", activeConv], (old: { messages: unknown[] } | undefined) => ({
                 messages: [...(old?.messages ?? []), { type: "UserMessage", content: draft }],
               }));
               setAwaitingReply(true);
               setDraft("");
+              clearChips();
             }}
           >
             <span className="absolute top-0 inset-x-0 h-px bg-accent opacity-60" />
@@ -834,12 +894,64 @@ export default function Chat() {
               <span>Reply</span>
               <span className="ml-auto text-muted2">⌘ + ↵ to send</span>
             </div>
+            {chips.length > 0 && (
+              <div
+                className="chat-attachment-chip-row"
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 6,
+                  padding: "4px 0 8px 0",
+                }}
+              >
+                {chips.map((c) => (
+                  <AttachmentChip
+                    key={c.localId}
+                    status={c.status}
+                    filename={c.filename}
+                    sizeBytes={c.sizeBytes}
+                    error={c.error}
+                    onRemove={() => removeChip(c.localId)}
+                  />
+                ))}
+              </div>
+            )}
             <div className="flex gap-3 items-stretch">
+              <input
+                type="file"
+                ref={fileInputRef}
+                style={{ display: "none" }}
+                multiple
+                onChange={async (e) => {
+                  const files = Array.from(e.target.files || []);
+                  if (files.length) await addFiles(files);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                aria-label="attach files"
+                onClick={() => fileInputRef.current?.click()}
+                className="border border-line bg-transparent text-muted hover:text-accent hover:border-accent px-3 font-mono text-[14px] inline-flex items-center transition-colors"
+              >
+                📎
+              </button>
               <input
                 className="flex-1 bg-bgDeep border border-line px-[18px] py-3.5 text-[16px] font-body text-textStrong outline-none focus:border-accent focus:[box-shadow:0_0_0_1px_rgb(var(--accent))] transition-shadow placeholder:text-muted2"
                 placeholder="Reply…"
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
+                onPaste={async (e) => {
+                  const items = Array.from(e.clipboardData?.items || []);
+                  const imgs = items
+                    .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+                    .map((it) => it.getAsFile())
+                    .filter((f): f is File => !!f);
+                  if (imgs.length) {
+                    e.preventDefault();
+                    await addFiles(imgs);
+                  }
+                }}
               />
               <button
                 type="button"
@@ -858,7 +970,8 @@ export default function Chat() {
               </button>
               <button
                 type="submit"
-                className="bg-accent text-bgDeep border-none px-7 font-mono text-[11px] uppercase tracking-[0.18em] font-bold inline-flex items-center gap-2 hover:bg-accentBright transition-colors"
+                disabled={!allReady || (draft.trim() === "" && chips.length === 0)}
+                className="bg-accent text-bgDeep border-none px-7 font-mono text-[11px] uppercase tracking-[0.18em] font-bold inline-flex items-center gap-2 hover:bg-accentBright transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <span>Send</span>
                 <span className="text-base font-extrabold">→</span>
