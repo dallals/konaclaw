@@ -1,10 +1,12 @@
 from __future__ import annotations
 import asyncio
 import logging
+import os
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from kc_attachments.store import AttachmentNotFound, AttachmentStore
 from kc_core.messages import (
-    UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
+    ImageRef, UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
 )
 from kc_core.stream_frames import (
     TokenDelta, ReasoningTokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
@@ -13,6 +15,40 @@ from kc_supervisor.agents import AgentStatus
 from kc_supervisor.skill_slash import resolve_slash_command
 
 logger = logging.getLogger(__name__)
+
+
+def build_user_message_with_attachments(
+    *,
+    store: AttachmentStore,
+    conversation_id: str,
+    text: str,
+    attachment_ids: list[str],
+) -> UserMessage:
+    """Build a UserMessage with chip-line prefix(es) and image refs for the listed
+    attachments. Unknown ids and cross-conversation ids are silently skipped.
+    """
+    chips: list[str] = []
+    images: list[ImageRef] = []
+    for att_id in attachment_ids:
+        try:
+            rec = store.get(att_id)
+        except AttachmentNotFound:
+            continue
+        if rec.conversation_id != conversation_id:
+            continue
+        bits = [rec.filename]
+        if rec.page_count:
+            bits.append(f"{rec.page_count} pages")
+        bits.append(f"{rec.size_bytes // 1024} KB")
+        bits.append(f"id={rec.id}")
+        chips.append("[attached: " + ", ".join(bits) + "]")
+        if rec.mime.startswith("image/") and os.environ.get(
+            "KC_ATTACH_IMAGE_MODE", "eager"
+        ).lower() == "eager":
+            images.append(ImageRef(path=store.original_path(rec.id), mime=rec.mime))
+    content_parts = chips + ([text] if text else [])
+    content = "\n".join(content_parts) if chips else text
+    return UserMessage(content=content, images=tuple(images))
 
 
 def _handle_subagent_stop_frame(deps, inbound: dict) -> None:
@@ -174,10 +210,25 @@ def register_ws_routes(app: FastAPI) -> None:
                         loaded, instruction = resolved
                         agent_input = loaded
 
+                # Optional attachment ids attached to this user turn. Empty
+                # default keeps backward compatibility with clients that don't
+                # send the field.
+                attachment_ids = inbound.get("attachment_ids") or []
+
                 async with lock:
                     # Persist user message FIRST so /conversations/{cid}/messages
                     # shows the user input even if the model call fails.
-                    deps.conversations.append(conversation_id, UserMessage(content=content))
+                    attach_store = getattr(deps, "attachment_store", None)
+                    if attach_store is not None:
+                        user_msg = build_user_message_with_attachments(
+                            store=attach_store,
+                            conversation_id=str(conversation_id),
+                            text=content,
+                            attachment_ids=attachment_ids,
+                        )
+                    else:
+                        user_msg = UserMessage(content=content)
+                    deps.conversations.append(conversation_id, user_msg)
 
                     # Rehydrate kc-core Agent.history from SQLite. send_stream appends
                     # its own UserMessage(content), so we trim a trailing UserMessage
