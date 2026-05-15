@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from kc_web.budget import BudgetStore
-from kc_web.client import FirecrawlError, ScrapeResult
+from kc_web.client import WebClientError, ScrapeResult
 from kc_web.config import WebConfig
 from kc_web.fetch import build_web_fetch_impl
 
@@ -144,11 +144,11 @@ async def test_timeout_clamping(cfg, budget):
 
 
 @pytest.mark.asyncio
-async def test_firecrawl_error(cfg, budget):
-    client = FakeClient(exc=FirecrawlError(502, "bad gateway"))
+async def test_backend_error(cfg, budget):
+    client = FakeClient(exc=WebClientError(502, "bad gateway"))
     impl = build_web_fetch_impl(cfg, client, budget)
     out = json.loads(await impl(url="https://example.com"))
-    assert out["error"] == "firecrawl_error"
+    assert out["error"] == "backend_error"
     assert out["status"] == 502
 
 

@@ -5,7 +5,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from kc_web.budget import BudgetStore
-from kc_web.client import FirecrawlError, WebClient
+from kc_web.client import WebClientError, WebClient
 from kc_web.config import WebConfig
 
 
@@ -52,9 +52,9 @@ def build_web_search_impl(
                 "error": "timeout",
                 "elapsed_ms": int((time.monotonic() - t0) * 1000),
             })
-        except FirecrawlError as e:
+        except WebClientError as e:
             return _json({
-                "error": "firecrawl_error",
+                "error": "backend_error",
                 "status": e.status,
                 "message": str(e),
             })

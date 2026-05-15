@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from kc_web.budget import BudgetStore
-from kc_web.client import FirecrawlError, SearchResult
+from kc_web.client import WebClientError, SearchResult
 from kc_web.config import WebConfig
 from kc_web.search import build_web_search_impl
 
@@ -101,11 +101,11 @@ async def test_missing_query(cfg, budget):
 
 
 @pytest.mark.asyncio
-async def test_firecrawl_error(cfg, budget):
-    client = FakeClient(exc=FirecrawlError(429, "rate limited"))
+async def test_backend_error(cfg, budget):
+    client = FakeClient(exc=WebClientError(429, "rate limited"))
     impl = build_web_search_impl(cfg, client, budget)
     out = json.loads(await impl(query="x"))
-    assert out == {"error": "firecrawl_error", "status": 429, "message": "firecrawl status=429: rate limited"}
+    assert out == {"error": "backend_error", "status": 429, "message": "web backend error status=429: rate limited"}
 
 
 @pytest.mark.asyncio
