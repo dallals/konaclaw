@@ -5,6 +5,27 @@ import { formatTokensPerSecond, formatTokenCount, formatTtfb } from "../lib/form
 
 type Role = "user" | "assistant";
 
+const CHIP_LINE_RE = /^\[attached:\s*([^\]]+)\]\s*$/;
+
+interface ParsedChip {
+  filename: string;
+  raw: string;
+}
+
+function parseLeadingChips(content: string): { chips: ParsedChip[]; rest: string } {
+  const lines = content.split("\n");
+  const chips: ParsedChip[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const m = CHIP_LINE_RE.exec(lines[i]);
+    if (!m) break;
+    const parts = m[1].split(",").map((s) => s.trim());
+    chips.push({ filename: parts[0], raw: lines[i] });
+    i++;
+  }
+  return { chips, rest: lines.slice(i).join("\n").trimStart() };
+}
+
 const ROLE_LABEL: Record<Role, string> = { user: "U", assistant: "K" };
 const ROLE_NAME: Record<Role, string> = { user: "Sammy", assistant: "kona" };
 
@@ -70,8 +91,15 @@ export function MessageBubble({
   // Auto-collapse: open while reasoning streams (no content yet), close once
   // content begins. User can re-toggle manually after streaming settles.
   const reasoningOpenByDefault = hasReasoning && !hasContent;
-  const isEmpty = !content || !content.trim();
   const isUser = role === "user";
+  // For user messages, peel any leading `[attached: ...]` chip lines out so we
+  // can render them as visual chips above the text body. Non-user messages
+  // never carry chip lines.
+  const { chips, rest: userRest } = isUser
+    ? parseLeadingChips(content)
+    : { chips: [] as ParsedChip[], rest: content };
+  const effectiveContent = isUser ? userRest : content;
+  const isEmpty = !effectiveContent || !effectiveContent.trim();
   // Suppress the "(no reply...)" placeholder for intermediate / tool-only turns.
   // Two cases collapse here:
   //  1. Persisted assistant row with usage attached but output_tokens === 0
@@ -115,17 +143,33 @@ export function MessageBubble({
             </div>
           </details>
         )}
+        {isUser && chips.length > 0 && (
+          <div
+            className="flex flex-wrap gap-1 mb-2"
+            data-testid="message-bubble-chips"
+          >
+            {chips.map((c, idx) => (
+              <span
+                key={idx}
+                className="inline-flex items-center gap-1 px-1.5 py-[2px] rounded-sm font-mono text-[11px] bg-accent/10 text-accent border border-accent/30"
+              >
+                <span aria-hidden>📎</span>
+                <span>{c.filename}</span>
+              </span>
+            ))}
+          </div>
+        )}
         <div
           className={`font-body text-[16px] leading-[1.6] max-w-[64ch] ${
             isUser ? "font-medium text-textStrong whitespace-pre-wrap" : "text-text"
           }`}
         >
           {isEmpty ? (
-            isToolOnlyTurn ? null : (
+            isToolOnlyTurn || (isUser && chips.length > 0) ? null : (
               <span className="italic text-muted">(no reply — model returned empty content; try rephrasing)</span>
             )
           ) : isUser ? (
-            content
+            effectiveContent
           ) : (
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}

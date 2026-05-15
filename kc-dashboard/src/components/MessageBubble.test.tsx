@@ -44,4 +44,35 @@ describe("MessageBubble reasoning", () => {
     // Final answer still renders alongside the collapsed reasoning.
     expect(screen.getByText(/here is the answer/i)).toBeInTheDocument();
   });
+
+  it("renders attachment chips for past user message with [attached:] prefix", () => {
+    const { container } = render(
+      <MessageBubble
+        role="user"
+        content={"[attached: report.pdf, 12 pages, 245 KB, id=att_abc]\nHi there"}
+      />,
+    );
+    expect(screen.getByText(/report\.pdf/)).toBeInTheDocument();
+    expect(screen.getByText(/Hi there/)).toBeInTheDocument();
+    // The raw bracket form must NOT appear in the rendered output — only the chip.
+    expect(container.textContent ?? "").not.toMatch(/\[attached:/);
+  });
+
+  it("renders multiple chips when multiple attachments present", () => {
+    const { container } = render(
+      <MessageBubble
+        role="user"
+        content={"[attached: a.txt, 1 KB, id=att_a]\n[attached: b.png, 2 KB, id=att_b]\nLook at these"}
+      />,
+    );
+    expect(screen.getByText(/a\.txt/)).toBeInTheDocument();
+    expect(screen.getByText(/b\.png/)).toBeInTheDocument();
+    expect(screen.getByText(/Look at these/)).toBeInTheDocument();
+    expect(container.textContent ?? "").not.toMatch(/\[attached:/);
+  });
+
+  it("renders content normally when no [attached:] prefix", () => {
+    render(<MessageBubble role="user" content="just a regular message" />);
+    expect(screen.getByText(/just a regular message/)).toBeInTheDocument();
+  });
 });
