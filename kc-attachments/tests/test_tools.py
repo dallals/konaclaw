@@ -118,3 +118,22 @@ async def test_read_attachment_image_returns_ocr_when_vision_unsupported(tmp_pat
     payload = json.loads(out)
     assert payload["type"] == "text"
     assert "markdown" in payload
+
+
+@pytest.mark.asyncio
+async def test_list_attachments_returns_only_current_conversation(tmp_path):
+    from kc_attachments.tools import build_list_attachments_tool
+    s = _store(tmp_path)
+    src = tmp_path / "a.txt"; src.write_text("A", encoding="utf-8")
+    a = s.save(conversation_id="conv_1", source=src, filename="a.txt")
+    src.write_text("B", encoding="utf-8")
+    s.save(conversation_id="conv_2", source=src, filename="b.txt")
+
+    impl = build_list_attachments_tool(store=s, conversation_id="conv_1")
+    out = await impl({})
+    parsed = json.loads(out)
+    assert isinstance(parsed, list)
+    assert len(parsed) == 1
+    assert parsed[0]["id"] == a.id
+    assert parsed[0]["filename"] == "a.txt"
+    assert parsed[0]["parse_status"] == "ok"

@@ -94,3 +94,30 @@ def build_read_attachment_tool(
         return json.dumps({"type": "text", "markdown": markdown})
 
     return impl
+
+
+def build_list_attachments_tool(
+    *,
+    store: AttachmentStore,
+    conversation_id: str,
+) -> Callable[[dict[str, Any]], Awaitable[str]]:
+    """Returns the `list_attachments` tool implementation, scoped to one conversation."""
+
+    async def impl(_args: dict[str, Any]) -> str:
+        records = store.list_for_conversation(conversation_id)
+        out = [
+            {
+                "id": r.id,
+                "filename": r.filename,
+                "mime": r.mime,
+                "size_bytes": r.size_bytes,
+                "page_count": r.page_count,
+                "parsed_at": r.parsed_at,
+                "parse_status": r.parse_status,
+                "parse_error": r.parse_error,
+            }
+            for r in records
+        ]
+        return json.dumps(out)
+
+    return impl
