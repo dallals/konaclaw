@@ -1,3 +1,5 @@
+import { getBaseUrl } from "./client";
+
 export interface AttachmentUploadResponse {
   attachment_id: string;
   filename: string;
@@ -16,9 +18,10 @@ export async function uploadAttachment(
 ): Promise<AttachmentUploadResponse> {
   const form = new FormData();
   form.append("file", file);
+  const url = `${getBaseUrl()}/attachments/upload?conversation_id=${conversationId}`;
   return await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `/attachments/upload?conversation_id=${conversationId}`);
+    xhr.open("POST", url);
     if (onProgress) {
       xhr.upload.onprogress = (e) => onProgress(e.loaded, e.total);
     }
@@ -35,7 +38,7 @@ export async function uploadAttachment(
 }
 
 export async function deleteAttachment(attachmentId: string): Promise<void> {
-  const resp = await fetch(`/attachments/${attachmentId}`, { method: "DELETE" });
+  const resp = await fetch(`${getBaseUrl()}/attachments/${attachmentId}`, { method: "DELETE" });
   if (!resp.ok) {
     throw new Error(`delete failed (${resp.status})`);
   }
