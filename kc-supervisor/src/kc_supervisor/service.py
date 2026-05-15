@@ -150,6 +150,13 @@ class Deps:
     subagent_trace_buffer: Optional[Any] = None
     subagent_templates_dir: Optional[Path] = None
     subagent_broadcaster:  Optional[Any] = None
+    # Attachments — drag-drop file ingestion (Phase A of files rollout,
+    # 2026-05-15). Both singletons; per-conversation scoping happens at the
+    # tool-registration site (ws_routes / assembly) via the conversation_id
+    # captured by attach_attachments_to_agent. Duck-typed Any to keep
+    # kc_attachments from being a hard dep of service.py.
+    attachment_store: Optional[Any] = None
+    vision_cache:     Optional[Any] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:

@@ -74,6 +74,15 @@ def assemble_agent(
     todo_broadcaster: Optional[Any] = None,
     subagent_index:  Optional[Any] = None,
     subagent_runner: Optional[Any] = None,
+    # Attachments — drag-drop file ingestion. read_attachment + list_attachments
+    # are conversation-scoped, so the tools are only registered when both an
+    # AttachmentStore AND a conversation_id are supplied. At boot time
+    # AgentRegistry.load_all() passes neither, so the static AssembledAgent
+    # built per yaml does NOT carry attachment tools — ws_routes / inbound
+    # attach them per-turn for the conversation in flight (Task 19).
+    conversation_id:  Optional[str] = None,
+    attachment_store: Optional[Any] = None,
+    vision_cache:     Optional[Any] = None,
 ) -> AssembledAgent:
     """Build an AssembledAgent from an AgentConfig + supervisor singletons.
 
@@ -361,6 +370,30 @@ def assemble_agent(
         ):
             registry.register(t)
             tier_map[t.name] = Tier.SAFE
+
+    # Attachments tools (read_attachment + list_attachments) — conversation-scoped,
+    # so only registered when ws_routes (or another caller) supplies both an
+    # AttachmentStore and a concrete conversation_id. Both tools are SAFE
+    # (read-only against the store; the vision_for_active_model flag only changes
+    # the return shape of read_attachment for images). At boot the static
+    # assembly path passes neither, so AgentRegistry.load_all() produces an
+    # AssembledAgent without these tools — they are attached on-demand per-turn.
+    if conversation_id is not None and attachment_store is not None:
+        from kc_attachments import attach_attachments_to_agent
+        model_id = cfg.model or default_model or ""
+        vision_ok = (
+            vision_cache.supports_vision(model_id)
+            if (vision_cache is not None and model_id)
+            else False
+        )
+        attach_attachments_to_agent(
+            registry=registry,
+            store=attachment_store,
+            conversation_id=str(conversation_id),
+            vision_for_active_model=vision_ok,
+        )
+        tier_map["read_attachment"]  = Tier.SAFE
+        tier_map["list_attachments"] = Tier.SAFE
 
     # 4. PermissionEngine. broker.request_approval is async; the engine's
     # check_async detects coroutines via inspect.iscoroutine and awaits them.
