@@ -608,3 +608,80 @@ async def test_chat_stream_stays_on_openai_compat_when_think_is_none():
     async for f in client.chat_stream(messages=[], tools=[]):
         frames.append(f)
     assert v1_route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_native_rehydrates_tool_call_arguments_from_string():
+    """Agent._build_wire_messages encodes tool_call arguments as a JSON
+    string (OpenAI /v1 convention). When we route to native /api/chat the
+    arguments must be re-parsed into a dict, otherwise Ollama 400s with
+    'Value looks like object, but can't find closing }' — observed live
+    on 2026-05-14 the first time gemma4 made a tool call with think=False."""
+    ndjson_body = (
+        b'{"model":"gemma4:31b","message":{"role":"assistant","content":"ok"},'
+        b'"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":1}\n'
+    )
+    route = respx.post("http://localhost:11434/api/chat").mock(
+        return_value=Response(200, content=ndjson_body)
+    )
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma4:31b")
+    history_with_prior_tool_call = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "do it"},
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_0",
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    # Encoded as a JSON STRING — the /v1 convention.
+                    "arguments": '{"text": "hi"}',
+                },
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_0", "content": "hi"},
+        {"role": "user", "content": "what next?"},
+    ]
+    frames = []
+    async for f in client.chat_stream(
+        messages=history_with_prior_tool_call, tools=[], think=False,
+    ):
+        frames.append(f)
+    # Inspect the request body sent to /api/chat: tool_call arguments must
+    # be a DICT, not a string.
+    sent = _json_mod.loads(route.calls.last.request.content)
+    asst = next(m for m in sent["messages"] if m.get("tool_calls"))
+    args = asst["tool_calls"][0]["function"]["arguments"]
+    assert isinstance(args, dict), f"arguments must be dict, got {type(args).__name__}: {args!r}"
+    assert args == {"text": "hi"}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_native_tolerates_already_dict_arguments():
+    """If the caller already passes arguments as a dict (e.g. a future call
+    site that skips the /v1 stringification), the rehydration must be a no-op
+    and not double-convert."""
+    ndjson_body = (
+        b'{"model":"gemma4:31b","message":{"role":"assistant","content":"ok"},'
+        b'"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":1}\n'
+    )
+    route = respx.post("http://localhost:11434/api/chat").mock(
+        return_value=Response(200, content=ndjson_body)
+    )
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma4:31b")
+    msgs = [{
+        "role": "assistant",
+        "tool_calls": [{
+            "id": "c0", "type": "function",
+            "function": {"name": "x", "arguments": {"k": "v"}},
+        }],
+    }]
+    frames = []
+    async for f in client.chat_stream(messages=msgs, tools=[], think=False):
+        frames.append(f)
+    sent = _json_mod.loads(route.calls.last.request.content)
+    args = sent["messages"][0]["tool_calls"][0]["function"]["arguments"]
+    assert args == {"k": "v"}

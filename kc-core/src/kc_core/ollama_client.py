@@ -8,6 +8,36 @@ import httpx
 from kc_core.stream_frames import TextDelta, ReasoningDelta, ToolCallsBlock, Done, ChatUsage
 
 
+def _native_message(m: dict[str, Any]) -> dict[str, Any]:
+    """Translate an OpenAI /v1-shaped message to Ollama /api/chat shape.
+
+    The only meaningful difference today is `tool_calls[].function.arguments`:
+    /v1 encodes it as a JSON string; /api/chat expects a dict. Everything
+    else passes through. Returns a NEW dict — does not mutate input.
+    """
+    if not m.get("tool_calls"):
+        return m
+    out = dict(m)
+    out["tool_calls"] = [_native_tool_call(tc) for tc in m["tool_calls"]]
+    return out
+
+
+def _native_tool_call(tc: dict[str, Any]) -> dict[str, Any]:
+    fn = tc.get("function") or {}
+    args = fn.get("arguments")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args) if args else {}
+        except json.JSONDecodeError:
+            args = {}
+    elif not isinstance(args, dict):
+        args = {}
+    return {
+        **tc,
+        "function": {**fn, "arguments": args},
+    }
+
+
 @dataclass
 class ChatResponse:
     text: str
@@ -220,9 +250,16 @@ class OllamaClient:
         Honors `think: false` to suppress reasoning on capable models.
         """
         assert self._native_chat_url is not None  # guarded by caller
+        # Native /api/chat expects tool_calls[].function.arguments as an
+        # object/dict; the OpenAI /v1 wire format encodes it as a JSON string.
+        # Agent._build_wire_messages produces the /v1 shape, so rehydrate the
+        # arguments back to dicts here when forwarding to /api/chat. Without
+        # this, Ollama 400s with "Value looks like object, but can't find
+        # closing '}' symbol" the moment any prior tool call lands in history.
+        wire_messages = [_native_message(m) for m in messages]
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": wire_messages,
             "stream": True,
             "think": think,
         }
