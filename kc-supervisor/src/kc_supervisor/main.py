@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import os
 from pathlib import Path
 import uvicorn
@@ -30,6 +31,17 @@ except ImportError:
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/calendar",
     )
+
+
+async def _attachments_gc_loop(store):
+    """Daily GC sweep. Evicts attachments older than KC_ATTACH_RETENTION_DAYS (default 90)."""
+    retention = int(os.environ.get("KC_ATTACH_RETENTION_DAYS", "90"))
+    while True:
+        try:
+            store.evict_older_than(days=retention)
+        except Exception:
+            pass
+        await asyncio.sleep(24 * 3600)
 
 
 def main() -> None:
@@ -598,6 +610,15 @@ def main() -> None:
     # Mounted after create_app so it slots in alongside the routes registered by
     # http_routes / ws_routes / connectors_routes.
     app.include_router(build_attachments_router(store=attachment_store))
+
+    # Daily background GC sweep for attachment retention. Started on FastAPI
+    # startup so the loop runs on the live event loop. Retention threshold is
+    # read from KC_ATTACH_RETENTION_DAYS (default 90).
+    @app.on_event("startup")
+    async def _start_attachments_gc() -> None:
+        if deps.attachment_store is not None:
+            asyncio.create_task(_attachments_gc_loop(deps.attachment_store))
+
     uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("KC_PORT", "8765")))
 
 

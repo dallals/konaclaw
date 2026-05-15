@@ -72,3 +72,24 @@ def test_parsed_md_capped_at_1mb(store, tmp_path):
     att = store.save(conversation_id="conv_1", source=big, filename="big.txt")
     parsed = store.read_parsed(att.id)
     assert len(parsed) <= 1 * 1024 * 1024
+
+
+def test_evict_older_than_removes_old_and_keeps_recent(tmp_path):
+    s = AttachmentStore(root=tmp_path)
+    src = tmp_path / "h.txt"
+    src.write_text("hello", encoding="utf-8")
+    old = s.save(conversation_id="conv_1", source=src, filename="h.txt")
+    # Backdate the row in sqlite to simulate an old attachment.
+    s._db.execute(
+        "UPDATE attachments SET parsed_at = ? WHERE id = ?",
+        ("2024-01-01T00:00:00+00:00", old.id),
+    )
+    s._db.commit()
+    recent = s.save(conversation_id="conv_1", source=src, filename="h.txt")
+
+    evicted = s.evict_older_than(days=30)
+    assert old.id in evicted
+    assert recent.id not in evicted
+    with pytest.raises(AttachmentNotFound):
+        s.get(old.id)
+    assert s.get(recent.id).id == recent.id

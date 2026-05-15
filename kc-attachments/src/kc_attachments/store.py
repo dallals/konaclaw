@@ -4,7 +4,7 @@ import secrets
 import shutil
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -196,3 +196,19 @@ class AttachmentStore:
             if p.name.startswith("original."):
                 return p
         raise AttachmentNotFound(f"{attachment_id}: original file missing")
+
+    def evict_older_than(self, *, days: int) -> list[str]:
+        """Delete attachments whose parsed_at is older than `days` ago.
+        Returns the list of deleted attachment ids."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        rows = self._db.execute(
+            "SELECT id FROM attachments WHERE parsed_at < ?", (cutoff,),
+        ).fetchall()
+        deleted: list[str] = []
+        for (att_id,) in rows:
+            try:
+                self.delete(att_id)
+                deleted.append(att_id)
+            except AttachmentNotFound:
+                continue
+        return deleted
