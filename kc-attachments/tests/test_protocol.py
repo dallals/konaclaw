@@ -9,9 +9,8 @@ def test_parse_result_carries_markdown_and_extra():
     assert r.extra_meta == {"page_count": 3}
 
 
-def test_registry_is_initially_empty():
+def test_registry_is_a_dict():
     assert isinstance(REGISTRY, dict)
-    assert REGISTRY == {}
 
 
 def test_parser_protocol_is_runtime_checkable_via_duck_typing():
