@@ -3,6 +3,10 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import json as _json_mod  # alias to avoid shadowing in user code
+
+import httpx
+
 
 @dataclass(frozen=True)
 class SearchResult:
@@ -161,3 +165,85 @@ def _extract_status(e: Exception) -> int:
         if isinstance(v, int):
             return v
     return 0
+
+
+_OLLAMA_DEFAULT_BASE_URL = "https://ollama.com/api"
+_OLLAMA_DEFAULT_TIMEOUT = 60.0
+
+
+class OllamaClient:
+    """WebClient implementation backed by Ollama's hosted web search API.
+
+    Quirks vs the WebClient Protocol:
+      - `max_results` is silently clamped to [1, 10] (Ollama hard cap).
+      - `freshness` is silently ignored (no Ollama equivalent).
+      - `include_links` is silently ignored (Ollama always returns links;
+        ScrapeResult has no `links` field).
+      - `status_code` in ScrapeResult is always 0 (Ollama does not report it).
+      - `final_url` echoes the input url (Ollama does not report redirects).
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        http: httpx.AsyncClient | None = None,
+        base_url: str = _OLLAMA_DEFAULT_BASE_URL,
+    ) -> None:
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+        self._http = http
+        self._owns_http = http is None
+
+    async def _client(self) -> httpx.AsyncClient:
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=_OLLAMA_DEFAULT_TIMEOUT)
+        return self._http
+
+    async def aclose(self) -> None:
+        if self._http is not None and self._owns_http:
+            await self._http.aclose()
+            self._http = None
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+    async def search(
+        self,
+        query: str,
+        max_results: int,
+        freshness: str,
+    ) -> list[SearchResult]:
+        clamped = max(1, min(10, int(max_results)))
+        body: dict[str, Any] = {"query": query, "max_results": clamped}
+        http = await self._client()
+        try:
+            resp = await http.post(
+                f"{self._base_url}/web_search",
+                json=body,
+                headers=self._headers(),
+            )
+        except httpx.TimeoutException:
+            # Convert to asyncio.TimeoutError so the search.py wait_for wrapper
+            # catches it via its existing `except asyncio.TimeoutError` branch.
+            raise asyncio.TimeoutError() from None
+        except httpx.HTTPError as e:
+            raise WebClientError(0, str(e)) from e
+        if resp.status_code >= 400:
+            raise WebClientError(resp.status_code, resp.text[:512])
+        try:
+            data = resp.json()
+        except (_json_mod.JSONDecodeError, ValueError) as e:
+            raise WebClientError(0, f"invalid_json: {e}") from e
+        items = data.get("results") or []
+        return [
+            SearchResult(
+                title=str(r.get("title", "")),
+                url=str(r.get("url", "")),
+                snippet=str(r.get("content", "")),
+            )
+            for r in items
+        ]
