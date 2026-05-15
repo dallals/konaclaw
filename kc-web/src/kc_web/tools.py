@@ -4,7 +4,7 @@ from typing import Any
 from kc_core.tools import Tool
 
 from kc_web.budget import BudgetStore
-from kc_web.client import FirecrawlClient, WebClient
+from kc_web.client import FirecrawlClient, OllamaClient, WebClient
 from kc_web.config import WebConfig
 from kc_web.fetch import build_web_fetch_impl
 from kc_web.search import build_web_search_impl
@@ -27,7 +27,10 @@ _SEARCH_PARAMS: dict[str, Any] = {
         "freshness": {
             "type": "string",
             "enum": ["any", "day", "week", "month", "year"],
-            "description": "Optional. Restrict to results from the last day/week/month/year. Default `any`.",
+            "description": (
+                "Optional. Restrict to results from the last day/week/month/year. "
+                "Default `any`. May be ignored by some backends."
+            ),
         },
     },
     "required": ["query"],
@@ -35,7 +38,7 @@ _SEARCH_PARAMS: dict[str, Any] = {
 
 
 _SEARCH_DESCRIPTION = (
-    "Search the web via Firecrawl. Returns a list of {title, url, snippet} results. "
+    "Search the web. Returns a list of {title, url, snippet} results. "
     "Read-only, no approval prompt. Counts against the per-session and per-day "
     "budget caps. Use `site:` operator in the query to scope to a domain."
 )
@@ -58,7 +61,10 @@ _FETCH_PARAMS: dict[str, Any] = {
         },
         "include_links": {
             "type": "boolean",
-            "description": "Optional. If true, ask Firecrawl to extract links alongside markdown. Default false.",
+            "description": (
+                "Optional. If true, ask the backend to extract links alongside "
+                "markdown. Default false. May be ignored by some backends."
+            ),
         },
     },
     "required": ["url"],
@@ -66,7 +72,7 @@ _FETCH_PARAMS: dict[str, Any] = {
 
 
 _FETCH_DESCRIPTION = (
-    "Fetch a public web page via Firecrawl and return its content as markdown. "
+    "Fetch a public web page and return its content as markdown. "
     "Read-only, no approval prompt. Long pages are head+tail truncated to "
     "fit a configured cap. Counts against the per-session and per-day budget "
     "caps. Will not fetch local or private hosts."
@@ -80,11 +86,14 @@ def build_web_tools(
 ) -> list[Tool]:
     """Build web_search and web_fetch tools.
 
-    `client` is injectable for tests; in production, omit it and a FirecrawlClient
-    is constructed from cfg.firecrawl_api_key. The BudgetStore is constructed
-    fresh per call to build_web_tools (one store shared by both tools)."""
+    `client` is injectable for tests; in production, omit it and the right
+    backend client is constructed based on cfg.backend.
+    """
     if client is None:
-        client = FirecrawlClient(api_key=cfg.firecrawl_api_key)
+        if cfg.backend == "ollama":
+            client = OllamaClient(api_key=cfg.ollama_api_key or "")
+        else:
+            client = FirecrawlClient(api_key=cfg.firecrawl_api_key or "")
 
     budget = BudgetStore(
         db_path=cfg.budget_db_path,

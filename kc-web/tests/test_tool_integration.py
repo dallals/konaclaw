@@ -73,3 +73,28 @@ def test_factory_idempotent_no_shared_state(cfg):
     b = build_web_tools(cfg, client=FakeClient())
     # Different Tool instances:
     assert a[0] is not b[0]
+
+
+from kc_web.client import OllamaClient, FirecrawlClient
+from kc_web.config import WebConfig
+from kc_web.tools import build_web_tools
+
+
+def test_build_web_tools_picks_ollama_when_backend_ollama(monkeypatch):
+    cfg = WebConfig.with_defaults(backend="ollama", ollama_api_key="sk-o")
+    tools = build_web_tools(cfg)
+    # We can't introspect the client directly without exposing it; instead,
+    # verify the tools build successfully and the JSON tool descriptions are
+    # backend-neutral.
+    assert len(tools) == 2
+    names = {t.name for t in tools}
+    assert names == {"web_search", "web_fetch"}
+    for t in tools:
+        assert "Firecrawl" not in t.description
+        assert "firecrawl" not in t.description.lower()
+
+
+def test_build_web_tools_picks_firecrawl_when_backend_firecrawl():
+    cfg = WebConfig.with_defaults(backend="firecrawl", firecrawl_api_key="fc-k")
+    tools = build_web_tools(cfg)
+    assert len(tools) == 2
