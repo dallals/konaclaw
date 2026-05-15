@@ -13,6 +13,15 @@ class TextDelta:
 
 
 @dataclass(frozen=True)
+class ReasoningDelta:
+    """Chunk of model reasoning ("thinking") text. Emitted by reasoning models
+    (gemma4, deepseek-r1, qwq, etc.) before they produce the final answer.
+    Travels in parallel with TextDelta on the same stream — clients should
+    accumulate it into a separate channel."""
+    content: str
+
+
+@dataclass(frozen=True)
 class ToolCallsBlock:
     """A complete set of tool calls emitted by the model in one turn."""
     calls: list[dict[str, Any]]
@@ -39,7 +48,7 @@ class ChatUsage:
     usage_reported: bool
 
 
-ChatStreamFrame = Union[TextDelta, ToolCallsBlock, Done, ChatUsage]
+ChatStreamFrame = Union[TextDelta, ReasoningDelta, ToolCallsBlock, Done, ChatUsage]
 
 
 # ---- Agent-level: what Agent.send_stream yields ----
@@ -47,6 +56,14 @@ ChatStreamFrame = Union[TextDelta, ToolCallsBlock, Done, ChatUsage]
 @dataclass(frozen=True)
 class TokenDelta:
     """Forwarded text chunk during the model's text generation phase."""
+    content: str
+
+
+@dataclass(frozen=True)
+class ReasoningTokenDelta:
+    """Forwarded reasoning ("thinking") chunk from reasoning-capable models.
+    Distinct from TokenDelta so the UI can render it in a separate channel
+    (e.g. a collapsible "Thinking" block) and not mix it into the answer text."""
     content: str
 
 
@@ -84,4 +101,4 @@ class TurnUsage:
     usage_reported: bool
 
 
-StreamFrame = Union[TokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage]
+StreamFrame = Union[TokenDelta, ReasoningTokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage]

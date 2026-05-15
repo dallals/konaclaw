@@ -7,7 +7,7 @@ from kc_core.messages import (
     UserMessage, AssistantMessage, ToolCallMessage, ToolResultMessage,
 )
 from kc_core.stream_frames import (
-    TokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
+    TokenDelta, ReasoningTokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
 )
 from kc_supervisor.agents import AgentStatus
 from kc_supervisor.skill_slash import resolve_slash_command
@@ -152,6 +152,15 @@ def register_ws_routes(app: FastAPI) -> None:
                     })
                     continue
 
+                # Optional per-message `think` toggle. Forwarded to send_stream
+                # so reasoning-capable models (gemma4, deepseek-r1, qwq) can be
+                # asked to think (think=true) or skip reasoning (think=false).
+                # None preserves model default behavior.
+                think_raw = inbound.get("think")
+                think_param: bool | None = None
+                if isinstance(think_raw, bool):
+                    think_param = think_raw
+
                 # Slash command resolution: if the message starts with
                 # /<known-skill-name>, prepend the loaded skill body to the
                 # text the model sees, but persist the user's *original*
@@ -187,9 +196,14 @@ def register_ws_routes(app: FastAPI) -> None:
                     now = datetime.now().astimezone()
                     tz_name = now.strftime("%Z") or "local"
                     tz_offset = now.strftime("%z") or ""
+                    # Granularity is minute, not second — the timestamp is part
+                    # of the system prompt and Ollama's KV cache is byte-keyed,
+                    # so a per-second timestamp invalidates the prefill cache on
+                    # every turn. Per-minute lets same-minute follow-ups reuse
+                    # the prefill (massive TTFT win on big models).
                     date_prefix = (
                         f"[Current local date and time: {now.strftime('%A, %B %-d, %Y at %-I:%M %p')} "
-                        f"{tz_name} ({now.strftime('%Y-%m-%dT%H:%M:%S')}{tz_offset}). "
+                        f"{tz_name} ({now.strftime('%Y-%m-%dT%H:%M')}{tz_offset}). "
                         f"The user's timezone is {tz_name}. "
                         f"When calling tools that take time arguments (calendar, scheduling, "
                         f"reminders), pass times in the user's LOCAL timezone, not UTC/GMT. "
@@ -241,9 +255,13 @@ def register_ws_routes(app: FastAPI) -> None:
                         "agent": rt.name,
                     })
                     try:
-                        async for frame in rt.assembled.core_agent.send_stream(agent_input):
+                        async for frame in rt.assembled.core_agent.send_stream(
+                            agent_input, think=think_param,
+                        ):
                             if isinstance(frame, TokenDelta):
                                 await _safe_send({"type": "token", "delta": frame.content})
+                            elif isinstance(frame, ReasoningTokenDelta):
+                                await _safe_send({"type": "reasoning", "delta": frame.content})
                             elif isinstance(frame, ToolCallStart):
                                 deps.conversations.append(conversation_id, ToolCallMessage(
                                     tool_call_id=frame.call["id"],

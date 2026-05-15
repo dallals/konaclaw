@@ -58,11 +58,18 @@ export function MessageBubble({
   role,
   content,
   usage,
+  reasoning,
 }: {
   role: Role;
   content: string;
   usage?: BubbleUsage;
+  reasoning?: string;
 }) {
+  const hasReasoning = !!reasoning && reasoning.trim().length > 0;
+  const hasContent = !!content && content.trim().length > 0;
+  // Auto-collapse: open while reasoning streams (no content yet), close once
+  // content begins. User can re-toggle manually after streaming settles.
+  const reasoningOpenByDefault = hasReasoning && !hasContent;
   const isEmpty = !content || !content.trim();
   const isUser = role === "user";
   // Suppress the "(no reply...)" placeholder for intermediate / tool-only turns.
@@ -95,6 +102,19 @@ export function MessageBubble({
       </div>
 
       <div>
+        {hasReasoning && (
+          <details
+            open={reasoningOpenByDefault}
+            className="mb-3 max-w-[64ch] border border-line/60 bg-bgDeep/30 rounded-sm"
+          >
+            <summary className="cursor-pointer select-none font-mono text-[10px] uppercase tracking-[0.16em] text-muted2 px-2.5 py-1.5 hover:text-accent">
+              {hasContent ? "Reasoning" : "Thinking…"}
+            </summary>
+            <div className="px-2.5 pb-2 pt-1 font-mono text-[12px] leading-[1.55] text-muted whitespace-pre-wrap">
+              {reasoning}
+            </div>
+          </details>
+        )}
         <div
           className={`font-body text-[16px] leading-[1.6] max-w-[64ch] ${
             isUser ? "font-medium text-textStrong whitespace-pre-wrap" : "text-text"

@@ -475,3 +475,123 @@ def test_ws_chat_partial_reporting_yields_null_token_counts(app, deps):
     assert usage["ttfb_ms"] == 40.0
     assert usage["calls"] == 2
     assert usage["usage_reported"] is False
+
+
+def test_ws_chat_relays_reasoning_frames(app, deps):
+    """ReasoningTokenDelta frames from the agent must be relayed to the
+    dashboard as {"type":"reasoning","delta":...} so the UI can render a
+    separate thinking channel for reasoning models like gemma4."""
+    from kc_core.messages import AssistantMessage
+    from kc_core.stream_frames import (
+        ReasoningTokenDelta, TokenDelta, TurnUsage, Complete,
+    )
+
+    frames = [
+        ReasoningTokenDelta(content="Let me "),
+        ReasoningTokenDelta(content="think..."),
+        TokenDelta(content="Hi"),
+        TurnUsage(call_index=0, input_tokens=10, output_tokens=2,
+                  ttfb_ms=15.0, generation_ms=25.0, usage_reported=True),
+        Complete(reply=AssistantMessage(content="Hi")),
+    ]
+    _inject_send_stream(deps, "alice", frames)
+
+    with TestClient(app) as client:
+        cid = client.post(
+            "/agents/alice/conversations", json={"channel": "dashboard"}
+        ).json()["conversation_id"]
+        seen = []
+        with client.websocket_connect(f"/ws/chat/{cid}") as ws:
+            ws.send_json({"type": "user_message", "content": "hi"})
+            while True:
+                m = ws.receive_json()
+                seen.append(m)
+                if m["type"] == "assistant_complete":
+                    break
+
+    reasoning_msgs = [m for m in seen if m["type"] == "reasoning"]
+    token_msgs = [m for m in seen if m["type"] == "token"]
+    assert "".join(m["delta"] for m in reasoning_msgs) == "Let me think..."
+    assert "".join(m["delta"] for m in token_msgs) == "Hi"
+    # Order: reasoning arrives before the first token, matching upstream order.
+    first_reasoning_idx = seen.index(reasoning_msgs[0])
+    first_token_idx = seen.index(token_msgs[0])
+    assert first_reasoning_idx < first_token_idx
+
+    # Reasoning text must NOT contaminate the persisted assistant content.
+    rows = deps.storage.list_messages(cid)
+    asst = [r for r in rows if r["role"] == "assistant"][-1]
+    assert asst["content"] == "Hi"
+    assert "think" not in asst["content"].lower()
+
+
+def test_ws_chat_forwards_think_parameter_to_send_stream(app, deps):
+    """When inbound user_message includes `think: false`, the supervisor must
+    pass think=False to Agent.send_stream so the underlying client routes to
+    Ollama's native /api/chat where the parameter is honored."""
+    from unittest.mock import patch
+    from kc_core.messages import AssistantMessage
+    from kc_core.stream_frames import TokenDelta, TurnUsage, Complete
+
+    rt = deps.registry.get("alice")
+    orig = rt.assembled.core_agent.send_stream
+    captured: list = []
+
+    async def wrapped(user_text, *, think=None):
+        captured.append(think)
+        async def _frames():
+            yield TokenDelta(content="ok")
+            yield TurnUsage(call_index=0, input_tokens=1, output_tokens=1,
+                            ttfb_ms=1.0, generation_ms=1.0, usage_reported=True)
+            yield Complete(reply=AssistantMessage(content="ok"))
+        async for f in _frames():
+            yield f
+
+    with patch.object(rt.assembled.core_agent, "send_stream", side_effect=wrapped):
+        with TestClient(app) as client:
+            cid = client.post(
+                "/agents/alice/conversations", json={"channel": "dashboard"}
+            ).json()["conversation_id"]
+            with client.websocket_connect(f"/ws/chat/{cid}") as ws:
+                ws.send_json({"type": "user_message", "content": "hi", "think": False})
+                while True:
+                    m = ws.receive_json()
+                    if m["type"] == "assistant_complete":
+                        break
+
+    assert captured == [False]
+
+
+def test_ws_chat_omits_think_when_not_provided(app, deps):
+    """Backward-compat: when inbound user_message has no `think` key, the
+    supervisor passes think=None — same as before the toggle existed."""
+    from unittest.mock import patch
+    from kc_core.messages import AssistantMessage
+    from kc_core.stream_frames import TokenDelta, TurnUsage, Complete
+
+    rt = deps.registry.get("alice")
+    captured: list = []
+
+    async def wrapped(user_text, *, think=None):
+        captured.append(think)
+        async def _frames():
+            yield TokenDelta(content="ok")
+            yield TurnUsage(call_index=0, input_tokens=1, output_tokens=1,
+                            ttfb_ms=1.0, generation_ms=1.0, usage_reported=True)
+            yield Complete(reply=AssistantMessage(content="ok"))
+        async for f in _frames():
+            yield f
+
+    with patch.object(rt.assembled.core_agent, "send_stream", side_effect=wrapped):
+        with TestClient(app) as client:
+            cid = client.post(
+                "/agents/alice/conversations", json={"channel": "dashboard"}
+            ).json()["conversation_id"]
+            with client.websocket_connect(f"/ws/chat/{cid}") as ws:
+                ws.send_json({"type": "user_message", "content": "hi"})
+                while True:
+                    m = ws.receive_json()
+                    if m["type"] == "assistant_complete":
+                        break
+
+    assert captured == [None]

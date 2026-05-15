@@ -2,10 +2,10 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse
 import httpx
-from kc_core.stream_frames import TextDelta, ToolCallsBlock, Done
+from kc_core.stream_frames import TextDelta, ReasoningDelta, ToolCallsBlock, Done, ChatUsage
 
 
 @dataclass
@@ -31,8 +31,10 @@ class OllamaClient:
         # If the path is empty or just "/", prepend /v1 as well.
         if parsed.path and parsed.path != "/":
             self._completions_url = f"{stripped}/chat/completions"
+            self._native_chat_url = None  # remote OpenAI-compat, no native API
         else:
             self._completions_url = f"{stripped}/v1/chat/completions"
+            self._native_chat_url = f"{stripped}/api/chat"
         self.base_url = stripped
         self.model = model
         self._timeout = timeout
@@ -48,8 +50,34 @@ class OllamaClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        think: Optional[bool] = None,
     ):
-        """Stream OpenAI-compatible SSE frames as ChatStreamFrame.
+        """Stream chat frames.
+
+        When `think` is None, uses Ollama's OpenAI-compatible SSE endpoint at
+        /v1/chat/completions (the default; required for remote providers like
+        NVIDIA NIM, OpenRouter, etc.).
+
+        When `think` is True/False, uses Ollama's native JSON-lines endpoint
+        at /api/chat which honors the `think` parameter. The /v1 shim ignores
+        `think`, so reasoning models will always reason on /v1 regardless —
+        this is the only way to actually suppress (or force) reasoning.
+        Falls back silently to /v1 if the base_url is a remote OpenAI-compat
+        endpoint where /api/chat doesn't exist.
+        """
+        if think is not None and self._native_chat_url is not None:
+            async for f in self._chat_stream_native(messages, tools, think=think):
+                yield f
+        else:
+            async for f in self._chat_stream_openai(messages, tools):
+                yield f
+
+    async def _chat_stream_openai(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ):
+        """OpenAI-compatible SSE path (/v1/chat/completions).
 
         Tool calls in OpenAI's streaming format arrive as multi-chunk fragments
         (function.arguments is split across deltas). We accumulate them per index
@@ -115,6 +143,17 @@ class OllamaClient:
                             if args_frag:
                                 slot["arguments_str"] += args_frag
 
+                    # Yield reasoning content first (reasoning models like
+                    # gemma4 emit `reasoning` deltas before any `content`).
+                    # TTFB is stamped here too — from the user's perspective
+                    # bytes have started flowing as soon as reasoning streams,
+                    # even though `content` is still empty.
+                    reasoning = delta.get("reasoning")
+                    if reasoning:
+                        if t_first_byte is None:
+                            t_first_byte = time.monotonic()
+                        yield ReasoningDelta(content=reasoning)
+
                     # Yield text content
                     text = delta.get("content")
                     if text:
@@ -160,10 +199,119 @@ class OllamaClient:
                         input_tokens = pt
                         output_tokens = ct
                         usage_reported = True
-                from kc_core.stream_frames import ChatUsage
                 yield ChatUsage(
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    ttfb_ms=ttfb_ms,
+                    generation_ms=gen_ms,
+                    usage_reported=usage_reported,
+                )
+
+    async def _chat_stream_native(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        think: bool,
+    ):
+        """Ollama native /api/chat path. JSON-lines stream where each line is
+        a full chat completion chunk: {"message":{...},"done":bool, ...}.
+
+        Honors `think: false` to suppress reasoning on capable models.
+        """
+        assert self._native_chat_url is not None  # guarded by caller
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "think": think,
+        }
+        if tools:
+            body["tools"] = tools
+
+        t_request_start = time.monotonic()
+        t_first_byte: float | None = None
+        prompt_eval_count = 0
+        eval_count = 0
+        prompt_eval_duration_ns = 0
+        eval_duration_ns = 0
+        usage_reported = False
+        done_emitted = False
+        tool_calls_pending: list[dict[str, Any]] = []
+        call_idx = 0
+
+        async with httpx.AsyncClient(timeout=self._timeout) as http:
+            async with http.stream(
+                "POST",
+                self._native_chat_url,
+                json=body,
+                headers=self._headers(),
+            ) as r:
+                if r.status_code != 200:
+                    body_bytes = await r.aread()
+                    raise RuntimeError(f"Ollama returned {r.status_code}: {body_bytes!r}")
+                async for line in r.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    msg = chunk.get("message") or {}
+
+                    thinking = msg.get("thinking")
+                    if thinking:
+                        if t_first_byte is None:
+                            t_first_byte = time.monotonic()
+                        yield ReasoningDelta(content=thinking)
+
+                    content = msg.get("content")
+                    if content:
+                        if t_first_byte is None:
+                            t_first_byte = time.monotonic()
+                        yield TextDelta(content=content)
+
+                    raw_calls = msg.get("tool_calls") or []
+                    for tc in raw_calls:
+                        fn = tc.get("function") or {}
+                        args = fn.get("arguments")
+                        # /api/chat sends arguments as either dict or JSON string.
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {}
+                        elif not isinstance(args, dict):
+                            args = {}
+                        tool_calls_pending.append({
+                            "id": tc.get("id") or f"call_{call_idx}",
+                            "name": fn.get("name", ""),
+                            "arguments": args,
+                        })
+                        call_idx += 1
+
+                    if chunk.get("done") and not done_emitted:
+                        prompt_eval_count = int(chunk.get("prompt_eval_count") or 0)
+                        eval_count = int(chunk.get("eval_count") or 0)
+                        prompt_eval_duration_ns = int(chunk.get("prompt_eval_duration") or 0)
+                        eval_duration_ns = int(chunk.get("eval_duration") or 0)
+                        usage_reported = prompt_eval_count > 0 or eval_count > 0
+                        if tool_calls_pending:
+                            yield ToolCallsBlock(calls=tool_calls_pending)
+                            tool_calls_pending = []
+                        finish = chunk.get("done_reason") or "stop"
+                        yield Done(finish_reason=finish)
+                        done_emitted = True
+
+                t_done = time.monotonic()
+                if t_first_byte is None:
+                    t_first_byte = t_done  # tool-only or empty turn
+                ttfb_ms = (t_first_byte - t_request_start) * 1000.0
+                gen_ms = (t_done - t_first_byte) * 1000.0
+                yield ChatUsage(
+                    input_tokens=prompt_eval_count,
+                    output_tokens=eval_count,
                     ttfb_ms=ttfb_ms,
                     generation_ms=gen_ms,
                     usage_reported=usage_reported,
@@ -173,13 +321,13 @@ class OllamaClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        think: Optional[bool] = None,
     ) -> ChatResponse:
         """Non-streaming convenience: accumulate chat_stream into a ChatResponse."""
-        from kc_core.stream_frames import TextDelta, ToolCallsBlock, Done
         text_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         finish: str = ""
-        async for frame in self.chat_stream(messages=messages, tools=tools):
+        async for frame in self.chat_stream(messages=messages, tools=tools, think=think):
             if isinstance(frame, TextDelta):
                 text_parts.append(frame.content)
             elif isinstance(frame, ToolCallsBlock):

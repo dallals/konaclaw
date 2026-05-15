@@ -64,7 +64,9 @@ describe("Chat view", () => {
     fireEvent.change(input, { target: { value: "hi" } });
     fireEvent.submit(input.closest("form")!);
 
-    expect(lastFakeWS!.sent[0]).toBe(JSON.stringify({ type: "user_message", content: "hi" }));
+    expect(lastFakeWS!.sent[0]).toBe(
+      JSON.stringify({ type: "user_message", content: "hi", think: false }),
+    );
 
     messagesPayload = [
       { type: "UserMessage", content: "hi" },
@@ -74,6 +76,27 @@ describe("Chat view", () => {
     expect(await screen.findByText(/Hello back!/)).toBeInTheDocument();
     const replies = await screen.findAllByText(/Hello back!/);
     expect(replies).toHaveLength(1);
+  });
+
+  it("Think toggle flips the `think` field sent in the next user_message", async () => {
+    render(wrap(<Chat />));
+    fireEvent.click(await screen.findByText(/kc/i));
+    fireEvent.click(screen.getByRole("button", { name: /new drawing/i }));
+    await waitFor(() => expect(lastFakeWS).not.toBeNull());
+
+    // Click the Think pill to enable reasoning for the next message.
+    const thinkBtn = screen.getByRole("button", { name: /^think$/i });
+    expect(thinkBtn.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(thinkBtn);
+    expect(thinkBtn.getAttribute("aria-pressed")).toBe("true");
+
+    const input = screen.getByPlaceholderText(/reply/i);
+    fireEvent.change(input, { target: { value: "explain quantum" } });
+    fireEvent.submit(input.closest("form")!);
+
+    expect(lastFakeWS!.sent[0]).toBe(
+      JSON.stringify({ type: "user_message", content: "explain quantum", think: true }),
+    );
   });
 
   it("renders Last reply / TTFB header rows after a usage event", async () => {

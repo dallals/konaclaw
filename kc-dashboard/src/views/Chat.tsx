@@ -115,6 +115,11 @@ export default function Chat() {
 
   const { events, sendUserMessage } = useChatSocket(activeConv);
   const [draft, setDraft] = useState("");
+  // Per-message reasoning toggle. Defaults off — gemma4 and other reasoning
+  // models over-think trivial prompts; user opts in when depth is wanted.
+  // Only honored by the supervisor when the agent's model is reasoning-capable
+  // and the Ollama base_url is local (native /api/chat).
+  const [thinkOn, setThinkOn] = useState(false);
 
   const [pendingClarifies, setPendingClarifies] = useState<Array<{
     request_id: string; question: string; choices: string[];
@@ -278,6 +283,23 @@ export default function Chat() {
     for (let i = start; i < events.length; i++) {
       const e = events[i];
       if (e.type === "token") buf += e.delta;
+    }
+    return buf;
+  }, [events]);
+
+  // Reasoning ("thinking") deltas accumulated alongside the streaming bubble.
+  // Reasoning models (gemma4, deepseek-r1, qwq) emit these before content.
+  // Ephemeral: not persisted, disappears when assistant_complete fires and
+  // the bubble is replaced by the persisted MessageBubble.
+  const streamingReasoning = useMemo(() => {
+    let start = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].type === "assistant_complete") { start = i + 1; break; }
+    }
+    let buf = "";
+    for (let i = start; i < events.length; i++) {
+      const e = events[i];
+      if (e.type === "reasoning") buf += e.delta;
     }
     return buf;
   }, [events]);
@@ -749,7 +771,13 @@ export default function Chat() {
               />
             );
           })}
-          {streaming.trim() && <MessageBubble role="assistant" content={streaming} />}
+          {(streaming.trim() || streamingReasoning.trim()) && (
+            <MessageBubble
+              role="assistant"
+              content={streaming}
+              reasoning={streamingReasoning || undefined}
+            />
+          )}
           {pendingForAgent.map((req) => (
             <ApprovalCard
               key={req.request_id}
@@ -771,7 +799,7 @@ export default function Chat() {
               resolved={req.resolved}
             />
           ))}
-          {awaitingReply && pendingForAgent.length === 0 && !streaming && (() => {
+          {awaitingReply && pendingForAgent.length === 0 && !streaming && !streamingReasoning && (() => {
             const last = events[events.length - 1] as { type?: string; call?: { name?: string } } | undefined;
             let label = "thinking";
             if (last?.type === "tool_call" && last.call?.name) {
@@ -788,7 +816,11 @@ export default function Chat() {
             onSubmit={(e) => {
               e.preventDefault();
               if (!draft.trim()) return;
-              sendUserMessage(draft);
+              sendUserMessage({
+                type: "user_message",
+                content: draft,
+                think: thinkOn,
+              });
               qc.setQueryData(["messages", activeConv], (old: { messages: unknown[] } | undefined) => ({
                 messages: [...(old?.messages ?? []), { type: "UserMessage", content: draft }],
               }));
@@ -809,6 +841,21 @@ export default function Chat() {
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
               />
+              <button
+                type="button"
+                aria-pressed={thinkOn}
+                onClick={() => setThinkOn((v) => !v)}
+                title={thinkOn
+                  ? "Reasoning ON — model will think before answering"
+                  : "Reasoning OFF — model answers directly"}
+                className={`border px-3 font-mono text-[11px] uppercase tracking-[0.16em] font-bold inline-flex items-center gap-1.5 transition-colors ${
+                  thinkOn
+                    ? "bg-accent text-bgDeep border-accent hover:bg-accentBright"
+                    : "bg-transparent text-muted border-line hover:text-accent hover:border-accent"
+                }`}
+              >
+                <span>Think</span>
+              </button>
               <button
                 type="submit"
                 className="bg-accent text-bgDeep border-none px-7 font-mono text-[11px] uppercase tracking-[0.18em] font-bold inline-flex items-center gap-2 hover:bg-accentBright transition-colors"

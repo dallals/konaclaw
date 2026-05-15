@@ -10,8 +10,8 @@ from kc_core.messages import (
 from kc_core.tools import ToolRegistry
 from kc_core.tool_call_parser import parse_text_tool_calls
 from kc_core.stream_frames import (
-    ChatStreamFrame, TextDelta, ToolCallsBlock, Done, ChatUsage,
-    StreamFrame, TokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
+    ChatStreamFrame, TextDelta, ReasoningDelta, ToolCallsBlock, Done, ChatUsage,
+    StreamFrame, TokenDelta, ReasoningTokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
 )
 
 
@@ -41,12 +41,22 @@ class Agent:
         self.history.append(UserMessage(content=user_text))
         return await self._run_loop()
 
-    async def send_stream(self, user_text: str) -> AsyncIterator[StreamFrame]:
+    async def send_stream(
+        self,
+        user_text: str,
+        *,
+        think: Optional[bool] = None,
+    ) -> AsyncIterator[StreamFrame]:
         """Streaming variant of send(). Yields StreamFrame objects as the model produces them.
 
         Same ReAct loop semantics as send: permission denial preserved (deny path appends
         'Denied: ...' tool result and continues); multi-tool-call serialization invariant
         preserved (all ToolCallMessages first, then all ToolResultMessages).
+
+        `think` controls whether the model's reasoning is enabled. None = client
+        default (whatever the model would do); True = force reasoning on;
+        False = force reasoning off. Only honored when the client talks to a
+        local Ollama instance (remote OpenAI-compat endpoints ignore it).
         """
         self.history.append(UserMessage(content=user_text))
         call_index = 0
@@ -55,11 +65,23 @@ class Agent:
             text_parts: list[str] = []
             tool_calls_block: list[dict[str, Any]] | None = None
 
-            # Drain one model turn from chat_stream
-            async for cs_frame in self.client.chat_stream(messages=wire, tools=self.tools.to_openai_schema()):
+            # Drain one model turn from chat_stream.
+            # Only pass `think` when explicitly set, so legacy/mock clients
+            # without the param keep working.
+            client_kwargs: dict[str, Any] = {
+                "messages": wire,
+                "tools": self.tools.to_openai_schema(),
+            }
+            if think is not None:
+                client_kwargs["think"] = think
+            async for cs_frame in self.client.chat_stream(**client_kwargs):
                 if isinstance(cs_frame, TextDelta):
                     text_parts.append(cs_frame.content)
                     yield TokenDelta(content=cs_frame.content)
+                elif isinstance(cs_frame, ReasoningDelta):
+                    # Reasoning is ephemeral — not appended to text_parts and not
+                    # persisted in history. Just relay to the UI as a parallel channel.
+                    yield ReasoningTokenDelta(content=cs_frame.content)
                 elif isinstance(cs_frame, ToolCallsBlock):
                     tool_calls_block = cs_frame.calls
                 elif isinstance(cs_frame, Done):

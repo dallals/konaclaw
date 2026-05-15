@@ -14,6 +14,7 @@ export type ChatUsageEvent = {
 export type ChatEvent =
   | { type: "agent_status"; status: string }
   | { type: "token"; delta: string }
+  | { type: "reasoning"; delta: string }
   | { type: "tool_call"; call: { id: string; name: string; arguments?: unknown } }
   | { type: "tool_result"; tool_call_id: string; content?: string }
   | ChatUsageEvent

@@ -398,3 +398,213 @@ async def test_chat_stream_emits_chat_usage_for_tool_only_turn():
     assert usage.output_tokens == 8
     # tool-only turn: no text was emitted, so generation_ms should be 0.0
     assert usage.generation_ms == 0.0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_yields_reasoning_deltas_for_reasoning_models():
+    """Reasoning models (gemma4, deepseek-r1, qwq, etc.) emit a `reasoning`
+    field on delta — parallel to `content`. The client should surface those
+    as ReasoningDelta frames so the UI can render thinking in a separate
+    channel."""
+    body = _sse_bytes(
+        {"choices": [{"delta": {"reasoning": "The "}}]},
+        {"choices": [{"delta": {"reasoning": "user "}}]},
+        {"choices": [{"delta": {"reasoning": "asks."}}]},
+        {"choices": [{"delta": {"content": "Hello"}}]},
+        {"choices": [{"delta": {"content": "!"}, "finish_reason": "stop"}]},
+        "[DONE]",
+    )
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=Response(200, content=body)
+    )
+    from kc_core.stream_frames import TextDelta, ReasoningDelta, Done
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma4:31b")
+    frames = []
+    async for f in client.chat_stream(messages=[], tools=[]):
+        frames.append(f)
+    reasoning = "".join(f.content for f in frames if isinstance(f, ReasoningDelta))
+    text = "".join(f.content for f in frames if isinstance(f, TextDelta))
+    assert reasoning == "The user asks."
+    assert text == "Hello!"
+    # Reasoning frames must arrive before the first text frame, mirroring
+    # the order the model emits them — UI relies on order for auto-collapse.
+    first_text_idx = next(i for i, f in enumerate(frames) if isinstance(f, TextDelta))
+    first_reasoning_idx = next(i for i, f in enumerate(frames) if isinstance(f, ReasoningDelta))
+    assert first_reasoning_idx < first_text_idx
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_handles_streams_without_reasoning():
+    """Non-reasoning models (qwen, gemma3, llama) never emit `reasoning`.
+    The client must not yield any ReasoningDelta frames in that case."""
+    body = _sse_bytes(
+        {"choices": [{"delta": {"content": "plain "}}]},
+        {"choices": [{"delta": {"content": "answer"}, "finish_reason": "stop"}]},
+        "[DONE]",
+    )
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=Response(200, content=body)
+    )
+    from kc_core.stream_frames import ReasoningDelta
+    client = OllamaClient(base_url="http://localhost:11434", model="qwen2.5:7b")
+    frames = []
+    async for f in client.chat_stream(messages=[], tools=[]):
+        frames.append(f)
+    assert not any(isinstance(f, ReasoningDelta) for f in frames)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_ttfb_captures_first_reasoning_byte_not_first_content():
+    """For reasoning models, bytes start flowing as soon as `reasoning` deltas
+    arrive — even though `content` may stay empty for many seconds. TTFB must
+    reflect when the user starts seeing output, not when the final answer
+    begins. Otherwise the badge reads '31s to start' when the user actually
+    saw streaming reasoning text from second 1."""
+    import asyncio
+    # Two reasoning chunks then a content chunk. We can't control wall time
+    # in tests; instead we just assert generation_ms (which measures
+    # done - first_byte) is non-zero, proving first_byte was stamped early.
+    body = _sse_bytes(
+        {"choices": [{"delta": {"reasoning": "thinking"}}]},
+        {"choices": [{"delta": {"reasoning": " more"}}]},
+        {"choices": [{"delta": {"content": "Hi"}, "finish_reason": "stop"}]},
+        {"usage": {"prompt_tokens": 5, "completion_tokens": 2}},
+        "[DONE]",
+    )
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=Response(200, content=body)
+    )
+    from kc_core.stream_frames import ChatUsage
+    # Insert a tiny sleep between client.chat_stream startup and consumption
+    # to ensure measurable time passes; respx returns instantly so this is
+    # the only way to make ttfb meaningfully > 0.
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma4:31b")
+    frames = []
+    async for f in client.chat_stream(messages=[], tools=[]):
+        frames.append(f)
+        if len(frames) == 1:
+            # After the first frame (a ReasoningDelta), wait briefly so the
+            # gap between first_byte and t_done is measurable.
+            await asyncio.sleep(0.02)
+    usage = next(f for f in frames if isinstance(f, ChatUsage))
+    # If first_byte was stamped on the first reasoning delta (as it should be),
+    # generation_ms will include the 20ms sleep above. If it was stamped on
+    # first content (the current bug), generation_ms ≈ 0 because content and
+    # done arrived in the same chunk.
+    assert usage.generation_ms >= 15.0, (
+        f"TTFB should be stamped on first reasoning byte, not first content. "
+        f"generation_ms={usage.generation_ms} suggests t_first_byte was set "
+        f"on the content delta (which arrived after the sleep), not the "
+        f"reasoning delta (which arrived before)."
+    )
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_routes_to_native_api_chat_when_think_is_false():
+    """When think=False is passed, the client must POST to Ollama's native
+    /api/chat endpoint (which honors `think: false`), not /v1/chat/completions
+    (which ignores it). The native endpoint's JSON-lines stream format
+    differs: each line is a full JSON object with a `message` field."""
+    ndjson_body = (
+        b'{"model":"gemma4:31b","message":{"role":"assistant","content":"Hello"},"done":false}\n'
+        b'{"model":"gemma4:31b","message":{"role":"assistant","content":"!"},"done":true,'
+        b'"done_reason":"stop","prompt_eval_count":10,"eval_count":2,'
+        b'"prompt_eval_duration":1000000,"eval_duration":2000000,"total_duration":4000000}\n'
+    )
+    route = respx.post("http://localhost:11434/api/chat").mock(
+        return_value=Response(200, content=ndjson_body, headers={"content-type": "application/x-ndjson"})
+    )
+    from kc_core.stream_frames import TextDelta, Done, ChatUsage
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma4:31b")
+    frames = []
+    async for f in client.chat_stream(messages=[], tools=[], think=False):
+        frames.append(f)
+    assert route.called
+    # Body must include the think field so Ollama suppresses reasoning.
+    sent = _json_mod.loads(route.calls.last.request.content)
+    assert sent.get("think") is False
+    assert sent.get("model") == "gemma4:31b"
+    # Frame translation must preserve the OpenAI-compat semantics.
+    text = "".join(f.content for f in frames if isinstance(f, TextDelta))
+    assert text == "Hello!"
+    done = [f for f in frames if isinstance(f, Done)]
+    assert len(done) == 1
+    assert done[0].finish_reason == "stop"
+    usage = next(f for f in frames if isinstance(f, ChatUsage))
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 2
+    assert usage.usage_reported is True
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_native_path_yields_reasoning_for_think_true():
+    """When think=True, the client uses /api/chat and Ollama emits `thinking`
+    in message — translate to ReasoningDelta frames."""
+    ndjson_body = (
+        b'{"model":"gemma4:31b","message":{"role":"assistant","content":"","thinking":"Let me "},"done":false}\n'
+        b'{"model":"gemma4:31b","message":{"role":"assistant","content":"","thinking":"see..."},"done":false}\n'
+        b'{"model":"gemma4:31b","message":{"role":"assistant","content":"Hi"},"done":true,'
+        b'"done_reason":"stop","prompt_eval_count":5,"eval_count":1}\n'
+    )
+    route = respx.post("http://localhost:11434/api/chat").mock(
+        return_value=Response(200, content=ndjson_body)
+    )
+    from kc_core.stream_frames import TextDelta, ReasoningDelta
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma4:31b")
+    frames = []
+    async for f in client.chat_stream(messages=[], tools=[], think=True):
+        frames.append(f)
+    sent = _json_mod.loads(route.calls.last.request.content)
+    assert sent.get("think") is True
+    reasoning = "".join(f.content for f in frames if isinstance(f, ReasoningDelta))
+    text = "".join(f.content for f in frames if isinstance(f, TextDelta))
+    assert reasoning == "Let me see..."
+    assert text == "Hi"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_native_path_parses_tool_calls():
+    """Ollama's /api/chat emits tool_calls as a complete array on a single
+    line (no fragment accumulation needed)."""
+    ndjson_body = (
+        b'{"model":"gemma4:31b","message":{"role":"assistant","content":"",'
+        b'"tool_calls":[{"function":{"name":"echo","arguments":{"text":"hi"}}}]},'
+        b'"done":true,"done_reason":"tool_calls","prompt_eval_count":5,"eval_count":1}\n'
+    )
+    respx.post("http://localhost:11434/api/chat").mock(
+        return_value=Response(200, content=ndjson_body)
+    )
+    from kc_core.stream_frames import ToolCallsBlock
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma4:31b")
+    frames = []
+    async for f in client.chat_stream(messages=[], tools=[{"type": "function", "function": {"name": "echo"}}], think=False):
+        frames.append(f)
+    tool_blocks = [f for f in frames if isinstance(f, ToolCallsBlock)]
+    assert len(tool_blocks) == 1
+    assert tool_blocks[0].calls[0]["name"] == "echo"
+    assert tool_blocks[0].calls[0]["arguments"] == {"text": "hi"}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_stays_on_openai_compat_when_think_is_none():
+    """think=None (default) preserves the existing /v1 path. No regression
+    against existing consumers (openrouter, NIM, etc.)."""
+    body = _sse_bytes(
+        {"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]},
+        "[DONE]",
+    )
+    v1_route = respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=Response(200, content=body)
+    )
+    client = OllamaClient(base_url="http://localhost:11434", model="qwen2.5:7b")
+    frames = []
+    async for f in client.chat_stream(messages=[], tools=[]):
+        frames.append(f)
+    assert v1_route.called

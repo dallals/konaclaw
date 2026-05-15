@@ -471,3 +471,65 @@ async def test_agent_send_stream_uses_json_in_text_fallback(fake_ollama):
     assert "ToolResult" in types
     assert isinstance(frames[-1], Complete)
     assert frames[-1].reply.content == "echoed: hi"
+
+
+@pytest.mark.asyncio
+async def test_agent_send_stream_relays_reasoning_deltas(fake_ollama):
+    """Reasoning models emit ReasoningDelta on the wire; the agent must
+    convert each to a ReasoningTokenDelta on the agent-level stream so the
+    dashboard can render thinking in a separate channel. Reasoning text must
+    NOT be merged into the final assistant message content."""
+    from kc_core.stream_frames import ReasoningDelta, ReasoningTokenDelta
+    client = fake_ollama(
+        stream_responses=[[
+            ReasoningDelta(content="Let me "),
+            ReasoningDelta(content="think..."),
+            TextDelta(content="The "),
+            TextDelta(content="answer."),
+            Done(finish_reason="stop"),
+        ]],
+    )
+    reg = ToolRegistry()
+    agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg)
+    frames = []
+    async for f in agent.send_stream("hi"):
+        frames.append(f)
+
+    reasoning = [f for f in frames if isinstance(f, ReasoningTokenDelta)]
+    tokens = [f for f in frames if isinstance(f, TokenDelta)]
+    assert "".join(f.content for f in reasoning) == "Let me think..."
+    assert "".join(f.content for f in tokens) == "The answer."
+
+    # Reasoning must come before the first text token (order preserved).
+    assert frames.index(reasoning[0]) < frames.index(tokens[0])
+
+    # Final assistant message must NOT include reasoning text.
+    complete = next(f for f in frames if isinstance(f, Complete))
+    assert complete.reply.content == "The answer."
+    assert "think" not in complete.reply.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_agent_send_stream_forwards_think_parameter(fake_ollama):
+    """When think is passed to send_stream, the agent must forward it to the
+    underlying client.chat_stream call so /api/chat can honor it."""
+    client = fake_ollama(
+        stream_responses=[[
+            TextDelta(content="ok"),
+            Done(finish_reason="stop"),
+        ]],
+    )
+    # Capture chat_stream kwargs by wrapping the existing method.
+    captured: list[dict] = []
+    orig = client.chat_stream
+    async def wrapped(**kw):
+        captured.append(kw)
+        async for f in orig(**{k: v for k, v in kw.items() if k != "think"}):
+            yield f
+    client.chat_stream = wrapped  # type: ignore[assignment]
+
+    reg = ToolRegistry()
+    agent = Agent(name="kc", client=client, system_prompt="sys", tools=reg)
+    async for _ in agent.send_stream("hi", think=False):
+        pass
+    assert captured and captured[0].get("think") is False
