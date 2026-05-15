@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kc-attachments"
+version = "0.1.0"
+description = "KonaClaw file-ingestion: drag-drop attachments + read_attachment tool."
+requires-python = ">=3.11"
+dependencies = [
+    "kc-core",
+    "pypdf>=4.0,<6.0",
+    "python-docx>=1.1,<2.0",
+    "openpyxl>=3.1,<4.0",
+    "Pillow>=10.0,<12.0",
+    "pytesseract>=0.3.10,<0.4",
+    "filetype>=1.2,<2.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kc_attachments"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+asyncio_mode = "auto"
