@@ -109,3 +109,101 @@ async def test_scrape_include_links_silently_ignored():
     await client.scrape("https://example.org/", timeout_seconds=10, include_links=True)
     assert "include_links" not in captured["body"]
     assert captured["body"] == {"url": "https://example.org/"}
+
+
+from kc_web.client import WebClientError
+
+
+@pytest.mark.asyncio
+async def test_search_401_raises_web_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="unauthorized")
+
+    client = _make_client(handler)
+    with pytest.raises(WebClientError) as exc_info:
+        await client.search("q", max_results=5, freshness="any")
+    assert exc_info.value.status == 401
+    assert "unauthorized" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_search_429_raises_web_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="rate limited")
+
+    client = _make_client(handler)
+    with pytest.raises(WebClientError) as exc_info:
+        await client.search("q", max_results=5, freshness="any")
+    assert exc_info.value.status == 429
+
+
+@pytest.mark.asyncio
+async def test_search_5xx_raises_web_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="service unavailable")
+
+    client = _make_client(handler)
+    with pytest.raises(WebClientError) as exc_info:
+        await client.search("q", max_results=5, freshness="any")
+    assert exc_info.value.status == 503
+
+
+@pytest.mark.asyncio
+async def test_search_invalid_json_raises_web_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json at all")
+
+    client = _make_client(handler)
+    with pytest.raises(WebClientError) as exc_info:
+        await client.search("q", max_results=5, freshness="any")
+    assert exc_info.value.status == 0
+    assert "invalid_json" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_scrape_4xx_raises_web_client_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    client = _make_client(handler)
+    with pytest.raises(WebClientError) as exc_info:
+        await client.scrape("https://x.example", timeout_seconds=10, include_links=False)
+    assert exc_info.value.status == 404
+
+
+@pytest.mark.asyncio
+async def test_search_network_error_raises_web_client_error_status_zero():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("dns failure", request=request)
+
+    client = _make_client(handler)
+    with pytest.raises(WebClientError) as exc_info:
+        await client.search("q", max_results=5, freshness="any")
+    assert exc_info.value.status == 0
+    assert "dns failure" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_search_httpx_timeout_bubbles_as_asyncio_timeout():
+    """httpx.TimeoutException must be converted to asyncio.TimeoutError so
+    the search.py wait_for wrapper catches it via its existing branch."""
+    import asyncio as _asyncio
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("read timeout", request=request)
+
+    client = _make_client(handler)
+    with pytest.raises(_asyncio.TimeoutError):
+        await client.search("q", max_results=5, freshness="any")
+
+
+@pytest.mark.asyncio
+async def test_scrape_httpx_timeout_bubbles_as_asyncio_timeout():
+    import asyncio as _asyncio
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("read timeout", request=request)
+
+    client = _make_client(handler)
+    with pytest.raises(_asyncio.TimeoutError):
+        await client.scrape("https://x.example", timeout_seconds=5, include_links=False)
