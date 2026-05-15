@@ -13,6 +13,10 @@ def _max_bytes() -> int:
     return int(os.environ.get("KC_ATTACH_MAX_BYTES", str(25 * 1024 * 1024)))
 
 
+def _max_per_conv() -> int:
+    return int(os.environ.get("KC_ATTACH_MAX_PER_CONV", str(500 * 1024 * 1024)))
+
+
 def build_attachments_router(*, store: AttachmentStore) -> APIRouter:
     router = APIRouter(prefix="/attachments", tags=["attachments"])
 
@@ -35,6 +39,13 @@ def build_attachments_router(*, store: AttachmentStore) -> APIRouter:
                 sniff_mime(tmp_path)
             except UnsupportedTypeError as e:
                 raise HTTPException(status_code=415, detail=str(e))
+            existing = store.list_for_conversation(conversation_id)
+            total_bytes = sum(r.size_bytes for r in existing)
+            if total_bytes + len(body) > _max_per_conv():
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"conversation attachment quota exceeded ({total_bytes + len(body)} > {_max_per_conv()})",
+                )
             rec = store.save(
                 conversation_id=conversation_id,
                 source=tmp_path,

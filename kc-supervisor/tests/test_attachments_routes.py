@@ -71,3 +71,16 @@ def test_delete_removes_attachment(tmp_path):
     from kc_attachments.store import AttachmentNotFound
     with pytest.raises(AttachmentNotFound):
         store.get(att_id)
+
+
+def test_upload_enforces_per_conversation_bytes(tmp_path, monkeypatch):
+    monkeypatch.setenv("KC_ATTACH_MAX_PER_CONV", "100")
+    app, _ = _app_with_router(tmp_path)
+    client = TestClient(app)
+    files = {"file": ("a.txt", b"x" * 60, "text/plain")}
+    r1 = client.post("/attachments/upload", params={"conversation_id": "conv_1"}, files=files)
+    assert r1.status_code == 200
+    files = {"file": ("b.txt", b"x" * 60, "text/plain")}
+    r2 = client.post("/attachments/upload", params={"conversation_id": "conv_1"}, files=files)
+    assert r2.status_code == 413
+    assert "conversation" in r2.json()["detail"].lower()

@@ -15,6 +15,8 @@ export interface Chip {
 let _seq = 0;
 const nextLocalId = () => `local-${++_seq}`;
 
+const MAX_FILES = Number(import.meta.env.VITE_KC_ATTACH_MAX_FILES || 10);
+
 export function useAttachmentUpload(conversationId: number | null) {
   const [chips, setChips] = useState<Chip[]>([]);
   // Mirror chips in a ref so callbacks can read the latest value synchronously
@@ -32,7 +34,9 @@ export function useAttachmentUpload(conversationId: number | null) {
   const addFiles = useCallback(
     async (files: File[]) => {
       if (conversationId == null) return;
-      for (const file of files) {
+      const available = MAX_FILES - chips.length;
+      const accept = files.slice(0, available);
+      for (const file of accept) {
         const localId = nextLocalId();
         setChipsBoth((cs) => [
           ...cs,
@@ -68,7 +72,7 @@ export function useAttachmentUpload(conversationId: number | null) {
         }
       }
     },
-    [conversationId, setChipsBoth],
+    [conversationId, setChipsBoth, chips.length],
   );
 
   const remove = useCallback(
