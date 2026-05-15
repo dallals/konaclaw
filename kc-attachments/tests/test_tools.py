@@ -87,3 +87,34 @@ async def test_read_attachment_paginates_pdf_by_page_range(tmp_path):
     assert "Page 2" in parsed["markdown"]
     assert "Page 3" in parsed["markdown"]
     assert "First." not in parsed["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_read_attachment_image_returns_sentinel_when_vision_supported(tmp_path):
+    s = _store(tmp_path)
+    src = tmp_path / "sample.png"
+    from PIL import Image
+    Image.new("RGB", (10, 10), "red").save(src)
+    rec = s.save(conversation_id="conv_1", source=src, filename="sample.png")
+    impl = build_read_attachment_tool(store=s, conversation_id="conv_1",
+                                       vision_for_active_model=True)
+    out = await impl({"attachment_id": rec.id})
+    payload = json.loads(out)
+    assert payload["type"] == "image"
+    assert payload["path"].endswith("original.png")
+    assert "ocr_markdown" in payload
+
+
+@pytest.mark.asyncio
+async def test_read_attachment_image_returns_ocr_when_vision_unsupported(tmp_path):
+    s = _store(tmp_path)
+    src = tmp_path / "sample.png"
+    from PIL import Image
+    Image.new("RGB", (10, 10), "red").save(src)
+    rec = s.save(conversation_id="conv_1", source=src, filename="sample.png")
+    impl = build_read_attachment_tool(store=s, conversation_id="conv_1",
+                                       vision_for_active_model=False)
+    out = await impl({"attachment_id": rec.id})
+    payload = json.loads(out)
+    assert payload["type"] == "text"
+    assert "markdown" in payload

@@ -73,6 +73,20 @@ def build_read_attachment_tool(
                 "message": rec.parse_error or "unknown parse error",
                 "attachment_id": att_id,
             })
+
+        # Image branch — sentinel for vision-capable, OCR markdown otherwise.
+        if rec.mime.startswith("image/"):
+            ocr_md = store.read_parsed(att_id) or ""
+            if vision_for_active_model:
+                original = store.original_path(att_id)
+                return json.dumps({
+                    "type": "image",
+                    "path": str(original),
+                    "ocr_markdown": ocr_md,
+                })
+            return json.dumps({"type": "text", "markdown": _truncate(ocr_md)})
+
+        # Text-y branch (unchanged).
         markdown = store.read_parsed(att_id)
         if page_range and rec.mime == "application/pdf":
             markdown = _slice_by_page_range(markdown, page_range)
