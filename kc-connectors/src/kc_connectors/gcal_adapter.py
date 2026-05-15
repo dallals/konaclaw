@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Optional
 
 from kc_core.tools import Tool
@@ -8,9 +9,45 @@ from kc_core.tools import Tool
 GCAL_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 
+def _normalize_rfc3339(t: str) -> str:
+    """Coerce model-supplied time strings into RFC3339 with a timezone.
+
+    Google Calendar's events.list returns 400 Bad Request unless timeMin /
+    timeMax carry a tz offset. Local models routinely emit shapes like
+    '2026-05-15' or '2026-05-15T00:00:00' — this helper pads them out.
+    Anything already containing 'Z' or '±HH:MM' passes through unchanged.
+    Empty / whitespace input is rejected with ValueError so the caller can
+    surface a useful error instead of Google's opaque 'Bad Request'.
+    """
+    s = (t or "").strip()
+    if not s:
+        raise ValueError("time argument is required (RFC3339)")
+    # Already has tz info — leave it alone.
+    if s.endswith("Z") or _has_tz_offset(s):
+        return s
+    # Date-only ('YYYY-MM-DD') — promote to start-of-day.
+    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+        s = f"{s}T00:00:00"
+    # Now we have a naive datetime; tag it with the user's local tz offset.
+    offset = datetime.now().astimezone().strftime("%z")  # e.g. '-0700'
+    if len(offset) == 5:
+        offset = f"{offset[:3]}:{offset[3:]}"  # → '-07:00'
+    return f"{s}{offset}"
+
+
+def _has_tz_offset(s: str) -> bool:
+    # Look for '+HH:MM' or '-HH:MM' (or 4-digit variants) at the end.
+    if len(s) < 6:
+        return False
+    tail = s[-6:]
+    return tail[0] in "+-" and tail[3] == ":" and tail[1:3].isdigit() and tail[4:].isdigit()
+
+
 def build_gcal_tools(service: Any, calendar_id: str = "primary") -> dict[str, Tool]:
 
     def list_events(time_min: str, time_max: str, calendar_id: Optional[str] = None) -> str:
+        time_min = _normalize_rfc3339(time_min)
+        time_max = _normalize_rfc3339(time_max)
         if calendar_id:
             cals = [{"id": calendar_id, "summary": calendar_id}]
         else:
@@ -43,8 +80,8 @@ def build_gcal_tools(service: Any, calendar_id: str = "primary") -> dict[str, To
         body = {
             "summary": summary,
             "description": description,
-            "start": {"dateTime": start},
-            "end": {"dateTime": end},
+            "start": {"dateTime": _normalize_rfc3339(start)},
+            "end": {"dateTime": _normalize_rfc3339(end)},
         }
         r = service.events().insert(calendarId=calendar_id, body=body).execute()
         return f"created event {r['id']}"
@@ -59,9 +96,9 @@ def build_gcal_tools(service: Any, calendar_id: str = "primary") -> dict[str, To
         if summary is not None:
             body["summary"] = summary
         if start is not None:
-            body["start"] = {"dateTime": start}
+            body["start"] = {"dateTime": _normalize_rfc3339(start)}
         if end is not None:
-            body["end"] = {"dateTime": end}
+            body["end"] = {"dateTime": _normalize_rfc3339(end)}
         r = service.events().update(calendarId=calendar_id, eventId=event_id, body=body).execute()
         return f"updated event {r['id']}"
 

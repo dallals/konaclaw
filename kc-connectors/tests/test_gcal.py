@@ -92,3 +92,74 @@ def test_create_update_delete():
     assert "e2" in tools["gcal.create_event"].impl(summary="x", start="2026-01-01T10:00:00Z", end="2026-01-01T11:00:00Z")
     assert "e2" in tools["gcal.update_event"].impl(event_id="e2", summary="y")
     assert "deleted" in tools["gcal.delete_event"].impl(event_id="e2")
+
+
+def test_normalize_rfc3339_passes_through_with_z():
+    from kc_connectors.gcal_adapter import _normalize_rfc3339
+    assert _normalize_rfc3339("2026-05-15T00:00:00Z") == "2026-05-15T00:00:00Z"
+
+
+def test_normalize_rfc3339_passes_through_with_offset():
+    from kc_connectors.gcal_adapter import _normalize_rfc3339
+    assert _normalize_rfc3339("2026-05-15T00:00:00-07:00") == "2026-05-15T00:00:00-07:00"
+    assert _normalize_rfc3339("2026-05-15T00:00:00+05:30") == "2026-05-15T00:00:00+05:30"
+
+
+def test_normalize_rfc3339_promotes_date_only():
+    """'2026-05-15' → '2026-05-15T00:00:00<local-tz-offset>' — Google would
+    400 otherwise. The exact offset depends on the host; assert structure."""
+    import re
+    from kc_connectors.gcal_adapter import _normalize_rfc3339
+    out = _normalize_rfc3339("2026-05-15")
+    assert re.match(r"^2026-05-15T00:00:00[+-]\d{2}:\d{2}$", out), out
+
+
+def test_normalize_rfc3339_adds_offset_to_naive_datetime():
+    import re
+    from kc_connectors.gcal_adapter import _normalize_rfc3339
+    out = _normalize_rfc3339("2026-05-15T14:30:00")
+    assert re.match(r"^2026-05-15T14:30:00[+-]\d{2}:\d{2}$", out), out
+
+
+def test_normalize_rfc3339_rejects_empty():
+    import pytest
+    from kc_connectors.gcal_adapter import _normalize_rfc3339
+    with pytest.raises(ValueError):
+        _normalize_rfc3339("")
+    with pytest.raises(ValueError):
+        _normalize_rfc3339("   ")
+
+
+def test_list_events_normalizes_time_args_before_calling_google():
+    """Regression for 2026-05-14: the model passed '2026-05-15' as time_min;
+    Google 400'd because the value wasn't RFC3339 with a tz. The adapter
+    must coerce the value before handing it to the Google client."""
+    from kc_connectors.gcal_adapter import build_gcal_tools
+
+    captured: dict = {}
+
+    class _Events:
+        def list(self, **kw):
+            captured.update(kw)
+            class _R:
+                def execute(self):
+                    return {"items": []}
+            return _R()
+
+    class _CL:
+        def list(self):
+            class _R:
+                def execute(self):
+                    return {"items": [{"id": "primary", "summary": "primary"}]}
+            return _R()
+
+    class _Service:
+        def events(self): return _Events()
+        def calendarList(self): return _CL()
+
+    tools = build_gcal_tools(_Service())
+    tools["gcal.list_events"].impl(time_min="2026-05-15", time_max="2026-05-22")
+
+    import re
+    assert re.match(r"^2026-05-15T00:00:00[+-]\d{2}:\d{2}$", captured["timeMin"]), captured
+    assert re.match(r"^2026-05-22T00:00:00[+-]\d{2}:\d{2}$", captured["timeMax"]), captured
