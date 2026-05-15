@@ -236,3 +236,86 @@ class Agent:
                 msgs.append(to_openai_dict(m))
                 i += 1
         return msgs
+
+
+# ---------------------------------------------------------------------------
+# Image sentinel translation — for tool results returning the kc_attachments
+# image sentinel dict. Used by the supervisor's agent step loop (wiring in
+# the supervisor, not in this kc-core file).
+# ---------------------------------------------------------------------------
+
+import json as _json_ais
+from dataclasses import dataclass as _ais_dataclass
+from pathlib import Path as _AisPath
+from typing import Optional as _AisOptional
+
+from kc_core.messages import ImageRef as _AisImageRef
+from kc_core.messages import ToolResultMessage as _AisToolResultMessage
+from kc_core.messages import UserMessage as _AisUserMessage
+
+
+@_ais_dataclass(frozen=True)
+class SentinelTranslation:
+    """Result of translating an image sentinel: the ToolResultMessage to emit,
+    plus an optional follow-up UserMessage carrying the image content."""
+
+    tool_result: _AisToolResultMessage
+    follow_up: _AisOptional[_AisUserMessage]
+
+
+def _ais_guess_mime_from_path(path: _AisPath) -> str:
+    suffix = path.suffix.lower().lstrip(".")
+    return {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "webp": "image/webp",
+        "heic": "image/heic",
+    }.get(suffix, "application/octet-stream")
+
+
+def translate_image_sentinel(
+    raw_content: str,
+    *,
+    tool_call_id: str,
+    vision_for_active_model: bool,
+) -> SentinelTranslation:
+    """If raw_content is an image sentinel dict, translate to (ack, follow-up).
+
+    Sentinel shape: `{"type": "image", "path": <abs-path>, "ocr_markdown": <str>}`.
+
+    On vision-capable models, the tool result is replaced with an
+    acknowledgement string and a follow-up UserMessage carrying the image is
+    returned. On non-vision models, the tool result is replaced with the
+    OCR markdown; no follow-up. Non-sentinel input passes through unchanged.
+    """
+    try:
+        payload = _json_ais.loads(raw_content)
+    except (_json_ais.JSONDecodeError, ValueError):
+        return SentinelTranslation(
+            tool_result=_AisToolResultMessage(tool_call_id=tool_call_id, content=raw_content),
+            follow_up=None,
+        )
+    if not isinstance(payload, dict) or payload.get("type") != "image":
+        return SentinelTranslation(
+            tool_result=_AisToolResultMessage(tool_call_id=tool_call_id, content=raw_content),
+            follow_up=None,
+        )
+
+    img_path = _AisPath(str(payload.get("path", "")))
+    ocr_md = str(payload.get("ocr_markdown", ""))
+
+    if not vision_for_active_model:
+        return SentinelTranslation(
+            tool_result=_AisToolResultMessage(tool_call_id=tool_call_id, content=ocr_md),
+            follow_up=None,
+        )
+
+    ack = "image rendered for the model in the next turn"
+    return SentinelTranslation(
+        tool_result=_AisToolResultMessage(tool_call_id=tool_call_id, content=ack),
+        follow_up=_AisUserMessage(
+            content="[image attachment]",
+            images=(_AisImageRef(path=img_path, mime=_ais_guess_mime_from_path(img_path)),),
+        ),
+    )
