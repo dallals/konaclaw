@@ -207,3 +207,45 @@ async def test_scrape_httpx_timeout_bubbles_as_asyncio_timeout():
     client = _make_client(handler)
     with pytest.raises(_asyncio.TimeoutError):
         await client.scrape("https://x.example", timeout_seconds=5, include_links=False)
+
+
+@pytest.mark.asyncio
+async def test_search_clamps_max_results_to_10():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"results": []})
+
+    client = _make_client(handler)
+    await client.search("q", max_results=25, freshness="any")
+    assert captured["body"]["max_results"] == 10
+
+
+@pytest.mark.asyncio
+async def test_search_clamps_max_results_floor_to_1():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"results": []})
+
+    client = _make_client(handler)
+    await client.search("q", max_results=0, freshness="any")
+    assert captured["body"]["max_results"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_freshness_silently_ignored():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"results": []})
+
+    client = _make_client(handler)
+    # Should succeed and not include freshness/tbs in the body.
+    await client.search("q", max_results=5, freshness="week")
+    assert "freshness" not in captured["body"]
+    assert "tbs" not in captured["body"]
+    assert captured["body"] == {"query": "q", "max_results": 5}
