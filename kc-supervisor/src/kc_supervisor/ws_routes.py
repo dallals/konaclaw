@@ -275,6 +275,36 @@ def register_ws_routes(app: FastAPI) -> None:
                     except (WebSocketDisconnect, RuntimeError):
                         pass
 
+                    # Per-turn attachment tool registration. The base
+                    # ToolRegistry is shared across conversations, so we mutate
+                    # it for the duration of this send_stream call only and
+                    # restore afterwards (see the `finally` block below).
+                    _att_tools_added: list[str] = []
+                    vision_ok: bool = False
+                    vcache = getattr(deps, "vision_cache", None)
+                    if attach_store is not None:
+                        from kc_attachments import attach_attachments_to_agent
+                        model_id = getattr(rt.assembled.core_agent.client, "model", "") or ""
+                        vision_ok = (
+                            vcache.supports_vision(model_id)
+                            if (vcache is not None and model_id) else False
+                        )
+                        pre_names = set(rt.assembled.core_agent.tools.names())
+                        try:
+                            attach_attachments_to_agent(
+                                registry=rt.assembled.core_agent.tools,
+                                store=attach_store,
+                                conversation_id=str(conversation_id),
+                                vision_for_active_model=vision_ok,
+                            )
+                        except ValueError:
+                            # Already registered (e.g. concurrent turn or
+                            # incomplete cleanup) — ignore; we just won't
+                            # un-register on this turn.
+                            pass
+                        post_names = set(rt.assembled.core_agent.tools.names())
+                        _att_tools_added = list(post_names - pre_names)
+
                     # Track whether the WS is still receiving us. If the client
                     # closes mid-stream, we keep iterating send_stream so the
                     # model's reply still gets persisted — only skip the sends.
@@ -307,7 +337,7 @@ def register_ws_routes(app: FastAPI) -> None:
                     })
                     try:
                         async for frame in rt.assembled.core_agent.send_stream(
-                            agent_input, think=think_param,
+                            agent_input, think=think_param, images=user_msg.images,
                         ):
                             if isinstance(frame, TokenDelta):
                                 await _safe_send({"type": "token", "delta": frame.content})
@@ -321,14 +351,25 @@ def register_ws_routes(app: FastAPI) -> None:
                                 ))
                                 await _safe_send({"type": "tool_call", "call": frame.call})
                             elif isinstance(frame, ToolResult):
-                                deps.conversations.append(conversation_id, ToolResultMessage(
+                                from kc_core.agent import translate_image_sentinel
+                                trans = translate_image_sentinel(
+                                    frame.content,
                                     tool_call_id=frame.call_id,
-                                    content=frame.content,
-                                ))
+                                    vision_for_active_model=vision_ok,
+                                )
+                                deps.conversations.append(conversation_id, trans.tool_result)
+                                # If the sentinel produced a follow-up user turn
+                                # with images, inject it into BOTH the
+                                # persistent conversation log AND the in-memory
+                                # core_agent history so the model sees the image
+                                # on the next iteration of the ReAct loop.
+                                if trans.follow_up is not None:
+                                    deps.conversations.append(conversation_id, trans.follow_up)
+                                    rt.assembled.core_agent.history.append(trans.follow_up)
                                 await _safe_send({
                                     "type": "tool_result",
                                     "call_id": frame.call_id,
-                                    "content": frame.content,
+                                    "content": trans.tool_result.content,
                                 })
                             elif isinstance(frame, TurnUsage):
                                 if not frame.usage_reported:
@@ -381,6 +422,12 @@ def register_ws_routes(app: FastAPI) -> None:
                         except Exception:
                             pass
                     finally:
+                        # Restore the shared ToolRegistry by removing the
+                        # attachment tools we registered for this turn. Pop
+                        # directly from the internal dict — ToolRegistry has no
+                        # public unregister method.
+                        for _tname in _att_tools_added:
+                            rt.assembled.core_agent.tools._tools.pop(_tname, None)
                         if rt.status == AgentStatus.THINKING:
                             rt.set_status(AgentStatus.IDLE)
         except (WebSocketDisconnect, RuntimeError):

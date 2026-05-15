@@ -46,6 +46,7 @@ class Agent:
         user_text: str,
         *,
         think: Optional[bool] = None,
+        images: tuple = (),
     ) -> AsyncIterator[StreamFrame]:
         """Streaming variant of send(). Yields StreamFrame objects as the model produces them.
 
@@ -57,8 +58,13 @@ class Agent:
         default (whatever the model would do); True = force reasoning on;
         False = force reasoning off. Only honored when the client talks to a
         local Ollama instance (remote OpenAI-compat endpoints ignore it).
+
+        `images` carries image references for the current user turn. They are
+        attached to the UserMessage we append to history, so the wire-message
+        builder serializes them as multipart content (OpenAI-compat path). The
+        tuple is kept untyped to avoid a circular import from kc_core.messages.
         """
-        self.history.append(UserMessage(content=user_text))
+        self.history.append(UserMessage(content=user_text, images=tuple(images)))
         call_index = 0
         for _ in range(self.max_tool_iterations + 1):
             wire = self._build_wire_messages()
