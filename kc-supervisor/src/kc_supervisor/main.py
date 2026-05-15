@@ -439,6 +439,17 @@ def main() -> None:
     )
     registry.load_all()
 
+    # Attachments — drag-drop file ingestion (Phase A of files rollout,
+    # 2026-05-15). AttachmentStore holds saved files + parsed content under
+    # ~/KonaClaw/attachments. VisionCapabilityCache probes Ollama /api/show
+    # to learn which models support image input — read_attachment uses this
+    # to decide between vision passthrough vs OCR fallback. Both singletons
+    # attached to Deps; assemble_agent registers read_attachment +
+    # list_attachments per-conversation when conversation_id is supplied.
+    from kc_attachments import AttachmentStore, VisionCapabilityCache
+    attachment_store = AttachmentStore(root=home / "attachments")
+    vision_cache = VisionCapabilityCache(base_url=ollama_url)
+
     deps = Deps(
         storage=storage,
         registry=registry,
@@ -550,18 +561,8 @@ def main() -> None:
         deps.restart_telegram = _make_restart("telegram", _telegram_holder, _build_telegram)
         deps.restart_imessage = _make_restart("imessage", _imessage_holder, _build_imessage)
 
-    # Attachments — drag-drop file ingestion (Phase A of files rollout,
-    # 2026-05-15). AttachmentStore holds saved files + parsed content under
-    # ~/KonaClaw/attachments. VisionCapabilityCache probes Ollama /api/show
-    # to learn which models support image input — read_attachment uses this
-    # to decide between vision passthrough vs OCR fallback. Both singletons
-    # attached to Deps; assemble_agent registers read_attachment +
-    # list_attachments per-conversation when conversation_id is supplied.
-    from kc_attachments import AttachmentStore, VisionCapabilityCache
+    # Attachments — already constructed before Deps() (see above). Router import:
     from kc_supervisor.attachments_routes import build_attachments_router
-
-    attachment_store = AttachmentStore(root=home / "attachments")
-    vision_cache = VisionCapabilityCache(base_url=ollama_url)
 
     # Phase-1 scheduling. Constructed here but started inside FastAPI's startup
     # hook (see service.py) so it picks up the running event loop. The
