@@ -1,8 +1,13 @@
 from __future__ import annotations
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Literal
+
+
+Backend = Literal["ollama", "firecrawl"]
+_VALID_BACKENDS = ("ollama", "firecrawl")
 
 
 def _gen_session_id() -> str:
@@ -11,7 +16,9 @@ def _gen_session_id() -> str:
 
 @dataclass(frozen=True)
 class WebConfig:
-    firecrawl_api_key: str
+    backend: Backend
+    ollama_api_key: str | None
+    firecrawl_api_key: str | None
     session_soft_cap: int
     daily_hard_cap: int
     fetch_cap_bytes: int
@@ -22,11 +29,19 @@ class WebConfig:
     session_id: str = field(default_factory=_gen_session_id)
 
     @classmethod
-    def with_defaults(cls, *, api_key: str) -> "WebConfig":
+    def with_defaults(
+        cls,
+        *,
+        backend: str = "ollama",
+        ollama_api_key: str | None = None,
+        firecrawl_api_key: str | None = None,
+    ) -> "WebConfig":
         return cls(
-            firecrawl_api_key=api_key,
-            session_soft_cap=50,
-            daily_hard_cap=500,
+            backend=backend,  # type: ignore[arg-type]
+            ollama_api_key=ollama_api_key,
+            firecrawl_api_key=firecrawl_api_key,
+            session_soft_cap=100,
+            daily_hard_cap=1000,
             fetch_cap_bytes=32 * 1024,
             default_search_max_results=10,
             default_fetch_timeout_s=30,
@@ -35,24 +50,46 @@ class WebConfig:
         )
 
     @classmethod
-    def from_env(cls, *, api_key: str) -> "WebConfig":
-        """Build WebConfig from required api_key + optional KC_WEB_* env overrides.
+    def from_env(
+        cls,
+        *,
+        ollama_api_key: str | None = None,
+        firecrawl_api_key: str | None = None,
+        backend: str | None = None,
+    ) -> "WebConfig":
+        """Build WebConfig from explicit keys + optional KC_WEB_* env overrides.
 
-        api_key is supplied by the caller (typically main.py reading from the
-        encrypted secrets store at ~/KonaClaw/config/secrets.yaml.enc). It is
-        NOT read from env — the rest of KonaClaw's secrets follow the same
-        pattern (see main.py for newsapi_api_key, telegram_bot_token, etc).
+        Backend resolution: explicit `backend` kwarg wins, then KC_WEB_BACKEND
+        env, then default 'ollama'.
+
+        Keys come from the supervisor's encrypted secrets store
+        (~/KonaClaw/config/secrets.yaml.enc) — not env — matching the pattern
+        used for newsapi_api_key, telegram_bot_token, etc.
 
         Raises:
-            ValueError: if api_key is empty or whitespace-only.
+            ValueError: if backend is not 'ollama' or 'firecrawl', or if the
+                selected backend's key is missing/whitespace.
         """
-        if not api_key or not api_key.strip():
-            raise ValueError("api_key must be a non-empty string")
-        base = cls.with_defaults(api_key=api_key)
+        chosen = backend or os.environ.get("KC_WEB_BACKEND", "ollama")
+        if chosen not in _VALID_BACKENDS:
+            raise ValueError(
+                f"invalid KC_WEB_BACKEND: {chosen!r} (expected one of {_VALID_BACKENDS})"
+            )
+        if chosen == "ollama":
+            if not ollama_api_key or not ollama_api_key.strip():
+                raise ValueError("ollama_api_key required when backend=ollama")
+        else:
+            if not firecrawl_api_key or not firecrawl_api_key.strip():
+                raise ValueError("firecrawl_api_key required when backend=firecrawl")
+        base = cls.with_defaults(
+            backend=chosen,
+            ollama_api_key=ollama_api_key,
+            firecrawl_api_key=firecrawl_api_key,
+        )
         blocked_raw = os.environ.get("KC_WEB_BLOCKED_HOSTS", "")
         blocked = tuple(h.strip() for h in blocked_raw.split(",") if h.strip())
-        return cls(
-            firecrawl_api_key=api_key,
+        return replace(
+            base,
             session_soft_cap=int(
                 os.environ.get("KC_WEB_SESSION_SOFT_CAP", base.session_soft_cap)
             ),

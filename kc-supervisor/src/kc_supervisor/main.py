@@ -69,23 +69,29 @@ def main() -> None:
             import logging
             logging.getLogger(__name__).warning("news client disabled: %s", e)
 
-    # Web tools (web_search + web_fetch) — gated by KC_WEB_ENABLED env flag,
-    # requires firecrawl_api_key in the encrypted secrets store. Built here
-    # (not in assembly) to keep the secrets-store read centralized in main.py
-    # alongside the other supervisor secrets.
+    # Web tools (web_search + web_fetch) — gated by KC_WEB_ENABLED env flag.
+    # Backend is selected by KC_WEB_BACKEND env var (default: "ollama").
+    # The selected backend's key must be present in the encrypted secrets
+    # store at ~/KonaClaw/config/secrets.yaml.enc.
     web_config = None
     if os.environ.get("KC_WEB_ENABLED", "").lower() in ("1", "true", "yes"):
-        firecrawl_key = secrets.get("firecrawl_api_key")
-        if not firecrawl_key:
-            raise RuntimeError(
-                "KC_WEB_ENABLED=true but firecrawl_api_key is not in the secrets store. "
-                "Add it via the supervisor secrets store, then restart."
-            )
+        ollama_key = secrets.get("ollama_api_key") or ""
+        firecrawl_key = secrets.get("firecrawl_api_key") or ""
+        backend_choice = os.environ.get("KC_WEB_BACKEND", "ollama")
         try:
             from kc_web import WebConfig
-            web_config = WebConfig.from_env(api_key=firecrawl_key)
+            web_config = WebConfig.from_env(
+                ollama_api_key=ollama_key,
+                firecrawl_api_key=firecrawl_key,
+                backend=backend_choice,
+            )
+        except ValueError as e:
+            raise RuntimeError(
+                f"KC_WEB_ENABLED=true but {e}. "
+                f"Add the required key via the supervisor secrets store, "
+                f"then restart."
+            ) from e
         except Exception as e:
-            # Fail-fast: don't silently disable web tools when explicitly enabled.
             raise RuntimeError(f"failed to build WebConfig: {e}") from e
 
     # Phase C — todo + clarify singletons. Built unconditionally; both tools

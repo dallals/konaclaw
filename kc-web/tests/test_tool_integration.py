@@ -23,6 +23,8 @@ class FakeClient:
 @pytest.fixture
 def cfg(tmp_path: Path) -> WebConfig:
     return WebConfig(
+        backend="firecrawl",
+        ollama_api_key=None,
         firecrawl_api_key="k",
         session_soft_cap=10, daily_hard_cap=100,
         fetch_cap_bytes=1024, default_search_max_results=5,
