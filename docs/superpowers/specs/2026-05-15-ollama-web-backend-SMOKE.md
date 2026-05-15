@@ -18,8 +18,8 @@ All gates require a fresh supervisor restart after editing `~/.konaclaw.env` or 
 
 **Action:** Restart the supervisor.
 **Expected:** Supervisor process starts without `RuntimeError`. Log line confirms web tools are enabled. No prompt for `firecrawl_api_key`.
-**Status:** [ ] PASS / [ ] FAIL
-**Notes:**
+**Status:** [x] PASS / [ ] FAIL
+**Notes:** Confirmed via dashboard launcher output: `Application startup complete.` + `Uvicorn running on http://127.0.0.1:8765`. No `RuntimeError` from the web config. A pre-existing Telegram `httpx.ConnectError` was visible but unrelated to web tools.
 
 ## Gate 2 — Kona answers a time-sensitive question via web_search
 
@@ -29,8 +29,8 @@ All gates require a fresh supervisor restart after editing `~/.konaclaw.env` or 
 - Response synthesizes content from search snippets.
 - No approval prompt surfaces in the dashboard.
 
-**Status:** [ ] PASS / [ ] FAIL
-**Notes:**
+**Status:** [x] PASS / [ ] FAIL
+**Notes:** Required explicit prompt ("Use web_search to find...") because a separate `mcp.perplexity.*` server is also registered and Kona prefers it for generic search prompts. Once routed, `web_search` returned real results from weathershogun.com / news12.com (e.g., 62°F, humidity 52%, wind 11 mph for 2026-05-15). No approval prompt.
 
 ## Gate 3 — Kona fetches a specific page via web_fetch
 
@@ -40,35 +40,29 @@ All gates require a fresh supervisor restart after editing `~/.konaclaw.env` or 
 - Response contains content from the article.
 - `status_code=0` in the returned JSON (not surfaced as an error to the user).
 
-**Status:** [ ] PASS / [ ] FAIL
-**Notes:**
+**Status:** [x] PASS / [ ] FAIL
+**Notes:** Worked end-to-end through Kona via the Ollama backend.
 
 ## Gate 4 — `freshness` parameter silently ignored
 
-**Action:** Trigger a `web_search` call from Kona that uses `freshness="week"` (e.g., "search for recent news about claude opus 4.7 from the last week"). Inspect the audit row's tool arguments.
-**Expected:** Call succeeds with results; no `firecrawl_error` or backend error. The audit row may show `freshness=week` in tool args, but it has no effect on Ollama's behavior.
-**Status:** [ ] PASS / [ ] FAIL
-**Notes:**
+**Status:** [ ] PASS / [ ] FAIL / [x] SKIPPED
+**Notes:** Skipped per Sammy at shipping. Coverage exists via `test_search_freshness_silently_ignored` in `kc-web/tests/test_ollama_client.py` (asserts the request body does NOT contain `freshness` or `tbs` keys), so manual verification was deemed redundant.
 
 ## Gate 5 — Firecrawl regression (CONDITIONAL — only if Firecrawl key available)
 
-**Action:** Add `firecrawl_api_key` to secrets. Set `KC_WEB_BACKEND=firecrawl` in `~/.konaclaw.env`. Restart supervisor. Repeat Gate 2.
-**Expected:** Same behavior as Gate 2, but via FirecrawlClient.
-**Status:** [ ] PASS / [ ] FAIL / [ ] SKIPPED (no key)
-**Notes:**
+**Status:** [ ] PASS / [ ] FAIL / [x] SKIPPED
+**Notes:** Skipped per Sammy at shipping. `firecrawl_api_key` is in the secrets store; backend switch is `KC_WEB_BACKEND=firecrawl` + restart. The `FirecrawlClient` code path is unchanged from pre-Ollama and was passing in production previously; existing unit tests + `test_build_web_tools_picks_firecrawl_when_backend_firecrawl` cover the dispatch.
 
 ## Gate 6 — Missing key → clean startup failure
 
-**Action:** Temporarily rename `ollama_api_key` in secrets to `ollama_api_key_X`. Set `KC_WEB_BACKEND=ollama`. Restart supervisor.
-**Expected:** Supervisor refuses to start with a `RuntimeError` whose message names `ollama_api_key` and the secrets store path. (Restore the key after testing.)
-**Status:** [ ] PASS / [ ] FAIL
-**Notes:**
+**Status:** [ ] PASS / [ ] FAIL / [x] SKIPPED
+**Notes:** Skipped per Sammy. The validation logic in `WebConfig.from_env` is covered by `test_from_env_ollama_without_key_raises` and `test_from_env_whitespace_key_treated_as_missing`. The supervisor wrap-and-raise to `RuntimeError` is mechanical pass-through.
 
 ---
 
 ## Closeout
 
-- Date: ___
-- Final commit: ___
-- All gates PASS / N PASS, M SKIPPED: ___
-- Defects observed: ___
+- Date: 2026-05-15
+- Final commit: `0a2b6d1` (SMOKE doc), implementation range `7661cce..0a2b6d1` (11 commits)
+- Gates: 3 PASS (1, 2, 3), 3 SKIPPED (4, 5, 6 — all covered by unit tests or deemed mechanical)
+- Defects observed: None on the new Ollama path. Pre-existing Telegram NetworkError visible in supervisor stdout, unrelated.
