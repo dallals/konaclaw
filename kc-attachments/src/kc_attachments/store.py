@@ -59,7 +59,7 @@ class AttachmentStore:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._root.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(root / "index.sqlite"))
+        self._db = sqlite3.connect(str(root / "index.sqlite"), check_same_thread=False)
         self._db.executescript(_SCHEMA)
         self._db.commit()
 
