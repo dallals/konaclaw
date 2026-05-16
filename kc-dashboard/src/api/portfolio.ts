@@ -2,9 +2,18 @@ import { getBaseUrl } from "./client";
 
 export interface PortfolioHolding {
   ticker: string;
+  /** Last trade price (today). */
+  price?: number;
+  /** Prior session close, for day-change math. */
+  prev?: number;
+  shares?: number;
   value: number;
   day_change: number;
+  /** Absolute lifetime gain ($). */
+  gain?: number;
   gain_pct: number;
+  /** Set when Yahoo fetch failed for this ticker. */
+  error?: string;
 }
 
 export interface PortfolioSnapshot {
