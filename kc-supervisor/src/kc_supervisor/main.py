@@ -563,6 +563,7 @@ def main() -> None:
 
     # Attachments — already constructed before Deps() (see above). Router import:
     from kc_supervisor.attachments_routes import build_attachments_router
+    from kc_supervisor.portfolio_routes import build_portfolio_router
 
     # Phase-1 scheduling. Constructed here but started inside FastAPI's startup
     # hook (see service.py) so it picks up the running event loop. The
@@ -611,6 +612,21 @@ def main() -> None:
     # Mounted after create_app so it slots in alongside the routes registered by
     # http_routes / ws_routes / connectors_routes.
     app.include_router(build_attachments_router(store=attachment_store))
+
+    # Portfolio REST router (GET /portfolio/snapshot). Runs `python3 portfolio.py
+    # --silent` inside the repo's workspace/ directory (ZeroClaw money skill,
+    # Phase A). Cached for 60s by default; KC_PORTFOLIO_CACHE_S env override.
+    def _find_repo_root() -> Path:
+        p = Path(__file__).resolve()
+        for ancestor in [p, *p.parents]:
+            if (ancestor / "workspace").is_dir() and (ancestor / "kc-supervisor").is_dir():
+                return ancestor
+        raise RuntimeError("could not locate SammyClaw repo root from kc-supervisor main.py")
+
+    _repo_root = _find_repo_root()
+    app.include_router(
+        build_portfolio_router(workspace_dir=_repo_root / "workspace")
+    )
 
     # Daily background GC sweep for attachment retention. Started on FastAPI
     # startup so the loop runs on the live event loop. Retention threshold is
