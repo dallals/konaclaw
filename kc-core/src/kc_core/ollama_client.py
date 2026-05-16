@@ -26,14 +26,43 @@ def _default_keep_alive() -> str:
 def _native_message(m: dict[str, Any]) -> dict[str, Any]:
     """Translate an OpenAI /v1-shaped message to Ollama /api/chat shape.
 
-    The only meaningful difference today is `tool_calls[].function.arguments`:
-    /v1 encodes it as a JSON string; /api/chat expects a dict. Everything
-    else passes through. Returns a NEW dict — does not mutate input.
+    Two differences between the wire formats are normalized here:
+
+      1. tool_calls[].function.arguments — /v1 encodes as a JSON string;
+         /api/chat expects a dict.
+      2. Multimodal user content — /v1 encodes as a list of {type,text|image_url}
+         blocks; /api/chat expects `content` as a plain string and `images`
+         as a top-level list of raw base64 (no `data:` prefix). Sending an
+         array as `content` to /api/chat 400s with
+         "json: cannot unmarshal array into Go struct field ChatRequest.messages.content of type string".
+
+    Returns a NEW dict — does not mutate input.
     """
-    if not m.get("tool_calls"):
-        return m
     out = dict(m)
-    out["tool_calls"] = [_native_tool_call(tc) for tc in m["tool_calls"]]
+    if m.get("tool_calls"):
+        out["tool_calls"] = [_native_tool_call(tc) for tc in m["tool_calls"]]
+    content = m.get("content")
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        images_b64: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text_parts.append(block.get("text", ""))
+            elif btype == "image_url":
+                url = (block.get("image_url") or {}).get("url", "")
+                # `data:image/png;base64,XXXX` → keep only the XXXX. If the URL
+                # isn't a data URL, pass it through as-is and hope the model
+                # handles it (none currently do, but leaving the door open).
+                if isinstance(url, str) and "," in url and url.startswith("data:"):
+                    images_b64.append(url.split(",", 1)[1])
+                elif isinstance(url, str) and url:
+                    images_b64.append(url)
+        out["content"] = "\n".join(text_parts)
+        if images_b64:
+            out["images"] = images_b64
     return out
 
 

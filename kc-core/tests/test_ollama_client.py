@@ -750,3 +750,70 @@ async def test_chat_stream_native_includes_keep_alive(monkeypatch):
     async for _ in client.chat_stream(messages=[], tools=[], think=False):
         pass
     assert captured["body"]["keep_alive"] == "30m"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_native_translates_multimodal_content_to_images_field():
+    """Agent._build_wire_messages emits OpenAI /v1 multimodal user content
+    as a list of {type:text|image_url} blocks. /api/chat (native) rejects
+    that with 'json: cannot unmarshal array into Go struct field
+    ChatRequest.messages.content of type string'. The client must split it
+    into `content` (string) + `images` (list of raw base64) before sending."""
+    ndjson_body = (
+        b'{"model":"gemma4:26b","message":{"role":"assistant","content":"ok"},'
+        b'"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":1}\n'
+    )
+    route = respx.post("http://localhost:11434/api/chat").mock(
+        return_value=Response(200, content=ndjson_body)
+    )
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma4:26b")
+    user_with_image = [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what's in this image?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+            ],
+        },
+    ]
+    async for _ in client.chat_stream(messages=user_with_image, tools=[], think=False):
+        pass
+
+    sent = _json_mod.loads(route.calls.last.request.content)
+    user_msg = next(m for m in sent["messages"] if m["role"] == "user")
+    # content is now a STRING — no longer an array.
+    assert isinstance(user_msg["content"], str), (
+        f"content must be string, got {type(user_msg['content']).__name__}"
+    )
+    assert user_msg["content"] == "what's in this image?"
+    # images is the raw base64 with the `data:image/...;base64,` prefix STRIPPED.
+    assert user_msg["images"] == ["iVBORw0KGgo="]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_native_passes_plain_string_content_through_unchanged():
+    """Text-only messages must not pick up an empty images field, and the
+    content must remain a plain string. Regression guard for the array→string
+    translation accidentally rewriting non-array content."""
+    ndjson_body = (
+        b'{"message":{"content":"ok"},"done":true,"prompt_eval_count":1,"eval_count":1,'
+        b'"prompt_eval_duration":1,"eval_duration":1,"total_duration":1}\n'
+    )
+    route = respx.post("http://localhost:11434/api/chat").mock(
+        return_value=Response(200, content=ndjson_body)
+    )
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma4:26b")
+    plain = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+    ]
+    async for _ in client.chat_stream(messages=plain, tools=[], think=False):
+        pass
+
+    sent = _json_mod.loads(route.calls.last.request.content)
+    user_msg = next(m for m in sent["messages"] if m["role"] == "user")
+    assert user_msg["content"] == "hello"
+    assert "images" not in user_msg
