@@ -12,6 +12,7 @@ const tabs = [
   { to: "/reminders",   label: "Reminders",   num: "07" },
   { to: "/skills",      label: "Skills",      num: "08" },
   { to: "/subagents",   label: "Subagents",   num: "09" },
+  { to: "/portfolio",   label: "Portfolio",   num: "10" },
 ];
 
 export default function App() {
