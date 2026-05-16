@@ -350,7 +350,7 @@ export default function Chat() {
     for (const c of chips) {
       if (c.attachmentId && c.filename) out[c.attachmentId] = c.filename;
     }
-    const msgs = msgsQ.data ?? [];
+    const msgs = msgsQ.data?.messages ?? [];
     const lineRe = /^\[attached:\s*([^,\]]+)(?:,[^\]]*)?,\s*id=(att_[a-f0-9]+)\]\s*$/;
     for (const m of msgs) {
       if (m.role !== "user" || typeof m.content !== "string") continue;
