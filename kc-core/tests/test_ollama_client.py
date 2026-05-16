@@ -685,3 +685,68 @@ async def test_chat_stream_native_tolerates_already_dict_arguments():
     sent = _json_mod.loads(route.calls.last.request.content)
     args = sent["messages"][0]["tool_calls"][0]["function"]["arguments"]
     assert args == {"k": "v"}
+
+
+# --- keep_alive tests (feels-faster phase) -----------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_keep_alive_default_is_30m(monkeypatch):
+    monkeypatch.delenv("KC_OLLAMA_KEEP_ALIVE", raising=False)
+    sse = (
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    captured = {}
+    def _capture(request):
+        import json as _j
+        captured["body"] = _j.loads(request.content)
+        return Response(200, content=sse, headers={"content-type": "text/event-stream"})
+    respx.post("http://localhost:11434/v1/chat/completions").mock(side_effect=_capture)
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma3:4b")
+    async for _ in client.chat_stream(messages=[], tools=[]):
+        pass
+    assert captured["body"]["keep_alive"] == "30m"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_keep_alive_env_override_minus_one(monkeypatch):
+    monkeypatch.setenv("KC_OLLAMA_KEEP_ALIVE", "-1")
+    sse = (
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    captured = {}
+    def _capture(request):
+        import json as _j
+        captured["body"] = _j.loads(request.content)
+        return Response(200, content=sse, headers={"content-type": "text/event-stream"})
+    respx.post("http://localhost:11434/v1/chat/completions").mock(side_effect=_capture)
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma3:4b")
+    async for _ in client.chat_stream(messages=[], tools=[]):
+        pass
+    assert captured["body"]["keep_alive"] == "-1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_native_includes_keep_alive(monkeypatch):
+    """The /api/chat native path also carries keep_alive."""
+    monkeypatch.delenv("KC_OLLAMA_KEEP_ALIVE", raising=False)
+    # Native /api/chat returns one JSON-line per chunk (not SSE).
+    body_lines = (
+        b'{"message":{"content":""},"done":false}\n'
+        b'{"message":{"content":""},"done":true,"prompt_eval_count":1,"eval_count":1,"prompt_eval_duration":1,"eval_duration":1,"total_duration":1}\n'
+    )
+    captured = {}
+    def _capture(request):
+        import json as _j
+        captured["body"] = _j.loads(request.content)
+        return Response(200, content=body_lines)
+    respx.post("http://localhost:11434/api/chat").mock(side_effect=_capture)
+    client = OllamaClient(base_url="http://localhost:11434", model="gemma3:4b")
+    async for _ in client.chat_stream(messages=[], tools=[], think=False):
+        pass
+    assert captured["body"]["keep_alive"] == "30m"
