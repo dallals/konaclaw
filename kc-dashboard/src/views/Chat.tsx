@@ -15,7 +15,7 @@ import { useWS } from "../ws/WSContext";
 import { useApprovals } from "../store/approvals";
 import { MessageBubble, type BubbleUsage } from "../components/MessageBubble";
 import { ApprovalCard } from "../components/ApprovalCard";
-import { ThinkingIndicator } from "../components/ThinkingIndicator";
+import { ChatProgressIndicator, type ToolCallState } from "../components/ChatProgressIndicator";
 import { NewsWidget } from "../components/NewsWidget";
 import { TodoWidget } from "../components/TodoWidget";
 import { ClarifyCard } from "../components/ClarifyCard";
@@ -299,6 +299,72 @@ export default function Chat() {
     }
     return buf;
   }, [events]);
+
+  // Tool calls + results since the most recent assistant_complete. Drives the
+  // ChatProgressIndicator's stage label and chip row. Each tool_call adds an
+  // entry; each matching tool_result flips the entry's status to done/error.
+  const turnToolCalls = useMemo<ToolCallState[]>(() => {
+    let start = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].type === "assistant_complete") { start = i + 1; break; }
+    }
+    const byId = new Map<string, ToolCallState>();
+    const order: string[] = [];
+    for (let i = start; i < events.length; i++) {
+      const e = events[i];
+      if (e.type === "tool_call") {
+        const args =
+          (e.call.arguments && typeof e.call.arguments === "object")
+            ? (e.call.arguments as Record<string, unknown>)
+            : {};
+        if (!byId.has(e.call.id)) order.push(e.call.id);
+        byId.set(e.call.id, {
+          id: e.call.id,
+          name: e.call.name,
+          args,
+          status: "running",
+        });
+      } else if (e.type === "tool_result") {
+        const prev = byId.get(e.tool_call_id);
+        if (prev) {
+          let status: ToolCallState["status"] = "done";
+          const content = e.content ?? "";
+          try {
+            const parsed = JSON.parse(content);
+            if (parsed && typeof parsed === "object" && "error" in parsed) {
+              status = "error";
+            }
+          } catch { /* not JSON, treat as success */ }
+          byId.set(e.tool_call_id, { ...prev, status });
+        }
+      }
+    }
+    return order.map((id) => byId.get(id)!).filter(Boolean);
+  }, [events]);
+
+  // Filename lookup for read_attachment chips: { att_id -> filename }. Built
+  // from the active upload chips plus the [attached: ...] prefix lines on past
+  // user messages, so the indicator can resolve names even after page reload.
+  const attachmentFilenames = useMemo<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const c of chips) {
+      if (c.attachmentId && c.filename) out[c.attachmentId] = c.filename;
+    }
+    const msgs = msgsQ.data ?? [];
+    const lineRe = /^\[attached:\s*([^,\]]+)(?:,[^\]]*)?,\s*id=(att_[a-f0-9]+)\]\s*$/;
+    for (const m of msgs) {
+      if (m.role !== "user" || typeof m.content !== "string") continue;
+      for (const line of m.content.split("\n")) {
+        const match = lineRe.exec(line);
+        if (match) {
+          const filename = match[1].trim();
+          const attId = match[2];
+          out[attId] = filename;
+        }
+      }
+    }
+    return out;
+  }, [chips, msgsQ.data]);
 
   // Reasoning ("thinking") deltas accumulated alongside the streaming bubble.
   // Reasoning models (gemma4, deepseek-r1, qwq) emit these before content.
@@ -856,14 +922,12 @@ export default function Chat() {
               resolved={req.resolved}
             />
           ))}
-          {awaitingReply && pendingForAgent.length === 0 && !streaming && !streamingReasoning && (() => {
-            const last = events[events.length - 1] as { type?: string; call?: { name?: string } } | undefined;
-            let label = "thinking";
-            if (last?.type === "tool_call" && last.call?.name) {
-              label = `running ${last.call.name}`;
-            }
-            return <ThinkingIndicator label={label} />;
-          })()}
+          {awaitingReply && pendingForAgent.length === 0 && !streaming && !streamingReasoning && (
+            <ChatProgressIndicator
+              toolCalls={turnToolCalls}
+              attachmentFilenames={attachmentFilenames}
+            />
+          )}
         </div>
 
         {/* COMPOSER */}
