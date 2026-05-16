@@ -43,7 +43,11 @@ def _load_holdings():
     Returns (holdings, source, by_account) where by_account is
     {ticker: {account_type: {shares, basis}}} when the synced file
     includes account breakdowns, else {}."""
-    p = os.path.join(os.path.dirname(__file__), "holdings.json")
+    # realpath so the lookup works even when this script is invoked through
+    # a symlink (e.g., from ~/KonaClaw/skills/.../scripts/portfolio.py →
+    # workspace/portfolio.py). Without realpath, dirname(__file__) would be
+    # the symlink's dir, and holdings.json wouldn't be found.
+    p = os.path.join(os.path.dirname(os.path.realpath(__file__)), "holdings.json")
     if not os.path.isfile(p):
         return _FALLBACK_HOLDINGS, "fallback", {}
     try:
