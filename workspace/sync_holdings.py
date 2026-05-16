@@ -36,15 +36,20 @@ HOLDINGS_FILE = HERE / "holdings.json"
 # Basis here is `remaining_quantity * purchase_price` per lot (basis of
 # what's currently held), summed per ticker — same shape portfolio.py
 # expects for its gain/loss math.
+# Per-(ticker, account_type) aggregation. portfolio.py reduces by ticker
+# for its price-fetch loop and computes per-account values using the live
+# price. The dashboard renders per-account totals and a per-holding
+# account-breakdown column.
 _SQL = """
 SELECT ticker,
-       SUM(remaining_quantity)               AS shares,
+       account_type,
+       SUM(remaining_quantity)                AS shares,
        SUM(remaining_quantity*purchase_price) AS basis
 FROM lots
 WHERE user_id = (SELECT id FROM users WHERE email = '{email}')
   AND remaining_quantity > 0
-GROUP BY ticker
-ORDER BY basis DESC NULLS LAST
+GROUP BY ticker, account_type
+ORDER BY ticker, account_type
 """
 
 
@@ -67,16 +72,25 @@ def _run_psql(host: str, db: str, sql: str, timeout: int = 15) -> str:
     return proc.stdout
 
 
-def _parse_rows(raw: str) -> dict[str, dict[str, float]]:
-    out: dict[str, dict[str, float]] = {}
+def _parse_rows(raw: str) -> tuple[dict[str, dict[str, float]],
+                                   dict[str, dict[str, dict[str, float]]]]:
+    """Returns (totals_per_ticker, per_ticker_per_account).
+
+    totals_per_ticker mirrors the legacy shape portfolio.py already consumes
+    for its per-ticker price lookup loop. per_ticker_per_account adds the
+    account-type axis so the dashboard can render Taxable/Traditional/Roth
+    breakdowns without re-querying Postgres.
+    """
+    totals: dict[str, dict[str, float]] = {}
+    by_acct: dict[str, dict[str, dict[str, float]]] = {}
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
         parts = line.split("|")
-        if len(parts) != 3:
+        if len(parts) != 4:
             continue
-        ticker, shares_s, basis_s = parts
+        ticker_raw, account_raw, shares_s, basis_s = parts
         try:
             shares = float(shares_s)
             basis = float(basis_s) if basis_s else 0.0
@@ -84,21 +98,29 @@ def _parse_rows(raw: str) -> dict[str, dict[str, float]]:
             continue
         if shares <= 0:
             continue
-        out[ticker.strip().upper()] = {
+        ticker = ticker_raw.strip().upper()
+        account = account_raw.strip() or "Unknown"
+        # Per-account row
+        by_acct.setdefault(ticker, {})[account] = {
             "shares": round(shares, 6),
             "basis": round(basis, 2),
         }
-    return out
+        # Roll up into per-ticker totals
+        t = totals.setdefault(ticker, {"shares": 0.0, "basis": 0.0})
+        t["shares"] = round(t["shares"] + shares, 6)
+        t["basis"] = round(t["basis"] + basis, 2)
+    return totals, by_acct
 
 
 def sync(email: str, host: str, db: str) -> dict:
     raw = _run_psql(host, db, _SQL.format(email=email))
-    holdings = _parse_rows(raw)
+    totals, by_acct = _parse_rows(raw)
     payload = {
         "synced_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "source": f"rplanner:{db}@{host}",
         "user_email": email,
-        "holdings": holdings,
+        "holdings": totals,         # per-ticker totals (back-compat shape)
+        "by_account": by_acct,      # per-ticker, per-account breakdown
     }
     tmp = HOLDINGS_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2))

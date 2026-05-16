@@ -38,22 +38,27 @@ _FALLBACK_HOLDINGS = {
 def _load_holdings():
     """Prefer the synced holdings.json (live rPlanner); fall back to the
     hardcoded dict above. Lets `python3 portfolio.py` work even before the
-    first sync, and survives Postgres being unreachable."""
+    first sync, and survives Postgres being unreachable.
+
+    Returns (holdings, source, by_account) where by_account is
+    {ticker: {account_type: {shares, basis}}} when the synced file
+    includes account breakdowns, else {}."""
     p = os.path.join(os.path.dirname(__file__), "holdings.json")
     if not os.path.isfile(p):
-        return _FALLBACK_HOLDINGS, "fallback"
+        return _FALLBACK_HOLDINGS, "fallback", {}
     try:
         with open(p) as f:
             payload = json.load(f)
         h = payload.get("holdings") or {}
         if not isinstance(h, dict) or not h:
-            return _FALLBACK_HOLDINGS, "fallback"
-        return h, payload.get("synced_at") or "synced"
+            return _FALLBACK_HOLDINGS, "fallback", {}
+        by_acct = payload.get("by_account") or {}
+        return h, payload.get("synced_at") or "synced", by_acct
     except (OSError, json.JSONDecodeError):
-        return _FALLBACK_HOLDINGS, "fallback"
+        return _FALLBACK_HOLDINGS, "fallback", {}
 
 
-HOLDINGS, _HOLDINGS_SOURCE = _load_holdings()
+HOLDINGS, _HOLDINGS_SOURCE, _BY_ACCOUNT = _load_holdings()
 
 def fetch(ticker):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
@@ -134,6 +139,21 @@ for ticker, info in HOLDINGS.items():
         total_basis    += basis
         total_day_change += day_chg
 
+        # Per-account breakdown for this ticker, using the live price.
+        # by_account is empty when running off the fallback HOLDINGS dict
+        # (no rPlanner sync yet).
+        by_account = {}
+        for acct, leg in (_BY_ACCOUNT.get(ticker) or {}).items():
+            leg_shares = leg["shares"]
+            leg_basis  = leg["basis"]
+            leg_value  = price * leg_shares
+            by_account[acct] = {
+                "shares": leg_shares,
+                "basis":  leg_basis,
+                "value":  leg_value,
+                "gain":   leg_value - leg_basis,
+            }
+
         results.append({
             "ticker": ticker,
             "price": price,
@@ -143,6 +163,7 @@ for ticker, info in HOLDINGS.items():
             "day_change": day_chg,
             "gain": gain,
             "gain_pct": gain_pct,
+            "by_account": by_account,
         })
     except Exception as e:
         results.append({"ticker": ticker, "error": str(e)})
@@ -152,10 +173,20 @@ total_gain_pct = (total_gain / total_basis * 100) if total_basis else 0
 prev_value = total_value - total_day_change
 day_pct    = (total_day_change / prev_value * 100) if prev_value else 0
 
+# Roll up per-account totals across all tickers using current prices.
+account_totals: dict = {}
+for r in results:
+    for acct, leg in (r.get("by_account") or {}).items():
+        a = account_totals.setdefault(acct, {"value": 0.0, "basis": 0.0, "gain": 0.0})
+        a["value"] += leg["value"]
+        a["basis"] += leg["basis"]
+        a["gain"]  += leg["gain"]
+
 if SILENT:
     print(json.dumps({"holdings": results, "total_value": total_value,
                       "total_gain": total_gain, "total_day_change": total_day_change,
-                      "day_pct": day_pct, "holdings_source": _HOLDINGS_SOURCE}))
+                      "day_pct": day_pct, "holdings_source": _HOLDINGS_SOURCE,
+                      "account_totals": account_totals}))
     sys.exit(0)
 
 # Build human-readable message

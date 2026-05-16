@@ -5,6 +5,7 @@ import {
 } from "../api/portfolio";
 import { PortfolioWidget } from "../components/PortfolioWidget";
 import { HoldingsTable } from "../components/HoldingsTable";
+import { AccountTotals } from "../components/AccountTotals";
 
 export default function Portfolio() {
   const [snap, setSnap] = useState<SnapshotResponse | null>(null);
@@ -114,6 +115,14 @@ export default function Portfolio() {
       ) : payload ? (
         <>
           <PortfolioWidget snapshot={payload} />
+          {payload.account_totals && Object.keys(payload.account_totals).length > 0 && (
+            <div className="mt-6">
+              <h2 className="text-sm font-mono uppercase tracking-[0.18em] text-muted2 mb-3">
+                By Account
+              </h2>
+              <AccountTotals totals={payload.account_totals} />
+            </div>
+          )}
           <div className="mt-8">
             <h2 className="text-lg font-semibold mb-3">Holdings</h2>
             <HoldingsTable holdings={payload.holdings} />

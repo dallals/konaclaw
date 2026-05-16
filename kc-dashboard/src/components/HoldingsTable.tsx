@@ -39,6 +39,34 @@ function changeClass(n: number | undefined): string {
   return n >= 0 ? "text-green-600" : "text-red-600";
 }
 
+// Compact display for the per-row Accounts column.
+//   { Taxable: {shares: 216}, Traditional: {shares: 880} }
+//     → "Tax 216 · Trad 880"
+const _ABBR: Record<string, string> = {
+  Taxable: "Tax",
+  Traditional: "Trad",
+  Roth: "Roth",
+};
+
+function fmtAccounts(by_account: PortfolioHolding["by_account"]): string {
+  if (!by_account || Object.keys(by_account).length === 0) return "—";
+  const parts: string[] = [];
+  // Stable display order; unknown accounts sort by share count desc.
+  const order = ["Taxable", "Traditional", "Roth"];
+  const known = order.filter((k) => k in by_account);
+  const extras = Object.keys(by_account)
+    .filter((k) => !order.includes(k))
+    .sort((a, b) => by_account[b].shares - by_account[a].shares);
+  for (const k of [...known, ...extras]) {
+    const leg = by_account[k];
+    const sh = leg.shares % 1 === 0
+      ? leg.shares.toLocaleString("en-US")
+      : leg.shares.toLocaleString("en-US", { maximumFractionDigits: 2 });
+    parts.push(`${_ABBR[k] ?? k} ${sh}`);
+  }
+  return parts.join(" · ");
+}
+
 export function HoldingsTable({ holdings }: { holdings: PortfolioHolding[] }) {
   const [sortKey, setSortKey] = useState<SortKey>("value");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -98,6 +126,9 @@ export function HoldingsTable({ holdings }: { holdings: PortfolioHolding[] }) {
             <Th k="day_change" label="Day Δ"       align="right" />
             <Th k="gain"       label="Gain ($)"    align="right" />
             <Th k="gain_pct"   label="Gain (%)"    align="right" />
+            <th className="px-3 py-2 font-mono text-[10px] uppercase tracking-[0.12em] text-muted2 border-b border-line text-left">
+              Accounts
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -115,6 +146,9 @@ export function HoldingsTable({ holdings }: { holdings: PortfolioHolding[] }) {
               </td>
               <td className={`px-3 py-2 text-right font-mono ${changeClass(h.gain_pct)}`}>
                 {fmtPct(h.gain_pct)}
+              </td>
+              <td className="px-3 py-2 font-mono text-xs text-muted">
+                {fmtAccounts(h.by_account)}
               </td>
             </tr>
           ))}

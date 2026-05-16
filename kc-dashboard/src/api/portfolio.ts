@@ -1,5 +1,12 @@
 import { getBaseUrl } from "./client";
 
+export interface AccountLeg {
+  shares: number;
+  basis: number;
+  value: number;
+  gain: number;
+}
+
 export interface PortfolioHolding {
   ticker: string;
   /** Last trade price (today). */
@@ -12,8 +19,17 @@ export interface PortfolioHolding {
   /** Absolute lifetime gain ($). */
   gain?: number;
   gain_pct: number;
+  /** Per-account-type breakdown for this ticker (Taxable / Traditional / Roth).
+   *  Empty when running off fallback HOLDINGS (pre-sync). */
+  by_account?: { [accountType: string]: AccountLeg };
   /** Set when Yahoo fetch failed for this ticker. */
   error?: string;
+}
+
+export interface AccountTotal {
+  value: number;
+  basis: number;
+  gain: number;
 }
 
 export interface PortfolioSnapshot {
@@ -25,6 +41,9 @@ export interface PortfolioSnapshot {
   /** ISO timestamp when holdings.json was last synced from rPlanner, or
    *  "fallback" when running off the hardcoded HOLDINGS dict. */
   holdings_source?: string;
+  /** Per-account-type totals (Taxable / Traditional / Roth). Empty before
+   *  the first sync. */
+  account_totals?: { [accountType: string]: AccountTotal };
 }
 
 export interface SyncSummary {

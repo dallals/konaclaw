@@ -44,4 +44,25 @@ describe("HoldingsTable", () => {
     render(<HoldingsTable holdings={[]} />);
     expect(screen.getByText(/no holdings/i)).toBeInTheDocument();
   });
+
+  it("renders the Accounts column with abbreviated per-account share breakdown", () => {
+    const withAccounts: PortfolioHolding[] = [
+      {
+        ticker: "VOO", shares: 1096, price: 679, value: 745_000,
+        day_change: -15_000, gain: 200_000, gain_pct: 35,
+        by_account: {
+          Taxable:     { shares: 216, basis: 60_000,  value: 146_000, gain: 86_000 },
+          Traditional: { shares: 880, basis: 480_000, value: 599_000, gain: 119_000 },
+        },
+      },
+    ];
+    render(<HoldingsTable holdings={withAccounts} />);
+    expect(screen.getByText(/Tax 216.*Trad 880/)).toBeInTheDocument();
+  });
+
+  it("Accounts column shows '—' when by_account is missing (pre-sync rows)", () => {
+    render(<HoldingsTable holdings={ROWS} />);
+    // None of ROWS have by_account set.
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
 });
