@@ -27,8 +27,10 @@ import sys, json, urllib.request, urllib.parse, os, argparse
 BOT_TOKEN       = None  # KonaClaw delivers via dashboard, not Telegram
 CHAT_ID         = None
 FIRECRAWL_KEY   = os.environ.get("FIRECRAWL_API_KEY")
-if FIRECRAWL_KEY is None:
-    print("FIRECRAWL_API_KEY not set", file=sys.stderr); sys.exit(2)
+# Firecrawl is only used to refresh live MSRP from Tesla's order page.
+# When missing or invalid, fetch_firecrawl_price() returns None and the
+# script falls back to the local MSRP table — which is the path Sammy
+# normally wants anyway. No hard exit.
 
 # Local Ollama for NLP arg parsing — replaces ZeroClaw's Gemini dep.
 OLLAMA_URL = os.environ.get("KC_OLLAMA_URL", "http://127.0.0.1:11434")
@@ -319,104 +321,11 @@ def get_tax_rate(zip_code):
                 "8": 0.08, "9": 0.09}
     return FALLBACK.get(z[0], 0.0725), state
 
-_INV_MODEL_MAP = {
-    "MYRWD": "my", "MYRWDP": "my", "MYAWD": "my", "MYLRAWD": "my", "MYPERF": "my",
-    "M3RWD": "m3", "M3RWDP": "m3", "M3LRAWD": "m3", "M3PERF": "m3",
-    "MXLRAWD": "mx", "MXLRAWD6": "mx", "MXLRAWD7": "mx", "MXPLAID": "mx",
-    "MSLRAWD": "ms", "MSPLAID": "ms",
-    "CTDMAWD": "ct", "CTPAWD": "ct", "CTBEAST": "ct",
-}
-
-def fetch_inventory_price(inv_code, zip_code, state):
-    """Return vehicle price from Tesla inventory API, or None on failure."""
-    model_slug = _INV_MODEL_MAP.get(inv_code, inv_code[:2].lower())
-    query = {
-        "query": {
-            "model": model_slug,
-            "condition": "new",
-            "options": {"TRIM": [inv_code]},
-            "arrangeby": "Price",
-            "order": "asc",
-            "market": "US",
-            "language": "en",
-            "super_region": "north america",
-            "zip": str(zip_code),
-            "range": 500,
-            "region": state,
-        },
-        "offset": 0,
-        "count": 1,
-        "outsideSearch": True,
-    }
-    url = ("https://www.tesla.com/inventory/api/v4/inventory-results?query="
-           + urllib.parse.quote(json.dumps(query)))
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/124.0.0.0 Safari/537.36"),
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Origin": "https://www.tesla.com",
-            "Referer": f"https://www.tesla.com/inventory/new/{model_slug}",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"macOS"',
-        })
-        with urllib.request.urlopen(req, timeout=5) as r:
-            data = json.loads(r.read())
-        results = data.get("results")
-        if isinstance(results, list) and results:
-            price = results[0].get("TotalPrice") or results[0].get("Price")
-            return price
-    except Exception as e:
-        print(f"[Inventory API failed: {e}]", flush=True)
-    return None
-
-# ── Firecrawl fallback: scrape Tesla ordering page ────────────────────────────
-
-def fetch_firecrawl_price(model, trim_label):
-    """Try to scrape current pricing from Tesla's order page via Firecrawl.
-    Looks for a price within 400 chars of the trim label before falling back
-    to the first price found on the page.
-    """
-    url = f"https://www.tesla.com/{model}/design"
-    payload = json.dumps({
-        "url": url,
-        "formats": ["markdown"],
-        "onlyMainContent": True,
-    }).encode()
-    try:
-        req = urllib.request.Request(FIRECRAWL_URL, data=payload, headers={
-            "Authorization": f"Bearer {FIRECRAWL_KEY}",
-            "Content-Type": "application/json",
-        }, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as r:
-            result = json.loads(r.read())
-        if result.get("success"):
-            md = result.get("data", {}).get("markdown", "")
-            import re
-            # Strategy 1: find price within 400 chars after trim label mention
-            label_short = trim_label.split("(")[0].strip()  # e.g. "Model Y RWD Premium"
-            escaped = re.escape(label_short)
-            m = re.search(escaped + r'.{0,400}?\$([\d]{2,3},[\d]{3})', md, re.S | re.I)
-            if m:
-                return int(m.group(1).replace(",", ""))
-            # Strategy 2: find price within 400 chars before trim label mention
-            m = re.search(r'\$([\d]{2,3},[\d]{3}).{0,400}?' + escaped, md, re.S | re.I)
-            if m:
-                return int(m.group(1).replace(",", ""))
-            # Strategy 3: first price on page (weakest — may be wrong trim)
-            prices = re.findall(r'\$([\d]{2,3},[\d]{3})', md)
-            if prices:
-                print(f"[Firecrawl: using first price on page — trim match failed]")
-                return int(prices[0].replace(",", ""))
-    except Exception as e:
-        print(f"[Firecrawl failed: {e}]")
-    return None
+# Removed 2026-05-16: fetch_inventory_price() and fetch_firecrawl_price().
+# Both attempted live MSRP scraping; in practice Tesla blocked the inventory
+# API (403) and Firecrawl needed an external key. Local BASE_MSRP table is
+# kept current via `tesla.update_pricing` — same source of truth, no
+# external deps, no latency.
 
 # ── Monthly payment formulas ──────────────────────────────────────────────────
 
@@ -832,22 +741,13 @@ tax_rate, state = get_tax_rate(args.zip)
 price_source = ""
 base_price = None
 
-print(f"Fetching live price for {trim['label']}...")
-base_price = fetch_inventory_price(inv_code, args.zip, state)
-if base_price:
-    # Live inventory gives total price including options; subtract option upcharges
-    # to get a clean base, then re-add our selected options
-    base_price_clean = base_price
-    price_source = "Live Tesla inventory"
-else:
-    print("Trying Firecrawl...")
-    scraped = fetch_firecrawl_price(model, trim["label"])
-    if scraped:
-        base_price_clean = scraped
-        price_source = "Tesla website (Firecrawl)"
-    else:
-        base_price_clean = BASE_MSRP.get(inv_code, 44990)
-        price_source = "Tesla published MSRP (estimate)"
+# Base price comes from the local BASE_MSRP table (Sammy keeps it current
+# via `tesla.update_pricing`). Tesla's prices change a few times a year —
+# scraping live (inventory API or Firecrawl) added external deps, latency,
+# and a failure mode without changing the answer 99% of the time. Removed
+# 2026-05-16.
+base_price_clean = BASE_MSRP.get(inv_code, 44990)
+price_source = "Local MSRP table"
 
 # Add option upcharges
 # MYPERF + M3PERF: all options included (paint, wheels, interior — no upcharges).
@@ -1058,4 +958,10 @@ lines += [
 ]
 
 msg = "\n".join(lines)
+# ZeroClaw emitted HTML for Telegram; KonaClaw renders plain text in the
+# dashboard. Strip the bold/italic tags and decode the two HTML entities
+# the script uses, so the output displays cleanly.
+import re as _re, html as _html
+msg = _re.sub(r"</?[bi]>", "", msg)
+msg = _html.unescape(msg)
 print(msg)

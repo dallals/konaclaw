@@ -326,3 +326,180 @@ async def test_inbound_no_usage_persisted_when_stream_errors(deps):
     if cid is not None:
         rows = deps.storage.list_messages(cid)
         assert all(r["role"] != "assistant" for r in rows)
+
+
+# ---------------------------------------------------------------- @-mention
+# (bypass parent agent and spawn subagent directly)
+
+
+def _make_at_router(deps, registry, conn_registry, routing, *, index, runner):
+    return InboundRouter(
+        registry=registry,
+        conversations=deps.conversations,
+        conv_locks=deps.conv_locks,
+        routing_table=routing,
+        connector_registry=conn_registry,
+        subagent_index=index,
+        subagent_runner=runner,
+    )
+
+
+class _FakeTemplate:
+    def __init__(self, name="tessy"):
+        self.name = name
+        self.timeout_seconds = 60
+
+
+class _FakeSubagentIndex:
+    def __init__(self, names):
+        self._t = {n: _FakeTemplate(n) for n in names}
+
+    def get(self, name):
+        return self._t.get(name)
+
+
+class _FakeSubagentRunner:
+    def __init__(self, *, reply="42 mpg", status="ok", raise_on_spawn=None):
+        from kc_subagents.runner import InstanceResult
+        self.reply = reply
+        self.status = status
+        self.raise_on_spawn = raise_on_spawn
+        self.spawn_calls = []
+        self.InstanceResult = InstanceResult
+
+    def spawn(self, *, template, task, context, label,
+              parent_conversation_id, parent_agent, timeout_override):
+        if self.raise_on_spawn:
+            raise self.raise_on_spawn
+        self.spawn_calls.append({
+            "template": template.name, "task": task,
+            "parent_conversation_id": parent_conversation_id,
+            "parent_agent": parent_agent,
+        })
+        return "ep_test01"
+
+    async def await_one(self, handle, *, ceiling_seconds):
+        return self.InstanceResult(
+            subagent_id=handle, status=self.status,
+            reply=(self.reply if self.status == "ok" else None),
+            duration_ms=10, tool_calls_used=1,
+            error=(None if self.status == "ok" else "boom"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_at_mention_bypasses_parent_agent_and_spawns_subagent(deps):
+    """@tessy <task> must spawn tessy directly — parent agent send_stream is
+    not invoked, and the subagent reply is sent back via the connector."""
+    # Build a parent runtime whose send_stream WOULD blow up if called.
+    async def _explode(*args, **kwargs):
+        raise AssertionError("parent agent send_stream should not run on @-mention")
+        yield  # pragma: no cover — generator marker
+
+    rt = _build_runtime("alice", [])
+    rt.assembled.core_agent.send_stream = _explode
+
+    registry = _make_registry({"alice": rt})
+    connector = _FakeConnector("telegram")
+    conn_registry = _FakeConnectorRegistry({"telegram": connector})
+    routing = _FakeRoutingTable(default_agent="alice")
+    index = _FakeSubagentIndex(["tessy"])
+    runner = _FakeSubagentRunner(reply="Model Y monthly: $612")
+    router = _make_at_router(
+        deps, registry, conn_registry, routing,
+        index=index, runner=runner,
+    )
+
+    env = _Env("telegram", "C9", "u1", "@tessy Model Y price?")
+    await router.handle_inbound(env)
+
+    assert len(runner.spawn_calls) == 1
+    assert runner.spawn_calls[0]["template"] == "tessy"
+    assert runner.spawn_calls[0]["task"] == "Model Y price?"
+    assert runner.spawn_calls[0]["parent_agent"] == "alice"
+
+    connector.send.assert_awaited_once()
+    sent_text = connector.send.await_args.args[1]
+    assert "[via @tessy]" in sent_text
+    assert "Model Y monthly: $612" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_at_mention_unknown_template_falls_through_to_parent(deps):
+    """@<unknown> falls through to the parent agent normally (no bypass).
+    Otherwise typos like @kong would silently swallow user input."""
+    reply = AssistantMessage(content="parent handled it")
+    rt = _build_runtime("alice", [Complete(reply=reply)])
+    registry = _make_registry({"alice": rt})
+    connector = _FakeConnector("telegram")
+    conn_registry = _FakeConnectorRegistry({"telegram": connector})
+    routing = _FakeRoutingTable(default_agent="alice")
+    index = _FakeSubagentIndex(["tessy"])  # no @kong
+    runner = _FakeSubagentRunner()
+    router = _make_at_router(
+        deps, registry, conn_registry, routing,
+        index=index, runner=runner,
+    )
+
+    env = _Env("telegram", "C10", "u1", "@kong hi")
+    await router.handle_inbound(env)
+
+    assert runner.spawn_calls == []
+    connector.send.assert_awaited_once_with("C10", "parent handled it")
+
+
+@pytest.mark.asyncio
+async def test_at_mention_persists_user_and_assistant_messages(deps):
+    """Even on the bypass path, conversation history must include both the
+    user's @-mention message and the subagent's prefixed reply so the parent
+    agent has context on future turns."""
+    rt = _build_runtime("alice", [])
+    rt.assembled.core_agent.send_stream = None  # never called
+
+    registry = _make_registry({"alice": rt})
+    connector = _FakeConnector("telegram")
+    conn_registry = _FakeConnectorRegistry({"telegram": connector})
+    routing = _FakeRoutingTable(default_agent="alice")
+    index = _FakeSubagentIndex(["tessy"])
+    runner = _FakeSubagentRunner(reply="here's the quote")
+    router = _make_at_router(
+        deps, registry, conn_registry, routing,
+        index=index, runner=runner,
+    )
+
+    env = _Env("telegram", "C11", "u1", "@tessy quote")
+    await router.handle_inbound(env)
+
+    cid = deps.conversations.s.get_conv_for_chat("telegram", "C11", "alice")
+    msgs = deps.conversations.list_messages(cid)
+    assert len(msgs) == 2
+    assert isinstance(msgs[0], UserMessage)
+    assert msgs[0].content == "@tessy quote"
+    assert isinstance(msgs[1], AssistantMessage)
+    assert msgs[1].content.startswith("[via @tessy]")
+    assert "here's the quote" in msgs[1].content
+
+
+@pytest.mark.asyncio
+async def test_at_mention_subagent_error_surfaces_to_user(deps):
+    """If the subagent runner raises (e.g., cap reached), the user sees an
+    error message — not a swallowed silence."""
+    rt = _build_runtime("alice", [])
+    registry = _make_registry({"alice": rt})
+    connector = _FakeConnector("telegram")
+    conn_registry = _FakeConnectorRegistry({"telegram": connector})
+    routing = _FakeRoutingTable(default_agent="alice")
+    index = _FakeSubagentIndex(["tessy"])
+    runner = _FakeSubagentRunner(raise_on_spawn=RuntimeError("cap reached"))
+    router = _make_at_router(
+        deps, registry, conn_registry, routing,
+        index=index, runner=runner,
+    )
+
+    env = _Env("telegram", "C12", "u1", "@tessy hello")
+    await router.handle_inbound(env)
+
+    connector.send.assert_awaited_once()
+    sent_text = connector.send.await_args.args[1]
+    assert "@tessy failed" in sent_text
+    assert "cap reached" in sent_text

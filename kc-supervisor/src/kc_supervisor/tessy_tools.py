@@ -12,7 +12,15 @@ _PRICE_PARAMS = {
     "type": "object",
     "properties": {
         "nlp": {"type": "string", "description": "Natural language config description, e.g. 'Model Y RWD, 7k down, 72 months, 95128'."},
-        "trim": {"type": "string", "description": "rwd, lrawd, awd, performance, m3, m3lr, mx5, mxplaid, ms, ct, etc."},
+        "trim": {"type": "string", "description": (
+            "Trim slug — EXACT match required. 'AWD' and 'AWD Premium' are DIFFERENT trims at different MSRPs; pick wrong and the answer is wrong. "
+            "Model Y:  rwd | rwdpremium | awd | awdpremium (= lrawd / Long Range) | performance. "
+            "Model 3:  m3rwd | m3rwdpremium | m3awd | m3lr (= m3lrawd / Premium AWD) | m3perf. "
+            "Model X:  mxlrawd (5-seat) | mxlrawd6 | mxlrawd7 | mxplaid. "
+            "Model S:  mslrawd | msplaid. "
+            "Cybertruck:  ctdmawd (Dual Motor) | ctpawd (= ctpremium / Premium AWD) | ctbeast. "
+            "If the user says 'Premium', 'Long Range', or 'LR', pick the *premium* slug — never the base."
+        )},
         "paint": {"type": "string", "description": "red, blue, white, black, silver, grey, stealth"},
         "wheels": {"type": "integer", "description": "19 or 20"},
         "interior": {"type": "string", "description": "black, white, cream"},
@@ -71,7 +79,11 @@ def build_tessy_tools(
     """
 
     async def _price_impl(**kwargs) -> str:
-        args = ["tesla_price.py", "--silent"]
+        # NOT passing --silent: the script's default stdout is the human-readable
+        # pricing table (matches what Sammy wants to copy/paste to customers).
+        # --silent would emit JSON and force the model to reformat — extra LLM
+        # work for worse output.
+        args = ["tesla_price.py"]
         nlp = kwargs.get("nlp")
         if nlp:
             args.extend(["--nlp", nlp])

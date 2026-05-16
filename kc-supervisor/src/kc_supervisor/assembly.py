@@ -374,7 +374,9 @@ def assemble_agent(
     # Tessy subagent — Tesla pricing + offers specialist. Registers 4 tools
     # scoped to the workspace/ scripts. tesla.price is SAFE (read-only); the
     # three update tools are MUTATING (approval card surfaces before they run).
-    if cfg.name == "tessy":
+    # Ephemeral spawns arrive with cfg.name = "parent/ep_xxx/tessy"; match both.
+    template_name = cfg.name.rsplit("/", 1)[-1] if is_ephemeral else cfg.name
+    if template_name == "tessy":
         from kc_supervisor.tessy_tools import build_tessy_tools
 
         def _find_repo_root() -> Path:

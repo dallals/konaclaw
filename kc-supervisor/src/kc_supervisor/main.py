@@ -494,6 +494,8 @@ def main() -> None:
             routing_table=routing_table,
             connector_registry=connector_registry,
             skill_index=deps.skill_index,
+            subagent_index=subagent_index,
+            subagent_runner=subagent_runner,
         )
 
     # Hot-restart hooks for PATCH /connectors/{name} (Task 7 of v0.2.1).

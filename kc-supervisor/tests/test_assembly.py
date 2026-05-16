@@ -439,6 +439,40 @@ def test_zapier_mcp_tools_are_mutating_not_destructive(home):
     assert a.engine.tier_map["find_or_install_zap"] == Tier.SAFE
 
 
+TESSY_TOOL_NAMES = {
+    "tesla.price",
+    "tesla.update_pricing",
+    "tesla.confirm_pricing",
+    "tesla.update_offers_from_image",
+}
+
+
+def test_tessy_tools_registered_for_static_tessy_agent(home):
+    kwargs = _basic_assemble_kwargs(home)
+    kwargs["cfg"] = AgentConfig(name="tessy", model="qwen2.5:7b", system_prompt="hi")
+    a = assemble_agent(**kwargs)
+    assert TESSY_TOOL_NAMES <= set(a.registry.names())
+    assert a.engine.tier_map["tesla.price"] == Tier.SAFE
+    assert a.engine.tier_map["tesla.update_pricing"] == Tier.MUTATING
+
+
+def test_tessy_tools_registered_for_ephemeral_tessy_spawn(home):
+    """Regression: subagent spawns arrive with cfg.name = 'kona/ep_xxx/tessy'.
+    The original gate was `cfg.name == "tessy"` which never matched and left
+    the spawned instance with no tesla.* tools, surfacing as 'degraded'."""
+    kwargs = _basic_assemble_kwargs(home)
+    kwargs["cfg"] = AgentConfig(
+        name="kona/ep_abc123/tessy", model="qwen2.5:7b", system_prompt="hi",
+    )
+    a = assemble_agent(**kwargs)
+    assert TESSY_TOOL_NAMES <= set(a.registry.names())
+
+
+def test_tessy_tools_not_registered_for_other_agents(home):
+    a = assemble_agent(**_basic_assemble_kwargs(home))  # cfg.name == "alice"
+    assert not (TESSY_TOOL_NAMES & set(a.registry.names()))
+
+
 # ------------------------------------------------------------------ Phase C
 # (todo + clarify integration)
 

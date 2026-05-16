@@ -8,6 +8,7 @@ from kc_core.stream_frames import (
     TokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
 )
 from kc_supervisor.agents import AgentRegistry, AgentStatus
+from kc_supervisor.at_mention import parse_at_mention
 from kc_supervisor.conversations import ConversationManager
 from kc_supervisor.locks import ConversationLocks
 from kc_supervisor.skill_slash import resolve_slash_command
@@ -37,6 +38,8 @@ class InboundRouter:
         routing_table,                  # kc_connectors.routing.RoutingTable
         connector_registry,             # kc_connectors.base.ConnectorRegistry
         skill_index: Optional[Any] = None,
+        subagent_index: Optional[Any] = None,
+        subagent_runner: Optional[Any] = None,
     ) -> None:
         self.registry = registry
         self.conversations = conversations
@@ -44,6 +47,8 @@ class InboundRouter:
         self.routing_table = routing_table
         self.connector_registry = connector_registry
         self.skill_index = skill_index
+        self.subagent_index = subagent_index
+        self.subagent_runner = subagent_runner
 
     async def handle_inbound(self, env) -> None:
         """Run an agent turn for a single inbound MessageEnvelope.
@@ -78,6 +83,58 @@ class InboundRouter:
                     loaded, _ = resolved
                     agent_input = loaded
             self.conversations.append(cid, UserMessage(content=env.content))
+
+            # @-mention shorthand: `@<template> <task>` bypasses the parent
+            # agent's LLM turn and spawns the subagent directly. Same path as
+            # the dashboard ws_routes branch — mirrored for parity across
+            # chat surfaces (Telegram, iMessage, etc.).
+            mention = parse_at_mention(env.content)
+            if (
+                mention is not None
+                and self.subagent_index is not None
+                and self.subagent_runner is not None
+            ):
+                template_name, task = mention
+                template = self.subagent_index.get(template_name)
+                if template is not None:
+                    try:
+                        handle = self.subagent_runner.spawn(
+                            template=template, task=task,
+                            context=None, label=None,
+                            parent_conversation_id=str(cid),
+                            parent_agent=rt.name,
+                            timeout_override=None,
+                        )
+                        result = await self.subagent_runner.await_one(
+                            handle, ceiling_seconds=None,
+                        )
+                    except Exception as e:
+                        msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                        logger.exception(
+                            "InboundRouter @%s spawn raised", template_name,
+                        )
+                        reply_text = f"(@{template_name} failed: {msg})"
+                    else:
+                        if result.status == "ok":
+                            reply_text = result.reply or "(empty reply)"
+                        else:
+                            reply_text = (
+                                f"(@{template_name} failed: "
+                                f"{result.error or 'unknown error'})"
+                            )
+                    prefixed = f"[via @{template_name}]\n\n{reply_text}"
+                    self.conversations.append(
+                        cid, AssistantMessage(content=prefixed),
+                    )
+                    try:
+                        connector = self.connector_registry.get(env.channel)
+                        await connector.send(env.chat_id, prefixed)
+                    except Exception:
+                        logger.exception(
+                            "connector.send failed for %s/%s",
+                            env.channel, env.chat_id,
+                        )
+                    return
 
             history = self.conversations.list_messages(cid)
             if history and isinstance(history[-1], UserMessage):

@@ -12,6 +12,7 @@ from kc_core.stream_frames import (
     TokenDelta, ReasoningTokenDelta, ToolCallStart, ToolResult, Complete, TurnUsage,
 )
 from kc_supervisor.agents import AgentStatus
+from kc_supervisor.at_mention import parse_at_mention
 from kc_supervisor.skill_slash import resolve_slash_command
 
 logger = logging.getLogger(__name__)
@@ -229,6 +230,61 @@ def register_ws_routes(app: FastAPI) -> None:
                     else:
                         user_msg = UserMessage(content=content)
                     deps.conversations.append(conversation_id, user_msg)
+
+                    # @-mention shorthand: `@<template> <task>` bypasses the
+                    # parent agent's LLM turn and spawns the subagent directly.
+                    # Saves the parent's decide-to-spawn turn AND its
+                    # format-the-reply turn — meaningful on local models.
+                    mention = parse_at_mention(content)
+                    if (
+                        mention is not None
+                        and deps.subagent_index is not None
+                        and deps.subagent_runner is not None
+                    ):
+                        template_name, task = mention
+                        template = deps.subagent_index.get(template_name)
+                        if template is not None:
+                            try:
+                                handle = deps.subagent_runner.spawn(
+                                    template=template, task=task,
+                                    context=None, label=None,
+                                    parent_conversation_id=str(conversation_id),
+                                    parent_agent=rt.name,
+                                    timeout_override=None,
+                                )
+                                result = await deps.subagent_runner.await_one(
+                                    handle, ceiling_seconds=None,
+                                )
+                            except Exception as e:
+                                msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                                try:
+                                    await ws.send_json({
+                                        "type": "error",
+                                        "stage": "at_mention_spawn",
+                                        "message": msg,
+                                    })
+                                except Exception:
+                                    pass
+                                continue
+                            if result.status == "ok":
+                                reply_text = result.reply or "(empty reply)"
+                            else:
+                                reply_text = (
+                                    f"(@{template_name} failed: "
+                                    f"{result.error or 'unknown error'})"
+                                )
+                            prefixed = f"[via @{template_name}]\n\n{reply_text}"
+                            deps.conversations.append(
+                                conversation_id, AssistantMessage(content=prefixed),
+                            )
+                            try:
+                                await ws.send_json({"type": "token", "delta": prefixed})
+                                await ws.send_json({
+                                    "type": "assistant_complete", "content": prefixed,
+                                })
+                            except Exception:
+                                pass
+                            continue
 
                     # Rehydrate kc-core Agent.history from SQLite. send_stream appends
                     # its own UserMessage(content), so we trim a trailing UserMessage
