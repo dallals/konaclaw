@@ -17,9 +17,44 @@ def build_gmail_tools(service: Any) -> dict[str, Tool]:
     """`service` is a googleapiclient discovery object for gmail v1."""
 
     def search(query: str, max_results: int = 10) -> str:
-        r = service.users().threads().list(userId="me", q=query, maxResults=max_results).execute()
+        r = service.users().threads().list(
+            userId="me", q=query, maxResults=max_results,
+        ).execute()
         threads = r.get("threads", [])
-        return "\n".join(f"thread:{t['id']}" for t in threads) or "(no threads)"
+        if not threads:
+            return "(no threads)"
+
+        lines: list[str] = []
+        for t in threads:
+            tid = t["id"]
+            try:
+                meta = service.users().threads().get(
+                    userId="me", id=tid, format="metadata",
+                    metadataHeaders=["Subject", "From", "Date"],
+                ).execute()
+            except Exception as e:  # noqa: BLE001 — Gmail SDK raises heterogeneous types
+                lines.append(f"- id={tid}: (failed to fetch metadata: {type(e).__name__})")
+                continue
+            msgs = meta.get("messages") or []
+            if not msgs:
+                lines.append(f"- id={tid}: (empty thread)")
+                continue
+            headers = {
+                h.get("name"): h.get("value")
+                for h in (msgs[0].get("payload", {}).get("headers") or [])
+            }
+            subject = headers.get("Subject", "(no subject)")
+            sender = headers.get("From", "(unknown)")
+            date = headers.get("Date", "")
+            snippet = (msgs[0].get("snippet", "") or "").strip()
+            msg_count = len(msgs)
+            lines.append(
+                f"- id={tid} | {date}\n"
+                f"  From: {sender}\n"
+                f"  Subject: {subject} ({msg_count} msg{'s' if msg_count != 1 else ''})\n"
+                f"  {snippet[:120]}"
+            )
+        return "\n\n".join(lines)
 
     def read_thread(thread_id: str) -> str:
         r = service.users().threads().get(userId="me", id=thread_id).execute()
