@@ -27,18 +27,22 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 HOLDINGS_FILE = HERE / "holdings.json"
 
-# Aggregate lots per ticker so portfolio.py sees one row per symbol (matches
-# the legacy HOLDINGS dict shape). Only types that move on equity markets
-# go through portfolio.py — Bond is excluded since price feeds (Yahoo) don't
-# quote fixed-income reliably.
+# Aggregate from the `lots` table using `remaining_quantity` (what's left
+# after sales) — NOT `investments.quantity`, which is the lifetime purchase
+# total and over-reports any position the user has partially sold. Lots
+# with remaining_quantity=0 are skipped so fully-sold positions don't
+# appear as zero-share rows.
+#
+# Basis here is `remaining_quantity * purchase_price` per lot (basis of
+# what's currently held), summed per ticker — same shape portfolio.py
+# expects for its gain/loss math.
 _SQL = """
 SELECT ticker,
-       SUM(quantity)               AS shares,
-       SUM(quantity*purchase_price) AS basis
-FROM investments
+       SUM(remaining_quantity)               AS shares,
+       SUM(remaining_quantity*purchase_price) AS basis
+FROM lots
 WHERE user_id = (SELECT id FROM users WHERE email = '{email}')
-  AND type IN ('Stock', 'ETF', 'Mutual Fund', 'Bond')
-  AND quantity > 0
+  AND remaining_quantity > 0
 GROUP BY ticker
 ORDER BY basis DESC NULLS LAST
 """
