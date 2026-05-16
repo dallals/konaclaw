@@ -7,11 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 
 _DEFAULT_TIMEOUT_S = 5
 _DEFAULT_CACHE_S = 60
+_SYNC_TIMEOUT_S = 30
 
 
 def build_portfolio_router(
@@ -79,5 +80,30 @@ def build_portfolio_router(
                 "error": str(e)[:300],
                 "last_good": state["payload"],
             }
+
+    @router.post("/sync")
+    def sync():
+        """Run `sync_holdings.py` to pull fresh holdings from local rPlanner
+        Postgres into `workspace/holdings.json`, then invalidate the snapshot
+        cache so the next /snapshot call uses the new data."""
+        try:
+            proc = subprocess.run(
+                ["python3", "sync_holdings.py", "--silent"],
+                cwd=str(workspace_dir), capture_output=True, text=True,
+                timeout=_SYNC_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            raise HTTPException(504, detail=f"sync timeout after {_SYNC_TIMEOUT_S}s")
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()[:400]
+            raise HTTPException(502, detail=f"sync failed: {err}")
+        try:
+            summary = json.loads(proc.stdout.strip().splitlines()[-1])
+        except (json.JSONDecodeError, IndexError):
+            raise HTTPException(502, detail="sync produced no JSON summary")
+        # Drop cache so the next /snapshot reflects the freshly-synced data.
+        state["payload"] = None
+        state["cached_at_ts"] = 0.0
+        return summary
 
     return router

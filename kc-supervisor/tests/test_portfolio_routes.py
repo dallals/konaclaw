@@ -106,3 +106,72 @@ def test_snapshot_timeout_returns_error(tmp_path, monkeypatch):
     r = client.get("/portfolio/snapshot")
     body = r.json()
     assert "error" in body
+
+
+# ------------------------------------------------------------------ POST /sync
+
+
+def _sync_summary(n_tickers: int = 17) -> dict:
+    return {
+        "synced_at": "2026-05-16T22:00:00+00:00",
+        "user_email": "sammydallal@gmail.com",
+        "tickers": n_tickers,
+        "total_basis": 2_416_980.77,
+        "file": "/workspace/holdings.json",
+    }
+
+
+def test_sync_runs_script_and_returns_summary(tmp_path, monkeypatch):
+    summary = _sync_summary()
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _ok_completed(summary))
+    client = TestClient(_app_with_router(tmp_path))
+    r = client.post("/portfolio/sync")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["tickers"] == 17
+    assert body["user_email"] == "sammydallal@gmail.com"
+
+
+def test_sync_invalidates_snapshot_cache(tmp_path, monkeypatch):
+    """A successful sync must drop the snapshot cache so the next /snapshot
+    call re-runs portfolio.py against the freshly-synced holdings.json."""
+    calls: list[str] = []
+
+    def fake_run(cmd, *a, **k):
+        script = cmd[1] if len(cmd) > 1 else ""
+        calls.append(script)
+        if "sync_holdings.py" in script:
+            return _ok_completed(_sync_summary())
+        return _ok_completed(SAMPLE_PAYLOAD)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client = TestClient(_app_with_router(tmp_path, cache_s=60))
+    client.get("/portfolio/snapshot")
+    client.post("/portfolio/sync")
+    client.get("/portfolio/snapshot")
+    portfolio_calls = [c for c in calls if "portfolio.py" in c]
+    assert len(portfolio_calls) == 2  # cache was invalidated → re-fetched
+
+
+def test_sync_failure_returns_502(tmp_path, monkeypatch):
+    def fake_run(*a, **k):
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.returncode = 3
+        proc.stdout = ""
+        proc.stderr = '{"error": "psql exit 2: connection refused"}'
+        return proc
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client = TestClient(_app_with_router(tmp_path))
+    r = client.post("/portfolio/sync")
+    assert r.status_code == 502
+    assert "connection refused" in r.json()["detail"]
+
+
+def test_sync_timeout_returns_504(tmp_path, monkeypatch):
+    def fake_run(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="x", timeout=30)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client = TestClient(_app_with_router(tmp_path))
+    r = client.post("/portfolio/sync")
+    assert r.status_code == 504

@@ -5,9 +5,10 @@ import { PortfolioWidget } from "./PortfolioWidget";
 
 vi.mock("../api/portfolio", () => ({
   getSnapshot: vi.fn(),
+  syncHoldings: vi.fn(),
 }));
 
-import { getSnapshot } from "../api/portfolio";
+import { getSnapshot, syncHoldings } from "../api/portfolio";
 
 
 const SAMPLE_SNAPSHOT = {
@@ -31,6 +32,7 @@ const SAMPLE_SNAPSHOT = {
 describe("PortfolioWidget", () => {
   beforeEach(() => {
     (getSnapshot as any).mockReset();
+    (syncHoldings as any).mockReset();
   });
 
   it("renders loading state initially", () => {
@@ -64,6 +66,39 @@ describe("PortfolioWidget", () => {
     (getSnapshot as any).mockClear();
     fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
     await waitFor(() => expect(getSnapshot).toHaveBeenCalledWith(true));
+  });
+
+  it("sync button calls syncHoldings and refreshes the snapshot", async () => {
+    (getSnapshot as any).mockResolvedValue(SAMPLE_SNAPSHOT);
+    (syncHoldings as any).mockResolvedValue({
+      synced_at: "2026-05-16T22:30:00+00:00",
+      user_email: "sammydallal@gmail.com",
+      tickers: 17,
+      total_basis: 2_416_980.77,
+      file: "/workspace/holdings.json",
+    });
+    render(<PortfolioWidget />);
+    await waitFor(() => expect(screen.getByText(/\$4,524,912/)).toBeInTheDocument());
+    (getSnapshot as any).mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /sync holdings from rplanner/i }));
+
+    await waitFor(() => expect(syncHoldings).toHaveBeenCalled());
+    // Sync triggers a snapshot refresh so the new holdings.json is reflected.
+    await waitFor(() => expect(getSnapshot).toHaveBeenCalledWith(true));
+    // Status line confirms the sync ran.
+    await waitFor(() => expect(screen.getByText(/synced 17 tickers/i)).toBeInTheDocument());
+  });
+
+  it("sync failure surfaces the error message", async () => {
+    (getSnapshot as any).mockResolvedValue(SAMPLE_SNAPSHOT);
+    (syncHoldings as any).mockRejectedValue(new Error("connection refused"));
+    render(<PortfolioWidget />);
+    await waitFor(() => expect(screen.getByText(/\$4,524,912/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /sync holdings from rplanner/i }));
+
+    await waitFor(() => expect(screen.getByText(/sync failed.*connection refused/i)).toBeInTheDocument());
   });
 
   it("renders error with last_good as stale", async () => {

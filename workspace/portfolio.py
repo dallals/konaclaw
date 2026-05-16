@@ -10,9 +10,11 @@ def esc(t): return (t or "").replace("&","&amp;").replace("<","&lt;").replace(">
 
 SILENT    = "--silent" in sys.argv
 
-# Sammy's full portfolio (taxable + IRA + Roth) — all tracked live via Yahoo Finance
-# Updated 2026-03-31 from brokerage. Shares derived from cost basis / avg cost per share.
-HOLDINGS = {
+# Sammy's portfolio. Sourced from workspace/holdings.json when present
+# (produced by sync_holdings.py from local rPlanner Postgres), with the
+# hardcoded fallback below for offline use or first-run before any sync.
+# Emergency cash ($233k) is tracked separately and NOT included here.
+_FALLBACK_HOLDINGS = {
     "AAPL":  {"basis": 679336,  "shares": 5088},
     "NVDA":  {"basis":  40036,  "shares": 5375},
     "VOO":   {"basis": 485552,  "shares": 1097},
@@ -31,8 +33,27 @@ HOLDINGS = {
     "OWL":   {"basis":  12634,  "shares": 1196},
     "VXUS":  {"basis":  80820,  "shares":  970},
 }
-# NOTE: These 16 holdings span taxable + IRA + Roth accounts (~$4M total)
-# Emergency cash ($233k) is tracked separately and NOT included here
+
+
+def _load_holdings():
+    """Prefer the synced holdings.json (live rPlanner); fall back to the
+    hardcoded dict above. Lets `python3 portfolio.py` work even before the
+    first sync, and survives Postgres being unreachable."""
+    p = os.path.join(os.path.dirname(__file__), "holdings.json")
+    if not os.path.isfile(p):
+        return _FALLBACK_HOLDINGS, "fallback"
+    try:
+        with open(p) as f:
+            payload = json.load(f)
+        h = payload.get("holdings") or {}
+        if not isinstance(h, dict) or not h:
+            return _FALLBACK_HOLDINGS, "fallback"
+        return h, payload.get("synced_at") or "synced"
+    except (OSError, json.JSONDecodeError):
+        return _FALLBACK_HOLDINGS, "fallback"
+
+
+HOLDINGS, _HOLDINGS_SOURCE = _load_holdings()
 
 def fetch(ticker):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
@@ -134,7 +155,7 @@ day_pct    = (total_day_change / prev_value * 100) if prev_value else 0
 if SILENT:
     print(json.dumps({"holdings": results, "total_value": total_value,
                       "total_gain": total_gain, "total_day_change": total_day_change,
-                      "day_pct": day_pct}))
+                      "day_pct": day_pct, "holdings_source": _HOLDINGS_SOURCE}))
     sys.exit(0)
 
 # Build human-readable message

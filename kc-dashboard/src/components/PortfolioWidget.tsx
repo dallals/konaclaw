@@ -1,5 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
-import { getSnapshot, type PortfolioSnapshot, type SnapshotResponse } from "../api/portfolio";
+import {
+  getSnapshot, syncHoldings,
+  type PortfolioSnapshot, type SnapshotResponse, type SyncSummary,
+} from "../api/portfolio";
 
 
 function fmtMoney(n: number): string {
@@ -29,6 +32,8 @@ function topMovers(p: PortfolioSnapshot): PortfolioSnapshot["holdings"] {
 export function PortfolioWidget() {
   const [snap, setSnap] = useState<SnapshotResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -47,6 +52,21 @@ export function PortfolioWidget() {
       setLoading(false);
     }
   }, []);
+
+  const sync = useCallback(async () => {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const s: SyncSummary = await syncHoldings();
+      setSyncMsg(`Synced ${s.tickers} tickers · ${new Date(s.synced_at).toLocaleTimeString()}`);
+      // Re-fetch snapshot off the freshly-synced holdings.json.
+      await load(true);
+    } catch (e) {
+      setSyncMsg(`Sync failed: ${(e as Error)?.message ?? "unknown error"}`);
+    } finally {
+      setSyncing(false);
+    }
+  }, [load]);
 
   useEffect(() => {
     load(false);
@@ -99,10 +119,39 @@ export function PortfolioWidget() {
         </ul>
       </div>
 
-      <div className="mt-2 text-xs text-muted">
-        Updated: {new Date(snap!.cached_at).toLocaleTimeString()}{" "}
-        <button onClick={() => load(true)} aria-label="refresh">↻ Refresh</button>
+      <div className="mt-2 text-xs text-muted flex items-center gap-3 flex-wrap">
+        <span>Updated: {new Date(snap!.cached_at).toLocaleTimeString()}</span>
+        <button
+          onClick={() => load(true)}
+          aria-label="refresh"
+          className="hover:text-textStrong"
+        >
+          ↻ Refresh
+        </button>
+        <button
+          onClick={sync}
+          disabled={syncing}
+          aria-label="sync holdings from rplanner"
+          className="hover:text-textStrong disabled:opacity-50"
+          title="Pull latest holdings from local rPlanner Postgres"
+        >
+          {syncing ? "⟳ Syncing…" : "⇣ Sync from rPlanner"}
+        </button>
+        {payload.holdings_source && payload.holdings_source !== "fallback" && (
+          <span className="text-muted2" title={`Holdings synced ${payload.holdings_source}`}>
+            · holdings: synced
+          </span>
+        )}
+        {payload.holdings_source === "fallback" && (
+          <span className="text-muted2" title="Using hardcoded fallback holdings — click Sync to pull from rPlanner">
+            · holdings: fallback
+          </span>
+        )}
       </div>
+
+      {syncMsg && (
+        <div className="mt-1 text-xs text-muted" role="status">{syncMsg}</div>
+      )}
 
       {errorMsg && (
         <div className="mt-2 text-xs text-red-600" role="alert">

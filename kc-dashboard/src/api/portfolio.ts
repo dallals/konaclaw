@@ -13,6 +13,17 @@ export interface PortfolioSnapshot {
   total_day_change: number;
   day_pct: number;
   holdings: PortfolioHolding[];
+  /** ISO timestamp when holdings.json was last synced from rPlanner, or
+   *  "fallback" when running off the hardcoded HOLDINGS dict. */
+  holdings_source?: string;
+}
+
+export interface SyncSummary {
+  synced_at: string;       // ISO
+  user_email: string;
+  tickers: number;
+  total_basis: number;
+  file: string;
 }
 
 export interface SnapshotResponse {
@@ -28,6 +39,15 @@ export async function getSnapshot(refresh = false): Promise<SnapshotResponse> {
   const r = await fetch(url);
   if (!r.ok) {
     throw new Error(`portfolio snapshot failed (${r.status}): ${await r.text()}`);
+  }
+  return r.json();
+}
+
+export async function syncHoldings(): Promise<SyncSummary> {
+  const r = await fetch(`${getBaseUrl()}/portfolio/sync`, { method: "POST" });
+  if (!r.ok) {
+    const body = await r.text();
+    throw new Error(`sync failed (${r.status}): ${body}`);
   }
   return r.json();
 }
