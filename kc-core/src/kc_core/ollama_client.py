@@ -1,11 +1,26 @@
 from __future__ import annotations
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urlparse
 import httpx
 from kc_core.stream_frames import TextDelta, ReasoningDelta, ToolCallsBlock, Done, ChatUsage
+
+
+def _default_keep_alive() -> str:
+    """Returns the value passed to Ollama's `keep_alive` request field.
+
+    Defaults to `"30m"` — Ollama keeps the model resident for 30 minutes after
+    the last request. Override with `KC_OLLAMA_KEEP_ALIVE`:
+      - `"-1"` → never unload (good for personal machines with spare RAM).
+      - `"0"`  → unload immediately after the request (Ollama default).
+      - `"<duration>"` → any Go duration string Ollama accepts ("10m", "1h", etc.).
+
+    Read at call time (not import) so tests can monkeypatch the env var.
+    """
+    return os.environ.get("KC_OLLAMA_KEEP_ALIVE", "30m")
 
 
 def _native_message(m: dict[str, Any]) -> dict[str, Any]:
@@ -121,6 +136,7 @@ class OllamaClient:
         }
         if tools:
             body["tools"] = tools
+        body["keep_alive"] = _default_keep_alive()
 
         # Per-index accumulators for tool call fragments
         tool_call_frags: dict[int, dict[str, Any]] = {}
@@ -265,6 +281,7 @@ class OllamaClient:
         }
         if tools:
             body["tools"] = tools
+        body["keep_alive"] = _default_keep_alive()
 
         t_request_start = time.monotonic()
         t_first_byte: float | None = None
