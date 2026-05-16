@@ -791,59 +791,43 @@ export default function Chat() {
               </div>
             </div>
 
-            {activeConv != null && (
-              <dl
-                className="grid grid-cols-[auto_auto] gap-y-1 gap-x-5 px-3 py-2 border border-line bg-panel font-mono text-[9px] uppercase tracking-[0.1em] shrink-0"
-              >
-                <dt className="text-muted2 font-normal">Subject</dt>
-                <dd className="text-text font-medium">
-                  {activeConvData?.title?.trim() || "—"}
-                </dd>
-                {activeConvData && (
-                  <>
-                    <dt className="text-muted2 font-normal">Started</dt>
-                    <dd className="text-text font-medium">
-                      {new Date(activeConvData.started_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </dd>
-                  </>
-                )}
-                <dt className="text-muted2 font-normal">Msgs</dt>
-                <dd className="text-text font-medium">{padNum(rendered.length, 2)}</dd>
-                {activeAgentData && (
-                  <>
-                    <dt className="text-muted2 font-normal">Model</dt>
-                    <dd className="text-text font-medium">{activeAgentData.model}</dd>
-                    <dt className="text-muted2 font-normal">Status</dt>
-                    <dd className="text-text font-medium">{activeAgentData.status}</dd>
-                    <dt className="text-muted2 font-normal">Last reply</dt>
-                    <dd className="text-text font-medium">
-                      {(() => {
-                        if (currentTurnUsage && currentTurnUsage.usage_reported && currentTurnUsage.output_tokens != null && currentTurnUsage.generation_ms >= 50) {
-                          const tps = (currentTurnUsage.output_tokens * 1000) / currentTurnUsage.generation_ms;
-                          return `${formatTokensPerSecond(tps)} · ${formatTokenCount(currentTurnUsage.output_tokens)}`;
-                        }
-                        if (currentTurnUsage && !currentTurnUsage.usage_reported && liveTps != null) {
-                          return `~${formatTokensPerSecond(liveTps)} · estimate`;
-                        }
-                        if (streaming && liveTps != null) {
-                          return `~${formatTokensPerSecond(liveTps)} · streaming`;
-                        }
-                        return "—";
-                      })()}
-                    </dd>
-                    {currentTurnUsage && (
-                      <>
-                        <dt className="text-muted2 font-normal">TTFB</dt>
-                        <dd className="text-muted font-medium">
-                          {formatTtfb(currentTurnUsage.ttfb_ms)}
-                          {currentTurnUsage.calls > 1 && ` · ${currentTurnUsage.calls} calls`}
-                        </dd>
-                      </>
-                    )}
-                  </>
-                )}
-              </dl>
-            )}
+            {activeConv != null && (() => {
+              // Collapsed status strip: single line of mono key·value pairs,
+              // separated by middots. Buys back ~120px of vertical space vs
+              // the prior 2-col grid card. Title is shown in tooltip since
+              // it's the only field that may wrap.
+              const parts: string[] = [];
+              if (activeAgentData) parts.push(activeAgentData.model);
+              if (activeAgentData) parts.push(activeAgentData.status);
+              parts.push(`${padNum(rendered.length, 2)} msg${rendered.length === 1 ? "" : "s"}`);
+              if (activeConvData) {
+                parts.push(new Date(activeConvData.started_at * 1000)
+                  .toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+              }
+              let lastReply = "—";
+              if (currentTurnUsage && currentTurnUsage.usage_reported && currentTurnUsage.output_tokens != null && currentTurnUsage.generation_ms >= 50) {
+                const tps = (currentTurnUsage.output_tokens * 1000) / currentTurnUsage.generation_ms;
+                lastReply = `${formatTokensPerSecond(tps)} · ${formatTokenCount(currentTurnUsage.output_tokens)}`;
+              } else if (currentTurnUsage && !currentTurnUsage.usage_reported && liveTps != null) {
+                lastReply = `~${formatTokensPerSecond(liveTps)} · estimate`;
+              } else if (streaming && liveTps != null) {
+                lastReply = `~${formatTokensPerSecond(liveTps)} · streaming`;
+              }
+              if (lastReply !== "—") parts.push(`last: ${lastReply}`);
+              if (currentTurnUsage) {
+                const ttfb = formatTtfb(currentTurnUsage.ttfb_ms);
+                parts.push(currentTurnUsage.calls > 1 ? `${ttfb} · ${currentTurnUsage.calls} calls` : ttfb);
+              }
+              const title = activeConvData?.title?.trim();
+              return (
+                <div
+                  className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted2 shrink-0 truncate max-w-[60%] text-right"
+                  title={title ? `Subject: ${title}` : undefined}
+                >
+                  {parts.join(" · ")}
+                </div>
+              );
+            })()}
           </div>
         </header>
 

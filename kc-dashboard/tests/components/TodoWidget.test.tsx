@@ -1,9 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, waitFor, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, fireEvent, waitFor } from "@testing-library/react";
 import { TodoWidget } from "../../src/components/TodoWidget";
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  // Each test starts with no manual collapse preference so the widget
+  // applies its default (auto-collapse when empty, expand when items exist).
+  localStorage.removeItem("kc.todos.collapsed");
+});
+
+afterEach(() => {
+  // Don't leak the collapse preference into sibling tests (Chat.test.tsx
+  // renders TodoWidget too, and an "expanded" preference in jsdom can shift
+  // layout-dependent queries).
+  localStorage.removeItem("kc.todos.collapsed");
 });
 
 function mockFetchOnce(payload: any, status = 200) {
@@ -15,11 +25,16 @@ function mockFetchOnce(payload: any, status = 200) {
 }
 
 describe("TodoWidget", () => {
-  it("renders empty state when no items", async () => {
+  it("auto-collapses to a thin strip when no items, expands on click to show empty state", async () => {
     mockFetchOnce({ items: [], count: 0 });
-    const { findByText } = render(
+    const { findByLabelText, findByText } = render(
       <TodoWidget conversationId={40} agent="Kona-AI" />
     );
+    // Collapsed by default when empty — only the expand affordance is rendered.
+    const expandBtn = await findByLabelText(/expand todos/i);
+    expect(expandBtn).toBeTruthy();
+    // Clicking expands the widget and reveals the empty-state message.
+    fireEvent.click(expandBtn);
     expect(await findByText(/no todos yet/i)).toBeTruthy();
   });
 
