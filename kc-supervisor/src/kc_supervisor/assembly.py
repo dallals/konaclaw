@@ -371,6 +371,30 @@ def assemble_agent(
             registry.register(t)
             tier_map[t.name] = Tier.SAFE
 
+    # Tessy subagent — Tesla pricing + offers specialist. Registers 4 tools
+    # scoped to the workspace/ scripts. tesla.price is SAFE (read-only); the
+    # three update tools are MUTATING (approval card surfaces before they run).
+    if cfg.name == "tessy":
+        from kc_supervisor.tessy_tools import build_tessy_tools
+
+        def _find_repo_root() -> Path:
+            p = Path(__file__).resolve()
+            for ancestor in [p, *p.parents]:
+                if (ancestor / "workspace").is_dir() and (ancestor / "kc-supervisor").is_dir():
+                    return ancestor
+            raise RuntimeError("could not locate SammyClaw repo root from kc-supervisor assembly.py")
+
+        workspace_dir = _find_repo_root() / "workspace"
+        tessy_tools = build_tessy_tools(
+            workspace_dir=workspace_dir,
+            attachment_store=attachment_store,
+        )
+        for tool_name, tool in tessy_tools.items():
+            registry.register(tool)
+            tier_map[tool_name] = (
+                Tier.SAFE if tool_name == "tesla.price" else Tier.MUTATING
+            )
+
     # Attachments tools (read_attachment + list_attachments) — conversation-scoped,
     # so only registered when ws_routes (or another caller) supplies both an
     # AttachmentStore and a concrete conversation_id. Both tools are SAFE
