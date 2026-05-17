@@ -208,6 +208,68 @@ def test_ws_unexpected_inbound_type_emits_error_then_continues(app, deps, fake_c
                     break
 
 
+def test_ws_stop_during_stream_emits_stopped_and_persists_partial(app, deps):
+    """User clicks Stop mid-stream:
+      - server breaks out of send_stream at the next frame boundary
+      - emits a {"type":"stopped", "content": <partial>} frame
+      - persists an AssistantMessage with the partial text + [stopped] marker
+      - the unconsumed Complete frame from the stream is NEVER emitted
+    """
+    import asyncio
+    from kc_core.messages import AssistantMessage
+    from kc_core.stream_frames import TokenDelta, Complete
+
+    # send_stream accepts the production signature (think, images) so this
+    # test exercises the real ws_routes call site. Sleep between tokens
+    # gives the server time to see the client's stop frame.
+    async def slow_send_stream(_content, *, think=None, images=()):
+        yield TokenDelta(content="part")
+        await asyncio.sleep(0.4)
+        yield TokenDelta(content="ial ")
+        await asyncio.sleep(0.4)
+        yield TokenDelta(content="reply")
+        # If the server doesn't honor stop, this Complete would close the
+        # turn cleanly and the test would fail (no "stopped" frame seen).
+        yield Complete(reply=AssistantMessage(content="part ial reply done"))
+
+    rt = deps.registry.get("alice")
+    rt.assembled.core_agent.send_stream = slow_send_stream
+
+    with TestClient(app) as client:
+        cid = client.post(
+            "/agents/alice/conversations", json={"channel": "dashboard"}
+        ).json()["conversation_id"]
+        seen: list = []
+        with client.websocket_connect(f"/ws/chat/{cid}") as ws:
+            ws.send_json({"type": "user_message", "content": "do a thing"})
+            # Wait for first token, then click Stop.
+            stop_sent = False
+            for _ in range(20):
+                m = ws.receive_json()
+                seen.append(m)
+                if m["type"] == "token" and not stop_sent:
+                    ws.send_json({"type": "stop"})
+                    stop_sent = True
+                if m["type"] in ("stopped", "assistant_complete"):
+                    break
+
+    types = [m["type"] for m in seen]
+    assert "stopped" in types, f"expected 'stopped' frame, got {types}"
+    assert "assistant_complete" not in types, (
+        f"expected NO 'assistant_complete' after stop, got {types}"
+    )
+    stopped_frame = next(m for m in seen if m["type"] == "stopped")
+    assert "[stopped]" in stopped_frame["content"]
+
+    # The partial reply is persisted with the [stopped] marker so the chat
+    # transcript reflects the interrupted turn instead of a missing reply.
+    msgs = deps.conversations.list_messages(cid)
+    asst = [m for m in msgs if type(m).__name__ == "AssistantMessage"]
+    assert len(asst) == 1, f"expected exactly one assistant message, got {len(asst)}"
+    assert "[stopped]" in asst[0].content
+    assert "part" in asst[0].content  # whatever the model streamed first
+
+
 def test_ws_user_message_with_empty_content_is_rejected(app, deps, fake_client_factory):
     fake = fake_client_factory(stream_responses=[
         [TextDelta(content="should not be called"), Done(finish_reason="stop")],

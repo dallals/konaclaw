@@ -160,9 +160,36 @@ def register_ws_routes(app: FastAPI) -> None:
             for frame in deps.subagent_trace_buffer.snapshot(str(conversation_id)):
                 await ws.send_json(frame)
 
+        # Stop button + recv buffering: one task owns receive_json. It
+        # routes `stop` messages to a flag (consumed inside the stream loop
+        # at the next frame boundary) and queues every other inbound for
+        # the main dispatcher below. Without this, the main loop would be
+        # parked on receive_json while a stream is running and the client
+        # couldn't interrupt; with a naive concurrent watcher, follow-up
+        # user_messages get silently swallowed.
+        inbound_queue: asyncio.Queue = asyncio.Queue()
+        stop_event = asyncio.Event()
+        _RECV_EOF = object()  # sentinel for queue → "ws closed"
+
+        async def _recv_loop():
+            while True:
+                try:
+                    msg = await ws.receive_json()
+                except (WebSocketDisconnect, RuntimeError):
+                    await inbound_queue.put(_RECV_EOF)
+                    return
+                if isinstance(msg, dict) and msg.get("type") == "stop":
+                    stop_event.set()
+                    continue
+                await inbound_queue.put(msg)
+
+        recv_task = asyncio.create_task(_recv_loop())
+
         try:
             while True:
-                inbound = await ws.receive_json()
+                inbound = await inbound_queue.get()
+                if inbound is _RECV_EOF:
+                    raise WebSocketDisconnect()
                 if inbound.get("type") == "clarify_response":
                     if clarify_broker is None:
                         continue  # silently drop — phase C not wired
@@ -396,11 +423,24 @@ def register_ws_routes(app: FastAPI) -> None:
                         "chat_id": f"dashboard:{conversation_id}",
                         "agent": rt.name,
                     })
+
+                    # Reset the stop flag for this turn — the recv_loop task
+                    # set it again if the client clicks Stop. Check at each
+                    # frame boundary; `break` triggers GeneratorExit on the
+                    # async generator, which propagates CancelledError into
+                    # the underlying httpx stream and aborts the model call.
+                    stop_event.clear()
+                    # Accumulate visible tokens so we can persist a partial
+                    # AssistantMessage if the user clicks Stop mid-stream.
+                    _partial_text: list[str] = []
                     try:
                         async for frame in rt.assembled.core_agent.send_stream(
                             agent_input, think=think_param, images=user_msg.images,
                         ):
+                            if stop_event.is_set():
+                                break
                             if isinstance(frame, TokenDelta):
+                                _partial_text.append(frame.content)
                                 await _safe_send({"type": "token", "delta": frame.content})
                             elif isinstance(frame, ReasoningTokenDelta):
                                 await _safe_send({"type": "reasoning", "delta": frame.content})
@@ -462,6 +502,20 @@ def register_ws_routes(app: FastAPI) -> None:
                                     "content": frame.reply.content,
                                 })
                         rt.last_error = None
+                        if stop_event.is_set():
+                            # Persist whatever the model streamed so the chat
+                            # transcript reflects the partial reply. Mark it
+                            # visibly with a trailing sentinel so future turns
+                            # (and Sammy on reload) know it was interrupted.
+                            partial = "".join(_partial_text).rstrip()
+                            partial_msg = (
+                                f"{partial}\n\n_[stopped]_" if partial else "_[stopped]_"
+                            )
+                            from kc_core.messages import AssistantMessage as _AM
+                            deps.conversations.append(
+                                conversation_id, _AM(content=partial_msg),
+                            )
+                            await _safe_send({"type": "stopped", "content": partial_msg})
                         if not ws_alive:
                             # Client went away mid-reply; the reply was still
                             # persisted, so a refresh will pick it up. Drop
@@ -494,6 +548,12 @@ def register_ws_routes(app: FastAPI) -> None:
         except (WebSocketDisconnect, RuntimeError):
             return
         finally:
+            if not recv_task.done():
+                recv_task.cancel()
+                try:
+                    await recv_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             if todo_unsubscribe is not None:
                 todo_unsubscribe()
             if clarify_unsubscribe is not None:

@@ -228,7 +228,10 @@ export default function Chat() {
 
   useEffect(() => {
     const last = events[events.length - 1];
-    if (last?.type === "assistant_complete" && activeConv != null) {
+    if (
+      (last?.type === "assistant_complete" || last?.type === "stopped")
+      && activeConv != null
+    ) {
       qc.invalidateQueries({ queryKey: ["messages", activeConv] });
       setAwaitingReply(false);
     }
@@ -290,7 +293,11 @@ export default function Chat() {
   const streaming = useMemo(() => {
     let start = 0;
     for (let i = events.length - 1; i >= 0; i--) {
-      if (events[i].type === "assistant_complete") { start = i + 1; break; }
+      // Either a normal completion or a user-initiated stop terminates the
+      // current streaming bubble — both mark the end of "this turn's tokens".
+      if (events[i].type === "assistant_complete" || events[i].type === "stopped") {
+        start = i + 1; break;
+      }
     }
     let buf = "";
     for (let i = start; i < events.length; i++) {
@@ -1016,14 +1023,26 @@ export default function Chat() {
               >
                 <span>Think</span>
               </button>
-              <button
-                type="submit"
-                disabled={!allReady || (draft.trim() === "" && chips.length === 0)}
-                className="bg-accent text-bgDeep border-none px-7 font-mono text-[11px] uppercase tracking-[0.18em] font-bold inline-flex items-center gap-2 hover:bg-accentBright transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <span>Send</span>
-                <span className="text-base font-extrabold">→</span>
-              </button>
+              {(awaitingReply || streaming.length > 0) ? (
+                <button
+                  type="button"
+                  aria-label="stop model"
+                  onClick={() => sendUserMessage({ type: "stop" })}
+                  className="bg-red-600 text-white border-none px-7 font-mono text-[11px] uppercase tracking-[0.18em] font-bold inline-flex items-center gap-2 hover:bg-red-700 transition-colors"
+                >
+                  <span>Stop</span>
+                  <span className="text-base font-extrabold">■</span>
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!allReady || (draft.trim() === "" && chips.length === 0)}
+                  className="bg-accent text-bgDeep border-none px-7 font-mono text-[11px] uppercase tracking-[0.18em] font-bold inline-flex items-center gap-2 hover:bg-accentBright transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <span>Send</span>
+                  <span className="text-base font-extrabold">→</span>
+                </button>
+              )}
             </div>
           </form>
         )}

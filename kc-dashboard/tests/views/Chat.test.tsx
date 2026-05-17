@@ -149,4 +149,41 @@ describe("Chat view", () => {
     // Per-bubble badge appears too (with ttfb prefix).
     expect(screen.getByText(/ttfb 1\.04 s/)).toBeInTheDocument();
   });
+
+  it("Stop button replaces Send while awaiting a reply and sends {type:stop}", async () => {
+    render(wrap(<Chat />));
+    fireEvent.click(await screen.findByText(/kc/i));
+    fireEvent.click(screen.getByRole("button", { name: /new drawing/i }));
+    await waitFor(() => expect(lastFakeWS).not.toBeNull());
+    const input = await screen.findByPlaceholderText(/reply/i);
+
+    // Pre-submit: Send is visible, Stop is not.
+    expect(screen.getByRole("button", { name: /^send\b/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /stop model/i })).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "do a long thing" } });
+    fireEvent.submit(input.closest("form")!);
+
+    // While the model is "thinking" (awaitingReply true), Send disappears
+    // and Stop appears in its place.
+    const stopBtn = await screen.findByRole("button", { name: /stop model/i });
+    expect(stopBtn).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^send\b/i })).not.toBeInTheDocument();
+
+    // Clicking Stop sends the stop frame over the same WS.
+    fireEvent.click(stopBtn);
+    const stopSent = lastFakeWS!.sent.find((s) => JSON.parse(s).type === "stop");
+    expect(stopSent).toBe(JSON.stringify({ type: "stop" }));
+
+    // The server replies with a `stopped` frame — that also tells the
+    // dashboard the turn ended. Send returns, Stop goes away.
+    messagesPayload = [
+      { type: "UserMessage", content: "do a long thing" },
+      { type: "AssistantMessage", content: "partial reply_[stopped]_" },
+    ];
+    lastFakeWS!.push({ type: "stopped", content: "partial reply_[stopped]_" });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /stop model/i })).not.toBeInTheDocument()
+    );
+    expect(screen.getByRole("button", { name: /^send\b/i })).toBeInTheDocument();
+  });
 });

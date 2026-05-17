@@ -19,6 +19,7 @@ export type ChatEvent =
   | { type: "tool_result"; tool_call_id: string; content?: string }
   | ChatUsageEvent
   | { type: "assistant_complete"; content: string }
+  | { type: "stopped"; content: string }
   | { type: "error"; message: string }
   | {
       type: "clarify_request";
