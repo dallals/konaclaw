@@ -157,6 +157,11 @@ class Deps:
     # kc_attachments from being a hard dep of service.py.
     attachment_store: Optional[Any] = None
     vision_cache:     Optional[Any] = None
+    # Shared folder — ~/Desktop/KonaShared/{originals,kona-edits}. Singleton;
+    # per-conversation scoping happens at the tool-registration site in
+    # ws_routes (attach_shared_to_agent) via the live conversation_id.
+    # Duck-typed Any to keep kc_shared out of service.py's import surface.
+    shared_store: Optional[Any] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:

@@ -393,6 +393,31 @@ def register_ws_routes(app: FastAPI) -> None:
                         rt.assembled.engine.tier_map["read_attachment"] = _Tier.SAFE
                         rt.assembled.engine.tier_map["list_attachments"] = _Tier.SAFE
 
+                    # Per-turn shared-folder tool registration (mirrors the
+                    # attachments pattern above). Lazy-import so the supervisor
+                    # boots even when kc_shared isn't installed yet. SAFE/
+                    # MUTATING tiers — write_shared_file is MUTATING so the
+                    # user sees an approval card before files are created.
+                    _shared_tools_added: list[str] = []
+                    shared_store = getattr(deps, "shared_store", None)
+                    if shared_store is not None:
+                        from kc_shared import attach_shared_to_agent
+                        pre = set(rt.assembled.core_agent.tools.names())
+                        try:
+                            attach_shared_to_agent(
+                                registry=rt.assembled.core_agent.tools,
+                                store=shared_store,
+                                conversation_id=str(conversation_id),
+                            )
+                        except ValueError:
+                            pass
+                        post = set(rt.assembled.core_agent.tools.names())
+                        _shared_tools_added = list(post - pre)
+                        from kc_sandbox.permissions import Tier as _STier
+                        rt.assembled.engine.tier_map["list_shared_files"] = _STier.SAFE
+                        rt.assembled.engine.tier_map["read_shared_file"]  = _STier.SAFE
+                        rt.assembled.engine.tier_map["write_shared_file"] = _STier.MUTATING
+
                     # Track whether the WS is still receiving us. If the client
                     # closes mid-stream, we keep iterating send_stream so the
                     # model's reply still gets persisted — only skip the sends.
@@ -542,6 +567,8 @@ def register_ws_routes(app: FastAPI) -> None:
                         # directly from the internal dict — ToolRegistry has no
                         # public unregister method.
                         for _tname in _att_tools_added:
+                            rt.assembled.core_agent.tools._tools.pop(_tname, None)
+                        for _tname in _shared_tools_added:
                             rt.assembled.core_agent.tools._tools.pop(_tname, None)
                         if rt.status == AgentStatus.THINKING:
                             rt.set_status(AgentStatus.IDLE)

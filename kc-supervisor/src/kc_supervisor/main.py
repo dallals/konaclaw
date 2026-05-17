@@ -450,6 +450,25 @@ def main() -> None:
     attachment_store = AttachmentStore(root=home / "attachments")
     vision_cache = VisionCapabilityCache(base_url=ollama_url)
 
+    # Shared folder — ~/Desktop/KonaShared/{originals,kona-edits} by default,
+    # override with KC_SHARED_ROOT. Kona reads from originals/ (user-managed)
+    # and writes to kona-edits/<per-conv subfolder>/ via list_shared_files,
+    # read_shared_file, write_shared_file. ensure_dirs() creates the layout
+    # on first boot so the folders show up in Finder.
+    from kc_shared import SharedStore
+    shared_root = Path(
+        os.environ.get("KC_SHARED_ROOT", str(Path.home() / "Desktop" / "KonaShared"))
+    )
+    shared_store = SharedStore(root=shared_root)
+    try:
+        shared_store.ensure_dirs()
+    except OSError as e:
+        logging.getLogger(__name__).warning(
+            "Could not create shared folder at %s: %s — tools will still load "
+            "but Kona will hit errors when reading/writing.",
+            shared_root, e,
+        )
+
     deps = Deps(
         storage=storage,
         registry=registry,
@@ -476,6 +495,7 @@ def main() -> None:
         subagent_broadcaster=subagent_broadcaster,
         attachment_store=attachment_store,
         vision_cache=vision_cache,
+        shared_store=shared_store,
     )
     # Always wire the registry to deps so ReminderRunner.fire() can call
     # connector_registry.get(channel) at fire time. The InboundRouter still
