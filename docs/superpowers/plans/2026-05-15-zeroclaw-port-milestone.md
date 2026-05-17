@@ -135,7 +135,7 @@ Repeat with `ytd.py`, `stock.py`, `monte_carlo.py` substituted in both the remot
 Each script has a header block like this (with slight variations):
 
 ```python
-BOT_TOKEN = os.environ.get("BOT_TOKEN_OVERRIDE", "<REDACTED-TELEGRAM-TOKEN>")
+BOT_TOKEN = os.environ.get("BOT_TOKEN_OVERRIDE", "<REDACTED-rotate-via-BotFather>")
 CHAT_ID   = os.environ.get("CHAT_ID_OVERRIDE", "8627206839")
 SILENT    = "--silent" in sys.argv
 ```
@@ -1102,7 +1102,7 @@ In `workspace/tesla_price.py`:
 1. Find the constant block at the top:
 
 ```python
-BOT_TOKEN       = os.environ.get("BOT_TOKEN_OVERRIDE", "<REDACTED-TELEGRAM-TOKEN>")
+BOT_TOKEN       = os.environ.get("BOT_TOKEN_OVERRIDE", "<REDACTED>")
 CHAT_ID         = os.environ.get("CHAT_ID_OVERRIDE", "8627206839")
 FIRECRAWL_KEY   = os.environ.get("FIRECRAWL_API_KEY", "fc-5aeb...")
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "AIzaSyB...")
