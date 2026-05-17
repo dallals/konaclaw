@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from kc_shared.recall import RecallIndex
 from kc_shared.store import (
     SharedFileNotFound,
     SharedPathOutOfScope,
@@ -129,6 +130,31 @@ def build_read_shared_file_tool(
             markdown, mime = parsed
             if page_range and mime == "application/pdf":
                 markdown = _slice_by_page_range(markdown, page_range)
+            # Detect empty/near-empty parse output for binary-source mimes
+            # (scanned PDFs, image-only docx, image OCR misses, etc.). Strip
+            # page headings to count real body chars. Text mimes are exempt —
+            # a 5-char .md file is still legitimate content, not a parse
+            # failure. The threshold catches scanned PDFs whose only output
+            # is page headings.
+            is_binary_source = (
+                mime == "application/pdf"
+                or mime.startswith("image/")
+                or "officedocument" in mime
+            )
+            body_chars = len(_PAGE_HEADING_RE.sub("", markdown).strip())
+            if is_binary_source and body_chars < 20:
+                return json.dumps({
+                    "type": "binary",
+                    "path": str(abspath),
+                    "mime": mime,
+                    "size_bytes": len(data),
+                    "hint": (
+                        "Parser ran but extracted no text — this is most likely "
+                        "a scanned/image-only document. Do NOT retry this call; "
+                        "ask the user to drop the file into the chat as an "
+                        "attachment to trigger OCR via read_attachment."
+                    ),
+                })
             return json.dumps({
                 "type": "text",
                 "path": str(abspath),
@@ -148,6 +174,91 @@ def build_read_shared_file_tool(
                 "hint": "non-utf8 file with no registered parser; cannot inline",
             })
         return json.dumps({"type": "text", "path": str(abspath), "content": _truncate(text)})
+    return impl
+
+
+def build_recall_doc_tool(
+    *, store: SharedStore, index: RecallIndex,
+) -> Callable[..., Awaitable[str]]:
+    async def impl(filename: str = "") -> str:
+        if not filename:
+            return json.dumps({"error": "bad_request", "message": "filename required"})
+        entry = index.get(filename)
+        if entry is None:
+            return json.dumps({"found": False, "filename": filename})
+        # Drift check — compare to the underlying file's current mtime if it
+        # still resolves under the shared root. Best-effort; absent file just
+        # skips the drift flag.
+        stale = False
+        try:
+            _, abspath = store.read_file(filename)
+            current = abspath.stat().st_mtime
+            stale = RecallIndex.is_stale(entry, current)
+        except (SharedFileNotFound, SharedPathOutOfScope, OSError):
+            pass
+        return json.dumps({
+            "found": True,
+            "filename": entry.filename,
+            "summary": entry.summary,
+            "key_points": entry.key_points,
+            "last_read": entry.last_read_iso,
+            "source_path": entry.source_path,
+            "stale": stale,
+        })
+    return impl
+
+
+def build_index_doc_tool(
+    *, store: SharedStore, index: RecallIndex,
+) -> Callable[..., Awaitable[str]]:
+    async def impl(
+        filename: str = "",
+        summary: str = "",
+        key_points: list[str] | str | None = None,
+    ) -> str:
+        if not filename:
+            return json.dumps({"error": "bad_request", "message": "filename required"})
+        if not summary:
+            return json.dumps({"error": "bad_request", "message": "summary required"})
+        # Best-effort source path resolution — if the file isn't in the
+        # shared folder, the note still gets saved (Kona may be indexing
+        # something she read from elsewhere); source_mtime just stays 0.
+        source_path: Path | None = None
+        try:
+            _, abspath = store.read_file(filename)
+            source_path = abspath
+        except (SharedFileNotFound, SharedPathOutOfScope):
+            source_path = None
+        entry = index.write(
+            filename=filename,
+            summary=summary,
+            key_points=key_points or [],
+            source_path=source_path,
+        )
+        return json.dumps({
+            "type": "indexed",
+            "filename": entry.filename,
+            "key_points_saved": len(entry.key_points),
+        })
+    return impl
+
+
+def build_list_recalled_tool(
+    *, index: RecallIndex,
+) -> Callable[..., Awaitable[str]]:
+    async def impl() -> str:
+        items = index.list_all()
+        return json.dumps({
+            "count": len(items),
+            "docs": [
+                {
+                    "filename": e.filename,
+                    "summary": e.summary,
+                    "last_read": e.last_read_iso,
+                }
+                for e in items
+            ],
+        })
     return impl
 
 

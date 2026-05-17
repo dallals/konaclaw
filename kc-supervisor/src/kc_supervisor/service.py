@@ -162,6 +162,10 @@ class Deps:
     # ws_routes (attach_shared_to_agent) via the live conversation_id.
     # Duck-typed Any to keep kc_shared out of service.py's import surface.
     shared_store: Optional[Any] = None
+    # Recall index — Kona's persistent doc-notes layer keyed by filename,
+    # stored at <shared-root>/.kona-index/. Survives restarts; queried via
+    # recall_doc/list_recalled tools so it costs zero tokens until used.
+    shared_recall_index: Optional[Any] = None
 
 
 async def _maybe_register_zapier(deps: "Deps") -> None:

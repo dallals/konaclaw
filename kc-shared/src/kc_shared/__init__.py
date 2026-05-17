@@ -11,6 +11,7 @@ Reads can target either subtree by relative path. Writes are scoped to the
 current conversation's edits subfolder (path-traversal rejected).
 """
 
+from kc_shared.recall import RecallEntry, RecallIndex
 from kc_shared.store import (
     SharedFileError,
     SharedFileNotFound,
@@ -20,6 +21,8 @@ from kc_shared.store import (
 from kc_shared.wiring import attach_shared_to_agent
 
 __all__ = [
+    "RecallEntry",
+    "RecallIndex",
     "SharedFileError",
     "SharedFileNotFound",
     "SharedPathOutOfScope",

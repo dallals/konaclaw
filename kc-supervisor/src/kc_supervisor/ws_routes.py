@@ -402,12 +402,14 @@ def register_ws_routes(app: FastAPI) -> None:
                     shared_store = getattr(deps, "shared_store", None)
                     if shared_store is not None:
                         from kc_shared import attach_shared_to_agent
+                        recall_index = getattr(deps, "shared_recall_index", None)
                         pre = set(rt.assembled.core_agent.tools.names())
                         try:
                             attach_shared_to_agent(
                                 registry=rt.assembled.core_agent.tools,
                                 store=shared_store,
                                 conversation_id=str(conversation_id),
+                                recall_index=recall_index,
                             )
                         except ValueError:
                             pass
@@ -417,6 +419,10 @@ def register_ws_routes(app: FastAPI) -> None:
                         rt.assembled.engine.tier_map["list_shared_files"] = _STier.SAFE
                         rt.assembled.engine.tier_map["read_shared_file"]  = _STier.SAFE
                         rt.assembled.engine.tier_map["write_shared_file"] = _STier.MUTATING
+                        if recall_index is not None:
+                            rt.assembled.engine.tier_map["recall_doc"]    = _STier.SAFE
+                            rt.assembled.engine.tier_map["index_doc"]     = _STier.SAFE
+                            rt.assembled.engine.tier_map["list_recalled"] = _STier.SAFE
 
                     # Track whether the WS is still receiving us. If the client
                     # closes mid-stream, we keep iterating send_stream so the

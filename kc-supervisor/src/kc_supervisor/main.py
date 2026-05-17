@@ -450,12 +450,30 @@ def main() -> None:
     attachment_store = AttachmentStore(root=home / "attachments")
     vision_cache = VisionCapabilityCache(base_url=ollama_url)
 
+    # Tesseract is invoked by pytesseract via the `tesseract` shell command.
+    # The supervisor's PATH may not include Homebrew's bin dir (when launched
+    # from a non-login shell or system daemon), so we explicitly bind to the
+    # discovered binary at boot. shutil.which honors PATH first; we fall back
+    # to the standard Homebrew install paths.
+    try:
+        import shutil as _shutil
+        import pytesseract as _pyt
+        _tess = (
+            _shutil.which("tesseract")
+            or ("/opt/homebrew/bin/tesseract" if Path("/opt/homebrew/bin/tesseract").exists() else None)
+            or ("/usr/local/bin/tesseract" if Path("/usr/local/bin/tesseract").exists() else None)
+        )
+        if _tess:
+            _pyt.pytesseract.tesseract_cmd = _tess
+    except ImportError:
+        pass
+
     # Shared folder — ~/Desktop/KonaShared/{originals,kona-edits} by default,
     # override with KC_SHARED_ROOT. Kona reads from originals/ (user-managed)
     # and writes to kona-edits/<per-conv subfolder>/ via list_shared_files,
     # read_shared_file, write_shared_file. ensure_dirs() creates the layout
     # on first boot so the folders show up in Finder.
-    from kc_shared import SharedStore
+    from kc_shared import RecallIndex, SharedStore
     shared_root = Path(
         os.environ.get("KC_SHARED_ROOT", str(Path.home() / "Desktop" / "KonaShared"))
     )
@@ -468,6 +486,14 @@ def main() -> None:
             "but Kona will hit errors when reading/writing.",
             shared_root, e,
         )
+    # Recall index — Kona's cross-conversation doc-notes layer, stored
+    # alongside the shared folder at <shared-root>/.kona-index/. Lives outside
+    # the system prompt to keep prefill cost flat as the index grows.
+    shared_recall_index = RecallIndex(root=shared_root)
+    try:
+        shared_recall_index.ensure_dir()
+    except OSError:
+        pass
 
     deps = Deps(
         storage=storage,
@@ -496,6 +522,7 @@ def main() -> None:
         attachment_store=attachment_store,
         vision_cache=vision_cache,
         shared_store=shared_store,
+        shared_recall_index=shared_recall_index,
     )
     # Always wire the registry to deps so ReminderRunner.fire() can call
     # connector_registry.get(channel) at fire time. The InboundRouter still
