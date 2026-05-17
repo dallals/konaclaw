@@ -129,6 +129,64 @@ def test_skill_run_script_missing(tmp_path):
     _, tools = _build(tmp_path)
     out = _call(tools["skill_run_script"], name="hello", script="nope.sh")
     assert out["error"] == "script_not_found"
+    # Error response includes a hint nudging the model toward correct usage.
+    assert "hint" in out
+    assert "args" in out["hint"].lower()
+
+
+def test_skill_run_script_tolerates_shell_form_script_with_flags(tmp_path):
+    """Defensive: if a model passes the whole command line as `script`
+    (e.g. 'portfolio.py --silent'), split it and run the right thing."""
+    _write_skill(tmp_path, "hello")
+    sdir = tmp_path / "hello"
+    (sdir / "scripts").mkdir()
+    sp = sdir / "scripts" / "echo.sh"
+    sp.write_text('#!/bin/sh\necho "got: $@"\n')
+    sp.chmod(0o755)
+
+    _, tools = _build(tmp_path)
+    out = _call(tools["skill_run_script"], name="hello", script="echo.sh --silent foo")
+    assert out["exit_code"] == 0
+    assert "got: --silent foo" in out["stdout"]
+
+
+def test_skill_run_script_tolerates_python3_prefix(tmp_path):
+    """Defensive: 'python3 portfolio.py --silent' → drop python3, run
+    portfolio.py with --silent. The shebang on the script handles the
+    interpreter."""
+    _write_skill(tmp_path, "hello")
+    sdir = tmp_path / "hello"
+    (sdir / "scripts").mkdir()
+    sp = sdir / "scripts" / "portfolio.py"
+    sp.write_text('#!/usr/bin/env python3\nimport sys; print("argv:", sys.argv[1:])\n')
+    sp.chmod(0o755)
+
+    _, tools = _build(tmp_path)
+    out = _call(tools["skill_run_script"], name="hello", script="python3 portfolio.py --silent")
+    assert out["exit_code"] == 0
+    assert "argv: ['--silent']" in out["stdout"]
+
+
+def test_skill_run_script_shell_form_merges_with_explicit_args(tmp_path):
+    """If both `script` contains flags AND `args` is also supplied, both
+    sets reach the script as argv (explicit args first, script-form extras
+    appended after — order between flags rarely matters in practice)."""
+    _write_skill(tmp_path, "hello")
+    sdir = tmp_path / "hello"
+    (sdir / "scripts").mkdir()
+    sp = sdir / "scripts" / "echo.sh"
+    sp.write_text('#!/bin/sh\necho "$@"\n')
+    sp.chmod(0o755)
+
+    _, tools = _build(tmp_path)
+    out = _call(
+        tools["skill_run_script"],
+        name="hello", script="echo.sh --silent",
+        args=["--extra"],
+    )
+    assert out["exit_code"] == 0
+    assert "--extra" in out["stdout"]
+    assert "--silent" in out["stdout"]
 
 
 def test_skill_run_script_path_escape(tmp_path):

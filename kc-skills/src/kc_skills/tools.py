@@ -156,12 +156,45 @@ def _build_skill_run_script(idx: SkillIndex) -> Tool:
     def impl(name: str, script: str, args: Optional[list[str]] = None) -> str:
         if idx.get(name) is None:
             return json.dumps({"error": "skill_not_found", "name": name})
+
+        # Defensive: some models pass the whole CLI as the `script` field
+        # (e.g. "python3 portfolio.py --silent" or "portfolio.py --silent")
+        # instead of separating script + args. Try to recover by splitting
+        # on whitespace; if a real script in the skill matches one of the
+        # tokens, treat that as the script and the remainder as args.
+        import shlex as _shlex
+        if " " in script.strip():
+            try:
+                tokens = _shlex.split(script)
+            except ValueError:
+                tokens = script.split()
+            if tokens:
+                # Drop a leading "python3" / "python" / "bash" / "sh"
+                # interpreter token — the script's shebang handles that.
+                if tokens[0] in ("python3", "python", "bash", "sh"):
+                    tokens = tokens[1:]
+                if tokens:
+                    cand = idx.script_path(name, tokens[0]) if tokens else None
+                    if cand is not None:
+                        script = tokens[0]
+                        extra = tokens[1:]
+                        args = (list(args) if args else []) + extra
+
         try:
             sp = idx.script_path(name, script)
         except PathOutsideSkillDir:
             return json.dumps({"error": "path_outside_skill_dir"})
         if sp is None:
-            return json.dumps({"error": "script_not_found", "script": script})
+            return json.dumps({
+                "error": "script_not_found",
+                "script": script,
+                "hint": (
+                    "Pass JUST the filename in `script` (e.g. 'portfolio.py'). "
+                    "Put flags and arguments in `args` (e.g. ['--silent']). "
+                    "Do NOT include 'python3' or other interpreters — the "
+                    "script's shebang handles that."
+                ),
+            })
         if not os.access(sp, os.X_OK):
             return json.dumps({"error": "not_executable", "script": script})
 
@@ -217,12 +250,21 @@ def _build_skill_run_script(idx: SkillIndex) -> Tool:
                 "name": {"type": "string", "description": "Skill name."},
                 "script": {
                     "type": "string",
-                    "description": "Script filename inside the skill's scripts/ dir.",
+                    "description": (
+                        "JUST the script filename inside the skill's scripts/ dir "
+                        "(e.g. 'portfolio.py'). Never include 'python3' or other "
+                        "interpreter prefixes — the script's shebang handles that. "
+                        "Never include CLI flags here; put them in `args` instead."
+                    ),
                 },
                 "args": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional positional arguments.",
+                    "description": (
+                        "CLI flags and positional arguments, one per item. "
+                        "Example: ['--silent'] or ['--retire-age', '58']. "
+                        "Each flag and value goes in its OWN array slot."
+                    ),
                 },
             },
             "required": ["name", "script"],
