@@ -626,9 +626,17 @@ def main() -> None:
         raise RuntimeError("could not locate SammyClaw repo root from kc-supervisor main.py")
 
     _repo_root = _find_repo_root()
-    app.include_router(
-        build_portfolio_router(workspace_dir=_repo_root / "workspace")
-    )
+    _portfolio_router = build_portfolio_router(workspace_dir=_repo_root / "workspace")
+    app.include_router(_portfolio_router)
+
+    # Warm the portfolio snapshot cache on startup so the dashboard's first
+    # /snapshot request returns instantly. Spawns as a background task —
+    # supervisor boot does NOT wait for portfolio.py to finish.
+    @app.on_event("startup")
+    async def _warm_portfolio() -> None:
+        warm = getattr(_portfolio_router, "warm_cache", None)
+        if warm is not None:
+            asyncio.create_task(warm())
 
     # Daily background GC sweep for attachment retention. Started on FastAPI
     # startup so the loop runs on the live event loop. Retention threshold is

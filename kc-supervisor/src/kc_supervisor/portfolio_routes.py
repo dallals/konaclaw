@@ -1,5 +1,7 @@
 from __future__ import annotations
+import asyncio
 import json
+import logging
 import os
 import subprocess
 import time
@@ -8,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_TIMEOUT_S = 5
@@ -80,6 +84,32 @@ def build_portfolio_router(
                 "error": str(e)[:300],
                 "last_good": state["payload"],
             }
+
+    async def warm_cache() -> bool:
+        """Run portfolio.py once and populate the snapshot cache. Called
+        from the FastAPI startup hook so the dashboard's first /snapshot
+        request returns instantly instead of paying the ~2-3s subprocess
+        + Yahoo API latency. Failures are logged and swallowed — a stale
+        first /snapshot is a smaller problem than the supervisor failing
+        to start because Yahoo is unreachable."""
+        try:
+            payload = await asyncio.to_thread(_fetch_subprocess)
+        except subprocess.TimeoutExpired:
+            logger.warning("portfolio warm-up timed out — first /snapshot will be slow")
+            return False
+        except Exception as e:  # noqa: BLE001
+            logger.warning("portfolio warm-up failed: %s", e)
+            return False
+        state["payload"] = payload
+        state["cached_at_ts"] = time.time()
+        logger.info("portfolio cache warmed (%d holdings)",
+                    len((payload or {}).get("holdings") or []))
+        return True
+
+    # Attach so the supervisor's startup hook can call it without needing
+    # access to module-private state. Tests that only need the router can
+    # ignore this attribute.
+    router.warm_cache = warm_cache  # type: ignore[attr-defined]
 
     @router.post("/sync")
     def sync():
